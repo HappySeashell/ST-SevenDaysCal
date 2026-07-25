@@ -10,8 +10,10 @@ import {
     buildSpaceChatSystemPrompt,
     getCreativeChatPlaceholder,
     getSpaceChatPlaceholder,
+    buildTheaterDraftKey,
 } from './state.js';
 import * as memory from './memory.js';
+import * as theater from './theater.js';
 
 const PLUGIN_ID  = 'schedule-planner';
 const MODAL_ID   = 'sp-modal-root';
@@ -39,6 +41,11 @@ const DEFAULT_SETTINGS = {
     // AI floor content). Both are comma-separated bare tag names (no <>).
     keepTags       : 'content',  // protect list — contents inside these tags survive stripping
     extraTags      : '',         // extra strip list — forcibly delete these tags + their content
+    // 棱（小剧场）
+    theaterStylePrompt   : '',   // 写作 agent 文风提示词
+    theaterFewShot       : '',   // few-shot 范文
+    theaterBeautifyPrompt: '',   // 美化 agent 提示词（空=用内置默认）
+    theaterCacheWarnBytes: 4 * 1024 * 1024,  // 缓存预警阈值
 };
 
 let lastDebugPayload = null;
@@ -120,6 +127,10 @@ let spaceChatAbortController = null;
 let linesAiMsgCounter   = 0;   // counts AI messages since last lines advancement
 let scheduleAbortController = null;
 let outlineAbortController  = null;
+let theaterMode          = false;
+let isGeneratingTheater  = false;
+let theaterAbortController = null;
+let theaterCurrentPiece  = null;   // 当前渲染中的 piece（重生成/升永久用）
 const _injectTexts      = {};
 let   _injectIdSeq      = 0;
 let viewportSyncBound   = false;
@@ -157,6 +168,22 @@ jQuery(async () => {
         },
         callApi: callMemoryApi,
     });
+    // Initialize theater (棱/小剧场) — storage + two-stage generation pipeline
+    theater.initTheater({
+        getSettings: () => {
+            const s = getSettings();
+            return {
+                theaterStylePrompt   : typeof s.theaterStylePrompt === 'string' ? s.theaterStylePrompt : '',
+                theaterFewShot       : typeof s.theaterFewShot === 'string' ? s.theaterFewShot : '',
+                theaterBeautifyPrompt: typeof s.theaterBeautifyPrompt === 'string' ? s.theaterBeautifyPrompt : '',
+                theaterCacheWarnBytes: Number.isFinite(+s.theaterCacheWarnBytes) ? +s.theaterCacheWarnBytes : 4 * 1024 * 1024,
+            };
+        },
+        callWriteApi   : callTheaterApi,
+        callBeautifyApi: callTheaterApi,
+        getStoryContext: getTheaterStoryContext,
+        fallbackRender : renderAiMessageHtml,
+    });
     // Back-fill inline blocks for any messages already rendered at startup
     setTimeout(backfillLinesInlineBlocks, 800);
     // Reset view state and reload cache on chat switch
@@ -177,6 +204,11 @@ jQuery(async () => {
         spaceChatHistory = [];
         spaceChatAbortController?.abort();
         spaceChatAbortController = null;
+        theaterMode = false;
+        isGeneratingTheater = false;
+        theaterCurrentPiece = null;
+        theaterAbortController?.abort();
+        theaterAbortController = null;
         $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
         $(`.sp-side-tab.sp-view-btn[data-view="schedule"]`).addClass('sp-view-active');
         $('.sp-sub-btn').removeClass('sp-view-active');
@@ -188,6 +220,7 @@ jQuery(async () => {
             $('#sp-outline-wrap').hide();
             $('#sp-lines-wrap').hide();
             $('#sp-space-wrap').hide();
+            $('#sp-theater-wrap').hide();
             $('#sp-body').show();
             $(`#${MODAL_ID} .sp-outline-btn`).removeClass('sp-btn-active');
             updateCreativeChatModeUI();
@@ -390,6 +423,17 @@ function detectInGameDayChange(messageId, excludeCurrent = false) {
 
 // ─── Storylines inline block (appended to AI messages) ────────────────────────
 
+// 线注入正文时给 Next 加「下一步：/恢复条件：」前缀。模型有时已在 l.next 里
+// 自带前缀（甚至混用），会导致「下一步：下一步：xxx」；先剥掉任意已有前缀再统一加。
+function prefixNext(next, stall) {
+    let clean = String(next || '').trim();
+    // 循环剥掉开头任意层「下一步：/恢复条件：」前缀（模型偶尔叠两层）
+    let prev;
+    do { prev = clean; clean = clean.replace(/^(下一步|恢复条件)\s*[:：]\s*/, '').trim(); }
+    while (clean !== prev);
+    return (stall ? '恢复条件：' : '下一步：') + clean;
+}
+
 function _buildLinesBlockHtml() {
     const raw = (() => {
         try {
@@ -410,7 +454,7 @@ function _buildLinesBlockHtml() {
             // Per-line inject button — parallels the one in the outer panel (renderLines)
             const injectParts = [`【线参考】${l.name}（${l.type}·${l.stage}${l.stall ? '·停滞' : ''}）`];
             if (l.desc) injectParts.push(l.desc);
-            if (l.next) injectParts.push((l.stall ? '恢复条件：' : '下一步：') + l.next);
+            if (l.next) injectParts.push(prefixNext(l.next, l.stall));
             const injectBtn = makeInjectBtn(injectParts.join('\n'));
             return `<div class="sp-inline-line${l.stall ? ' sp-line-stall' : ''}" data-line-idx="${i}" style="border-left:3px solid ${stageColor}20">
                 <div class="sp-inline-head">
@@ -534,7 +578,8 @@ function setExtBtnState(state) {
 // ─── FAB ─────────────────────────────────────────────────────────────────────
 
 function injectFab() {
-    const savedPos = JSON.parse(localStorage.getItem('sp-fab-pos') || 'null');
+    let savedPos = null;
+    try { savedPos = JSON.parse(localStorage.getItem('sp-fab-pos') || 'null'); } catch { /* 位置数据损坏则忽略，不能让 FAB 注入整个崩掉 */ }
     const mobile = isMobile();
     const posStyle = (!mobile && savedPos)
         ? `left:${savedPos.left}px;top:${savedPos.top}px;right:auto;bottom:auto;`
@@ -560,7 +605,8 @@ function injectFab() {
         } else if (!nowMobile && wasMobile) {
             const fab = document.getElementById(FAB_ID);
             if (fab) {
-                const sp = JSON.parse(localStorage.getItem('sp-fab-pos') || 'null');
+                let sp = null;
+                try { sp = JSON.parse(localStorage.getItem('sp-fab-pos') || 'null'); } catch { /* 位置数据损坏则忽略 */ }
                 if (sp) {
                     fab.style.left   = Math.min(sp.left, window.innerWidth  - 60) + 'px';
                     fab.style.top    = Math.min(sp.top,  window.innerHeight - 60) + 'px';
@@ -641,20 +687,24 @@ function injectModal() {
                 <aside class="sp-sidebar">
                     <nav class="sp-sidebar-tabs" aria-label="主视图">
                         <button class="sp-side-tab sp-view-btn sp-view-active" data-view="schedule">
-                            <span class="sp-tab-glyph" aria-hidden="true">▤</span>
+                            <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.4" fill="currentColor" stroke="none"/></svg></span>
                             <span class="sp-tab-label">点</span>
                         </button>
                         <button class="sp-side-tab sp-view-btn" data-view="lines">
-                            <span class="sp-tab-glyph" aria-hidden="true">⁝</span>
+                            <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="4" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="20" r="2.2" fill="currentColor" stroke="none"/></svg></span>
                             <span class="sp-tab-label">线</span>
                         </button>
                         <button class="sp-side-tab sp-view-btn" data-view="outline">
-                            <span class="sp-tab-glyph" aria-hidden="true">¶</span>
+                            <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 L16.5 12 L12 21 L7.5 12 Z"/></svg></span>
                             <span class="sp-tab-label">面</span>
                         </button>
                         <button class="sp-side-tab sp-view-btn" data-view="space">
-                            <span class="sp-tab-glyph" aria-hidden="true">‖</span>
+                            <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/></svg></span>
                             <span class="sp-tab-label">间</span>
+                        </button>
+                        <button class="sp-side-tab sp-view-btn" data-view="theater">
+                            <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L13 12 L9 19 L5 12 Z"/><path d="M15 5 L19 12 L15 19 L11 12 Z" stroke-dasharray="2.5 2.5"/></svg></span>
+                            <span class="sp-tab-label">棱</span>
                         </button>
                     </nav>
                     <div class="sp-sidebar-spacer"></div>
@@ -687,9 +737,9 @@ function injectModal() {
                         </div>
                         <div class="sp-settings-body">
 
-                            <!-- Section 1: API -->
+                            <!-- 全局设置 1：API -->
                             <details class="sp-settings-section" open>
-                                <summary class="sp-settings-section-title">API 配置</summary>
+                                <summary class="sp-settings-section-title">API</summary>
                                 <div class="sp-settings-section-body">
                                     <div class="sp-api-notice ${hasCustomApi ? 'sp-notice-ok' : 'sp-notice-warn'}">
                                         <i class="fa-solid ${hasCustomApi ? 'fa-circle-check' : 'fa-triangle-exclamation'}"></i>
@@ -726,67 +776,30 @@ function injectModal() {
                                     </details>
 
                                     <details class="sp-adv-api" style="margin-top:10px">
-                                        <summary class="sp-adv-api-summary">高级（剔除参数 / 超时 / 流式）</summary>
+                                        <summary class="sp-adv-api-summary">高级设置</summary>
                                         <div class="sp-adv-api-body">
                                             <p class="sp-cfg-hint" style="margin-top:8px">
-                                                <b>剔除参数</b>：这些字段会在发送前从请求中删除，用于规避不接受某些参数的接口报 400（如哈基米/Gemini 代理不认 <code>frequency_penalty</code>）。多个用换行或逗号分隔，只填参数名。
+                                                <b>剔除参数</b>：这些字段会在发送前从请求中删除，用于规避不接受某些参数的接口报 400。多个用换行或逗号分隔，只填参数名。
                                             </p>
                                             <textarea id="sp-cfg-exclude" class="sp-input sp-exclude-input" rows="2"
                                                       placeholder="如：frequency_penalty&#10;presence_penalty">${escapeHtml((cfg.excludeParams || []).join('\n'))}</textarea>
                                             <div class="sp-mode-opt" style="margin-top:8px">
                                                 <span>请求超时</span>
                                                 <input id="sp-cfg-timeout" class="sp-input sp-interval-input" type="number" min="5" max="600" value="${escapeAttr(String(cfg.timeoutSec || 180))}">
-                                                <span>秒（防卡死，超时报错而非无限等待）</span>
+                                                <span>秒</span>
                                             </div>
                                             <label class="sp-mode-opt" style="margin-top:6px">
                                                 <input type="checkbox" id="sp-cfg-stream" ${cfg.stream ? 'checked' : ''}>
-                                                <span>流式传输（边生成边接收，可缓解 socket hang up）</span>
+                                                <span>流式传输</span>
                                             </label>
                                         </div>
                                     </details>
                                 </div>
                             </details>
 
-                            <!-- Section 2: 功能设置 -->
-                            <details class="sp-settings-section">
-                                <summary class="sp-settings-section-title">功能设置</summary>
-                                <div class="sp-settings-section-body">
-                                    <label class="sp-mode-opt">
-                                        <input type="checkbox" id="sp-lines-enabled" ${getSettings().linesEnabled !== false ? 'checked' : ''}>
-                                        <span>启用平行事件（线）</span>
-                                    </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">关闭后不再自动推进、也不再向楼层追加内联展示</p>
-
-                                    <hr class="sp-mem-divider">
-
-                                    <p class="sp-cfg-hint">平行事件推进策略</p>
-                                    <div class="sp-mode-row">
-                                        <label class="sp-mode-opt">
-                                            <input type="radio" name="sp-lines-mode" value="turns" ${getLinesMode() === 'turns' ? 'checked' : ''}>
-                                            <span>回合制，每</span>
-                                            <input id="sp-lines-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getLinesInterval()))}">
-                                            <span>条 AI 回复推进一次</span>
-                                        </label>
-                                        <label class="sp-mode-opt">
-                                            <input type="radio" name="sp-lines-mode" value="days" ${getLinesMode() === 'days' ? 'checked' : ''}>
-                                            <span>时间制，按游戏内日期变化推进</span>
-                                        </label>
-                                        <label class="sp-mode-opt">
-                                            <input type="radio" name="sp-lines-mode" value="manual" ${getLinesMode() === 'manual' ? 'checked' : ''}>
-                                            <span>手动推进，由用户点击按钮触发</span>
-                                        </label>
-                                    </div>
-
-                                    <p class="sp-cfg-hint" id="sp-scale-hint" style="margin-top:14px">叙事尺度（按角色保存）</p>
-                                    <div class="sp-mode-row" id="sp-scale-row">
-                                        <!-- populated by refreshScaleRadio() when settings opens -->
-                                    </div>
-                                </div>
-                            </details>
-
-                            <!-- Section 3: 世界书筛选 -->
+                            <!-- 全局设置 2：世界书 -->
                             <details class="sp-settings-section" id="sp-wi-section">
-                                <summary class="sp-settings-section-title">世界书筛选</summary>
+                                <summary class="sp-settings-section-title">世界书</summary>
                                 <div class="sp-settings-section-body" id="sp-wi-body">
                                     <p class="sp-cfg-hint">识别角色卡关联和全局启用的所有世界书。勾选的条目会传给 AI，取消勾选则跳过。按角色卡保存。</p>
                                     <div id="sp-wi-list" class="sp-wi-list">
@@ -795,9 +808,9 @@ function injectModal() {
                                 </div>
                             </details>
 
-                            <!-- Section 4: 故事记忆库 -->
+                            <!-- 全局设置 3：记忆 -->
                             <details class="sp-settings-section" id="sp-mem-section">
-                                <summary class="sp-settings-section-title">故事记忆库</summary>
+                                <summary class="sp-settings-section-title">记忆</summary>
                                 <div class="sp-settings-section-body" id="sp-mem-body">
                                     <label class="sp-mode-opt sp-mem-source-toggle">
                                         <input type="checkbox" id="sp-mem-source-bbb">
@@ -869,6 +882,80 @@ function injectModal() {
                                 </div>
                             </details>
 
+                            <!-- 模块设置 1：线（伏笔） -->
+                            <details class="sp-settings-section">
+                                <summary class="sp-settings-section-title">线（伏笔）</summary>
+                                <div class="sp-settings-section-body">
+                                    <label class="sp-mode-opt">
+                                        <input type="checkbox" id="sp-lines-enabled" ${getSettings().linesEnabled !== false ? 'checked' : ''}>
+                                        <span>启用平行事件（线）</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">关闭后不再自动推进、也不再向楼层追加内联展示</p>
+
+                                    <hr class="sp-mem-divider">
+
+                                    <p class="sp-cfg-hint">平行事件推进策略</p>
+                                    <div class="sp-mode-row">
+                                        <label class="sp-mode-opt">
+                                            <input type="radio" name="sp-lines-mode" value="turns" ${getLinesMode() === 'turns' ? 'checked' : ''}>
+                                            <span>回合制，每</span>
+                                            <input id="sp-lines-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getLinesInterval()))}">
+                                            <span>条 AI 回复推进一次</span>
+                                        </label>
+                                        <label class="sp-mode-opt">
+                                            <input type="radio" name="sp-lines-mode" value="days" ${getLinesMode() === 'days' ? 'checked' : ''}>
+                                            <span>时间制，按游戏内日期变化推进</span>
+                                        </label>
+                                        <label class="sp-mode-opt">
+                                            <input type="radio" name="sp-lines-mode" value="manual" ${getLinesMode() === 'manual' ? 'checked' : ''}>
+                                            <span>手动推进，由用户点击按钮触发</span>
+                                        </label>
+                                    </div>
+
+                                    <p class="sp-cfg-hint" id="sp-scale-hint" style="margin-top:14px">叙事尺度（按角色保存）</p>
+                                    <div class="sp-mode-row" id="sp-scale-row">
+                                        <!-- populated by refreshScaleRadio() when settings opens -->
+                                    </div>
+                                </div>
+                            </details>
+
+                            <!-- 模块设置 2：棱（小剧场） -->
+                            <details class="sp-settings-section" id="sp-theater-section">
+                                <summary class="sp-settings-section-title">棱（小剧场）</summary>
+                                <div class="sp-settings-section-body">
+                                    <p class="sp-cfg-hint">
+                                        棱 = 单轮小剧场（if 线 / 番外 / 可能性）。写作 agent 出文本、美化 agent 自动排版。
+                                    </p>
+                                    <label class="sp-cfg-label">写作提示词（文风 + 范文）</label>
+                                    <textarea id="sp-theater-style" class="sp-input sp-theater-cfg-textarea" placeholder="指定文体基调、节奏、感官描写要求，禁套路化开头结尾；也可直接贴 1-2 段你认可的文笔让 AI 模仿其笔触…"></textarea>
+
+                                    <hr class="sp-mem-divider">
+
+                                    <p class="sp-cfg-hint">
+                                        缓存用量（本插件 <code>sp-</code> 前缀，含草稿与各面渲染缓存）：
+                                        <span id="sp-theater-cache-usage">—</span>
+                                    </p>
+                                    <div class="sp-mode-opt">
+                                        <span>超过</span>
+                                        <input id="sp-theater-cache-warn" class="sp-input sp-interval-input" type="number" min="1" max="50" value="4">
+                                        <span>MB 时提示清理</span>
+                                    </div>
+                                    <div class="sp-mem-actions">
+                                        <button id="sp-theater-cache-refresh" class="sp-mem-btn">刷新用量</button>
+                                        <button id="sp-theater-cache-clear" class="sp-mem-btn sp-mem-btn-danger">清理插件缓存</button>
+                                    </div>
+
+                                    <hr class="sp-mem-divider">
+
+                                    <p class="sp-cfg-hint">
+                                        小剧场模板库（存于专用世界书 <code>构画-棱-小剧场模板</code>，全局共享、不进聊天文件、绝不注入 AI）。棱输入区可点选模板起草。
+                                    </p>
+                                    <div id="sp-theater-tpl-mgr" class="sp-theater-tpl-mgr">
+                                        <div class="sp-theater-list-empty">（打开设置时自动加载）</div>
+                                    </div>
+                                </div>
+                            </details>
+
                         </div><!-- /sp-settings-body -->
                         <div class="sp-settings-footer">
                             <button id="sp-cfg-save" class="sp-save-btn"><i class="fa-solid fa-floppy-disk"></i> 保存</button>
@@ -911,6 +998,10 @@ function injectModal() {
                                 <input type="text" id="sp-space-input" class="sp-input" placeholder="局外聊聊：剧情、设定、关系、知识…">
                                 <button id="sp-space-send" class="sp-icon-btn" title="发送"><i class="fa-solid fa-paper-plane"></i></button>
                             </div>
+                        </div>
+
+                        <div class="sp-theater-wrap" id="sp-theater-wrap" style="display:none;flex-direction:column;flex:1;min-height:0">
+                            <div class="sp-theater-body" id="sp-theater-body"></div>
                         </div>
                     </div><!-- /sp-main -->
 
@@ -1077,6 +1168,83 @@ function injectModal() {
     $('#sp-outline-beats').on('click', '#sp-abort-outline', abortOutlineGen);
     $('#sp-lines-list').on('click', '#sp-abort-lines', abortLinesGen);
 
+    // ── 棱（小剧场）事件（全部委托到 #sp-theater-wrap，内容动态重渲染）──
+    const $theater = $('#sp-theater-wrap');
+    // 模板点选（内联列表）→ 内容填入输入框（可二次编辑），并收起选择器
+    $theater.on('click', '.sp-theater-tpl-pick', function () {
+        const uid = $(this).data('uid');
+        const tpl = _theaterTemplateCache.find(t => String(t.uid) === String(uid));
+        if (tpl) {
+            $('#sp-theater-input').val(tpl.text);
+            $('#sp-theater-tpl-picker').removeAttr('open');
+            $('#sp-theater-input').trigger('focus');
+        }
+    });
+    // 生成 / 重新生成
+    $theater.on('click', '.sp-theater-generate', function () {
+        if (isGeneratingTheater) return;
+        const input = String($('#sp-theater-input').val() || '').trim();
+        if (!input) { showToast('请先填写小剧场需求', null, true); return; }
+        runGenerateTheater(input);
+    });
+    $theater.on('click', '.sp-theater-regen', function () {
+        if (isGeneratingTheater) return;
+        const input = String($('#sp-theater-input').val() || '').trim();
+        if (!input) { showToast('改一下输入再重新生成', null, true); return; }
+        runGenerateTheater(input);
+    });
+    $theater.on('click', '#sp-abort-theater', abortTheaterGen);
+    $theater.on('click', '.sp-theater-back', renderTheaterPanel);
+    // 预览框展开 / 收起
+    $theater.on('click', '.sp-theater-fold-toggle', function () {
+        const el = document.getElementById('sp-theater-result');
+        if (!el) return;
+        const collapsed = el.classList.toggle('sp-theater-result-collapsed');
+        const $btn = $(this);
+        $btn.find('.sp-theater-fold-label').text(collapsed ? '展开全文' : '收起');
+        $btn.find('i').attr('class', collapsed ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up');
+        // 收起时把视口带回按钮所在的预览顶部，避免停在半空
+        if (collapsed) $btn.closest('.sp-theater-result-wrap')[0]?.scrollIntoView({ block: 'start' });
+    });
+    // 永久保存当前结果（带标题）
+    $theater.on('click', '.sp-theater-save', function () {
+        if (!theaterCurrentPiece) return;
+        theaterCurrentPiece.title = String($('#sp-theater-title').val() || '').trim();
+        // 同步更新草稿里的同 id 条目（标题），再升永久
+        syncDraftMeta(theaterCurrentPiece);
+        theater.promoteToSaved(theaterCurrentPiece);
+        showToast('已永久保存到本对话');
+        renderTheaterPanel();
+    });
+    // 列表：查看 / 升永久 / 删草稿 / 删已保存
+    $theater.on('click', '.sp-theater-view', function () {
+        const id = $(this).data('id');
+        const piece = findPieceById(id);
+        if (piece) {
+            theaterCurrentPiece = piece;
+            renderTheaterPanel();
+            // 结果区在顶部、列表在底部——查看后把滚动条拉回顶部，否则像"没反应"
+            $('#sp-theater-body').scrollTop(0);
+        }
+    });
+    $theater.on('click', '.sp-theater-promote', function () {
+        const id = $(this).data('id');
+        const piece = theater.loadDrafts().find(p => p.id === id);
+        if (piece) { theater.promoteToSaved(piece); showToast('已永久保存'); renderTheaterPanel(); }
+    });
+    $theater.on('click', '.sp-theater-del-draft', async function () {
+        const id = $(this).data('id');
+        if (!await spConfirm({ title: '删除草稿', body: '确定删除这条小剧场草稿吗？' })) return;
+        theater.deleteDraft(id);
+        renderTheaterPanel();
+    });
+    $theater.on('click', '.sp-theater-del-saved', async function () {
+        const id = $(this).data('id');
+        if (!await spConfirm({ title: '删除永久保存', body: '确定从本对话删除这条已永久保存的小剧场吗？删除后无法恢复。' })) return;
+        theater.deleteSaved(id);
+        renderTheaterPanel();
+    });
+
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
     $(`#${MODAL_ID}`).on('click', '.sp-view-btn', function () {
         if (isGenerating) return;
@@ -1103,18 +1271,25 @@ function injectModal() {
                 outlineMode = true;
                 linesMode = false;
                 spaceMode = false;
+                theaterMode = false;
                 $('#sp-body').hide();
                 $('#sp-lines-wrap').hide();
                 $('#sp-space-wrap').hide();
+                $('#sp-theater-wrap').hide();
                 $('#sp-outline-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
                 $('#sp-content-title').text('面');
                 loadCreativeChatHistory();
                 updateCreativeChatModeUI();
                 renderCreativeChatHistory();
-                cachedOutline = loadCachedOutlineForCurrentChat();
-                if (cachedOutline) setOutlineBody(cachedOutline);
-                else setOutlineBody(renderEmptyOutlineState());
+                // 生成在途时切回来：重建 loading，别 fallback 到"生成面"空态误导用户
+                if (isGeneratingOutline) {
+                    setOutlineBody(loadingHtml('正在构思面', 'sp-abort-outline'));
+                } else {
+                    cachedOutline = loadCachedOutlineForCurrentChat();
+                    if (cachedOutline) setOutlineBody(cachedOutline);
+                    else setOutlineBody(renderEmptyOutlineState());
+                }
                 return;
             }
             if (view === 'lines') {
@@ -1122,15 +1297,22 @@ function injectModal() {
                 linesMode = true;
                 outlineMode = false;
                 spaceMode = false;
+                theaterMode = false;
                 $('#sp-body').hide();
                 $('#sp-outline-wrap').hide();
                 $('#sp-space-wrap').hide();
+                $('#sp-theater-wrap').hide();
                 $('#sp-lines-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
                 $('#sp-content-title').text('线');
-                cachedLines = loadCachedLinesForCurrentChat();
-                if (cachedLines) setLinesBody(cachedLines);
-                else setLinesBody(renderEmptyLinesState());
+                // 生成在途时切回来：重建 loading，别 fallback 到"生成线"空态误导用户
+                if (isGeneratingLines) {
+                    setLinesBody(loadingHtml('正在推演线', 'sp-abort-lines'));
+                } else {
+                    cachedLines = loadCachedLinesForCurrentChat();
+                    if (cachedLines) setLinesBody(cachedLines);
+                    else setLinesBody(renderEmptyLinesState());
+                }
                 return;
             }
             if (view === 'space') {
@@ -1138,9 +1320,11 @@ function injectModal() {
                 spaceMode = true;
                 outlineMode = false;
                 linesMode = false;
+                theaterMode = false;
                 $('#sp-body').hide();
                 $('#sp-outline-wrap').hide();
                 $('#sp-lines-wrap').hide();
+                $('#sp-theater-wrap').hide();
                 $('#sp-space-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
                 $('#sp-content-title').text('间');
@@ -1149,10 +1333,33 @@ function injectModal() {
                 renderSpaceChatHistory();
                 return;
             }
-            // view === 'schedule' — leaving outline/lines/space, restore body
+            if (view === 'theater') {
+                if (theaterMode) return;
+                theaterMode = true;
+                outlineMode = false;
+                linesMode = false;
+                spaceMode = false;
+                $('#sp-body').hide();
+                $('#sp-outline-wrap').hide();
+                $('#sp-lines-wrap').hide();
+                $('#sp-space-wrap').hide();
+                $('#sp-theater-wrap').css('display', 'flex');
+                $('#sp-sub-toggle').hide();
+                $('#sp-content-title').text('棱');
+                // 打开棱面板即预取剧情上下文（世界书/人设，异步），供写作 agent 用
+                refreshTheaterStoryContext().catch(() => {});
+                if (isGeneratingTheater) {
+                    setTheaterBody(loadingHtml('正在折射', 'sp-abort-theater'));
+                } else {
+                    renderTheaterPanel();
+                }
+                return;
+            }
+            // view === 'schedule' — leaving outline/lines/space/theater, restore body
             if (outlineMode) { outlineMode = false; $('#sp-outline-wrap').hide(); }
             if (linesMode)   { linesMode   = false; $('#sp-lines-wrap').hide(); }
             if (spaceMode)   { spaceMode   = false; $('#sp-space-wrap').hide(); }
+            if (theaterMode) { theaterMode = false; $('#sp-theater-wrap').hide(); }
             $('#sp-body').show();
             $('#sp-sub-toggle').show();
             $('#sp-content-title').text('点');
@@ -1259,6 +1466,7 @@ function injectModal() {
     divEl.addEventListener('touchstart', onDivStart, { passive: false });
     restoreOutlineChatHeight();
     bindMemoryHandlers();
+    bindTheaterHandlers();
 }
 
 // ─── View (我 / TA) ───────────────────────────────────────────────────────────
@@ -1625,6 +1833,34 @@ function abortLinesGen() {
     isGeneratingLines = false;
     setLinesBody(`<div class="sp-empty"><i class="fa-solid fa-diagram-project"></i><p>已中止</p></div>`);
 }
+function abortTheaterGen() {
+    if (!isGeneratingTheater) return;
+    theaterAbortController?.abort();
+    theaterAbortController = null;
+    isGeneratingTheater = false;
+    theater.resetTheaterGenerating();   // 同步清 theater.js 内部标志，避免立刻再点生成误报"正在生成中"
+    renderTheaterPanel();
+}
+
+// 保存/查看时同步草稿里同 id 条目的 title（保证草稿列表与永久保存一致）
+function syncDraftMeta(piece) {
+    const drafts = theater.loadDrafts();
+    const idx = drafts.findIndex(p => p.id === piece.id);
+    if (idx >= 0) {
+        drafts[idx].title = piece.title;
+        // theater.js 无 setter；直接回写 localStorage 同一 key
+        const chatId = getContext().chatId;
+        const key = buildTheaterDraftKey(chatId);
+        if (key) { try { localStorage.setItem(key, JSON.stringify(drafts.slice(-theater.THEATER_DRAFT_CAP))); } catch {} }
+    }
+}
+
+// 在草稿+已保存里按 id 找 piece
+function findPieceById(id) {
+    return theater.loadDrafts().find(p => p.id === id)
+        || theater.loadSaved().find(p => p.id === id)
+        || null;
+}
 
 async function generate(ctx, userName, charName, perspective = 'user', signal = null) {
     const cfg = loadCfg();
@@ -1654,9 +1890,34 @@ const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 
 
 // 把原始错误（HTTP 状态码 / 上游报文 / 网络异常）翻译成用户能照着做的提示。
 // status：HTTP 状态码（无则 0）；raw：上游返回的报文或错误 message。
+// 推理模型（GLM / o1 等）常把输出预算耗在思维链上，导致正文为空；
+// 代理层遇到空候选会回一个 `<none>` 之类的占位错误。统一给用户一句可诊断的说明。
+function emptyContentMessage(finishReason = '') {
+    const tail = finishReason === 'length'
+        ? '（本次因达到输出上限被截断）'
+        : '';
+    return `模型没有返回正文${tail}。若使用 GLM 等推理模型，多是思维链占满了输出预算；可换非推理模型、或稍后重试。`;
+}
+
+// 从非流式响应里提取正文：优先 content，空则兜底 reasoning_content，仍空则抛可读错误。
+function extractCompletion(data) {
+    const choice = data?.choices?.[0];
+    const msg = choice?.message;
+    let content = msg?.content ?? choice?.text ?? data?.content ?? '';
+    if (typeof content !== 'string') content = String(content ?? '');
+    content = content.trim();
+    if (content) return content;
+    // 正文为空：兜底取推理内容（至少有东西可渲染，而非白屏/报错）
+    const reasoning = msg?.reasoning_content ?? msg?.reasoning ?? '';
+    if (typeof reasoning === 'string' && reasoning.trim()) return reasoning.trim();
+    throw new Error(emptyContentMessage(choice?.finish_reason || ''));
+}
+
 function mapApiError(status, raw) {
     const text = String(raw || '');
     const low = text.toLowerCase();
+    // 代理回传的空候选占位（GLM 等推理模型正文为空时常见）：给可读说明而非甩个 <none>
+    if (low === '<none>' || low === 'none' || low.includes('<none>')) return emptyContentMessage('');
     // socket hang up / 网络中断：bbs 作者确认多为超时或网络波动
     if (low.includes('socket hang up') || low.includes('econnreset') || low.includes('network') || low.includes('fetch failed')) {
         return '网络波动或连接被中断（socket hang up）。多为线路抖动或上游超时，稍后重试；若频繁出现，可在设置里调大「请求超时」或开启「流式传输」。';
@@ -1768,7 +2029,7 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
         }
         const data = await res.json();
         if (data?.error) throw new Error(mapApiError(0, data.error.message || '返回错误'));
-        return data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? data?.content ?? '';
+        return extractCompletion(data);
     } catch (err) {
         if (timedOut) throw new Error(`请求超时（超过 ${timeoutSec} 秒）。可在设置里调大「请求超时」，或开启「流式传输」让响应边生成边返回。`);
         if (err?.name === 'AbortError') throw err;   // 用户主动取消：原样抛出，上层按 AbortError 静默处理
@@ -1784,7 +2045,9 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
 async function callCustomApi(ctx, prompt, cfg, userName, charName, signal = null) {
     const messages = await buildMessages(ctx, prompt, userName, charName);
     lastDebugPayload = { model: cfg.model || 'gpt-4o-mini', messages };
-    return postChatCompletion({ cfg, messages, maxTokens: 4096, signal });
+    // 8192 而非 4096：推理模型（GLM 等）会先耗一大段思维链预算，
+    // 4096 常在长提示词（尤其「面」）下把正文挤空 → 代理回 <none>。留足空间。
+    return postChatCompletion({ cfg, messages, maxTokens: 8192, signal });
 }
 
 // Called by memory.js — minimal wrapper around user's configured API.
@@ -1798,6 +2061,44 @@ async function callMemoryApi(messages, signal = null) {
         signal,
     });
 }
+
+// Called by theater.js — bare API caller (world info/persona already baked into
+// the messages by theater.js via getTheaterStoryContext). Bare like callMemoryApi;
+// world info is NOT auto-injected here so the beautify pass stays clean.
+async function callTheaterApi(messages, { maxTokens = 4096, signal = null } = {}) {
+    const cfg = loadCfg();
+    if (!cfg.url || !cfg.key) throw new Error('请先在设置中填写自定义 API 的 URL 和 Key');
+    return postChatCompletion({ cfg, messages, maxTokens, signal });
+}
+
+// Story context for theater's writing agent: world info + persona + character card.
+// Reuses the same readers as 点/线/面 (buildWorldInfoContext / readCardExtras) so
+// the mini-theater is grounded in the same setting. Returns sys blocks + names.
+// NOTE: async work (world info) is prefetched into a cache on panel open; this
+// sync accessor returns the last snapshot so theater.js can build messages sync.
+let _theaterStorySnap = { sysBlocks: [], userName: '用户', charName: '角色' };
+async function refreshTheaterStoryContext() {
+    const ctx = getContext();
+    const userName = ctx.name1 || '用户';
+    const charName = ctx.name2 || '角色';
+    const char = ctx.characters?.[ctx.characterId] ?? {};
+    let wiContext = '';
+    try { wiContext = await buildWorldInfoContext(ctx); } catch { wiContext = ''; }
+    const { personaDesc, authorNote } = readCardExtras(ctx);
+    const memText = getMemText();
+    const sysBlocks = [
+        personaDesc      ? `【${userName} 的人物设定】\n${personaDesc}` : '',
+        char.description ? `【${charName} 的背景资料】\n${char.description}` : '',
+        char.personality ? `【性格】${char.personality}` : '',
+        char.scenario    ? `【场景】${char.scenario}`    : '',
+        authorNote       ? `【作者注释（当前聊天）】\n${authorNote}` : '',
+        wiContext,
+        memText ? `【故事记忆库】以下是本插件自动生成的剧情客观摘要（从最早到近期的关键事件与伏笔），作为这段小剧场的既有背景，注意与之保持连贯：\n\n${memText}` : '',
+    ].filter(Boolean);
+    _theaterStorySnap = { sysBlocks, userName, charName };
+    return _theaterStorySnap;
+}
+function getTheaterStoryContext() { return _theaterStorySnap; }
 
 // ─── World-info entry filter (per character) ──────────────────────────────────
 // Stores disabled entry uids per character in extension_settings.
@@ -2870,6 +3171,229 @@ async function sendSpaceChat(userMsg) {
 
 
 
+// ─── 棱（小剧场）render ─────────────────────────────────────────────────────────
+
+function setTheaterBody(html) { $('#sp-theater-body').html(html); }
+
+// 一条 piece 的卡片（草稿/已保存列表共用）。saved=true 时显示"删除"，false 时"升永久+删除"。
+function renderPieceCard(piece, saved) {
+    const title = escapeHtml(piece.title || '(未命名)');
+    const when  = piece.ts ? new Date(piece.ts).toLocaleString('zh-CN', { hour12: false }) : '';
+    const actions = saved
+        ? `<button class="sp-theater-del-saved" data-id="${escapeAttr(piece.id)}">删除</button>`
+        : `<button class="sp-theater-promote" data-id="${escapeAttr(piece.id)}">永久保存</button>
+           <button class="sp-theater-del-draft" data-id="${escapeAttr(piece.id)}">删除</button>`;
+    return `<div class="sp-theater-card" data-id="${escapeAttr(piece.id)}">
+        <div class="sp-theater-card-head">
+            <span class="sp-theater-card-title">${title}</span>
+            <span class="sp-theater-card-time">${escapeHtml(when)}</span>
+        </div>
+        <div class="sp-theater-card-actions">
+            <button class="sp-theater-view" data-id="${escapeAttr(piece.id)}">查看</button>
+            ${actions}
+        </div>
+    </div>`;
+}
+
+// 主面板：输入区 + 结果区 + 操作栏 + 草稿/已保存列表。
+function renderTheaterPanel() {
+    // 模板改用内联可点列表（不用原生 <select>：其弹层在内置浏览器里会跑到面板下面，
+    // 跟 API 模型选择当初同款坑）。骨架先渲染，refreshTheaterTemplates() 异步填充。
+    const drafts = theater.loadDrafts().slice().reverse();
+    const saved  = theater.loadSaved().slice().reverse();
+    const piece  = theaterCurrentPiece;
+
+    const resultHtml = piece
+        ? `<div class="sp-theater-result-inner">${piece.html || ''}</div>`
+        : `<div class="sp-empty sp-theater-result-empty"><i class="fa-solid fa-masks-theater"></i><p>填写场景与要求，生成一段小剧场</p></div>`;
+
+    // 长篇预览折叠：piece 存在时把结果区包一层，底部给个展开/收起按钮，
+    // 具体是否显示按钮由 applyTheaterFold() 按实际高度决定（矮内容不折叠）。
+    const resultBlock = piece
+        ? `<div class="sp-theater-result-wrap">
+              <button class="sp-theater-fold-toggle" type="button" style="display:none">
+                  <i class="fa-solid fa-chevron-down"></i><span class="sp-theater-fold-label">展开全文</span>
+              </button>
+              <div class="sp-theater-result sp-theater-result-collapsible" id="sp-theater-result">${resultHtml}</div>
+           </div>`
+        : `<div class="sp-theater-result" id="sp-theater-result">${resultHtml}</div>`;
+
+    const opBar = piece
+        ? `<div class="sp-theater-opbar">
+              <button class="sp-btn sp-theater-regen">重新生成</button>
+              <input type="text" id="sp-theater-title" class="sp-input" placeholder="标题（可选）" value="${escapeAttr(piece.title || '')}">
+              <button class="sp-btn sp-btn-primary sp-theater-save">永久保存</button>
+           </div>`
+        : '';
+
+    const draftsHtml = drafts.length
+        ? drafts.map(p => renderPieceCard(p, false)).join('')
+        : '<div class="sp-theater-list-empty">暂无草稿</div>';
+    const savedHtml = saved.length
+        ? saved.map(p => renderPieceCard(p, true)).join('')
+        : '<div class="sp-theater-list-empty">暂无永久保存</div>';
+
+    setTheaterBody(`
+        <div class="sp-theater-input-area">
+            <details class="sp-theater-tpl-picker" id="sp-theater-tpl-picker">
+                <summary class="sp-theater-tpl-picker-summary">
+                    <i class="fa-solid fa-chevron-right sp-theater-tpl-picker-chevron"></i>
+                    <span>选择模板起草（可选）</span>
+                </summary>
+                <div class="sp-theater-tpl-picker-body" id="sp-theater-tpl-picker-list">
+                    <div class="sp-theater-list-empty">加载中…</div>
+                </div>
+            </details>
+            <textarea id="sp-theater-input" class="sp-input sp-theater-textarea" placeholder="描述这段小剧场：场景、人物状态、想看的走向、字数等…"></textarea>
+            <button class="sp-btn sp-btn-primary sp-theater-generate">生成小剧场</button>
+        </div>
+        <hr class="sp-theater-divider">
+        ${resultBlock}
+        ${opBar}
+        <hr class="sp-theater-divider">
+        <div class="sp-theater-lists">
+            <details class="sp-theater-list-group" open>
+                <summary>草稿（最多 ${theater.THEATER_DRAFT_CAP} 条，新挤旧）</summary>
+                <div class="sp-theater-list">${draftsHtml}</div>
+            </details>
+            <details class="sp-theater-list-group"${saved.length ? ' open' : ''}>
+                <summary>已永久保存（本对话）</summary>
+                <div class="sp-theater-list">${savedHtml}</div>
+            </details>
+        </div>
+    `);
+    refreshTheaterTemplates();
+    applyTheaterFold();
+}
+
+// 预览折叠：内容超过阈值才折叠并露出「展开全文」按钮，短内容不折。
+function applyTheaterFold() {
+    const el = document.getElementById('sp-theater-result');
+    const $btn = $('.sp-theater-fold-toggle');
+    if (!el || !el.classList.contains('sp-theater-result-collapsible')) { $btn.hide(); return; }
+    const COLLAPSED_MAX = 360;
+    // 图片未加载完时 scrollHeight 可能偏小，这里先按当前测；下方 img.onload 再复测。
+    const measure = () => {
+        if (el.scrollHeight > COLLAPSED_MAX + 40) {
+            el.classList.add('sp-theater-result-collapsed');
+            $btn.css('display', '');
+            $btn.find('.sp-theater-fold-label').text('展开全文');
+            $btn.find('i').attr('class', 'fa-solid fa-chevron-down');
+        } else {
+            el.classList.remove('sp-theater-result-collapsed');
+            $btn.hide();
+        }
+    };
+    measure();
+    el.querySelectorAll('img').forEach(img => {
+        if (!img.complete) img.addEventListener('load', measure, { once: true });
+    });
+}
+
+// 异步拉模板填进内联列表（棱面板 + 设置分节共用数据源）
+async function refreshTheaterTemplates() {
+    let templates = [];
+    try { templates = await theater.listTemplates(); } catch (err) { console.warn('[7dayscal] 模板读取失败:', err); }
+    _theaterTemplateCache = templates;
+    const $list = $('#sp-theater-tpl-picker-list');
+    if ($list.length) {
+        $list.html(templates.length
+            ? templates.map(t => `<button type="button" class="sp-theater-tpl-pick" data-uid="${escapeAttr(t.uid)}">${escapeHtml(t.title)}</button>`).join('')
+            : '<div class="sp-theater-list-empty">暂无模板，可在设置 · 棱里新增</div>');
+    }
+    // 若设置分节开着，也刷新其列表
+    if ($('#sp-theater-tpl-mgr').length) renderTheaterTemplateManager(templates);
+}
+let _theaterTemplateCache = [];
+
+// ─── 棱生成编排（照抄 runGenerateOutline 的 abort/chatId 快照守卫）──────────────
+async function runGenerateTheater(userInput) {
+    const chatIdSnap = getContext().chatId;
+    const myCtrl = theaterAbortController = new AbortController();
+    isGeneratingTheater = true;
+    setTheaterBody(loadingHtml('正在折射', 'sp-abort-theater'));
+    try {
+        await refreshTheaterStoryContext();
+        const { piece } = await theater.generate(userInput, {
+            signal: myCtrl.signal,
+            onStage: (stage) => {
+                if (theaterAbortController === myCtrl && theaterMode) {
+                    setTheaterBody(loadingHtml(`正在${stage}`, 'sp-abort-theater'));
+                }
+            },
+        });
+        if (theaterAbortController !== myCtrl) return;
+        if (getContext().chatId !== chatIdSnap) {
+            isGeneratingTheater = false;
+            theaterAbortController = null;
+            return;
+        }
+        isGeneratingTheater = false;
+        theaterAbortController = null;
+        theaterCurrentPiece = piece;
+        if (theaterMode) renderTheaterPanel();
+        else showToast('棱已生成，点击查看', () => {
+            $('.sp-view-btn[data-view="theater"]').trigger('click');
+            showPanel();
+        });
+    } catch (err) {
+        if (theaterAbortController !== myCtrl) return;
+        isGeneratingTheater = false;
+        theaterAbortController = null;
+        if (err?.name === 'AbortError') {
+            if (theaterMode && getContext().chatId === chatIdSnap) renderTheaterPanel();
+            return;
+        }
+        if (getContext().chatId !== chatIdSnap) return;
+        if (theaterMode) setTheaterBody(`<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p><button class="sp-btn sp-theater-back">返回</button></div>`);
+        else showToast('棱生成失败，请重试', null, true);
+    }
+}
+
+// 设置分节里的模板管理器渲染
+function renderTheaterTemplateManager(templates) {
+    const $mgr = $('#sp-theater-tpl-mgr');
+    if (!$mgr.length) return;
+    // 重渲染前记住外层抽屉的开合，避免用户整理时被合上
+    const libOpen = $mgr.find('.sp-theater-tpl-library').prop('open');
+    // 每条模板折叠成一行（标题 + 编辑 + 删除）；点「编辑」展开可改标题/内容，
+    // 「保存」后自动收起。新增走底部固定输入行，addTemplate 即存即收纳。
+    const rows = (templates || []).map(t => `
+        <details class="sp-theater-tpl-item" data-uid="${escapeAttr(t.uid)}">
+            <summary class="sp-theater-tpl-item-head">
+                <span class="sp-theater-tpl-item-title">${escapeHtml(t.title)}</span>
+                <span class="sp-theater-tpl-item-actions">
+                    <button class="sp-btn sp-theater-tpl-edit" data-uid="${escapeAttr(t.uid)}">编辑</button>
+                    <button class="sp-btn sp-theater-tpl-del" data-uid="${escapeAttr(t.uid)}">删除</button>
+                </span>
+            </summary>
+            <div class="sp-theater-tpl-item-body">
+                <input type="text" class="sp-input sp-theater-tpl-title" value="${escapeAttr(t.title)}" placeholder="模板标题">
+                <textarea class="sp-input sp-theater-tpl-text" placeholder="模板内容">${escapeHtml(t.text)}</textarea>
+                <button class="sp-btn sp-btn-primary sp-theater-tpl-save" data-uid="${escapeAttr(t.uid)}">保存</button>
+            </div>
+        </details>`).join('');
+    const count = (templates || []).length;
+    $mgr.html(`
+        <details class="sp-theater-tpl-library"${libOpen ? ' open' : ''}>
+            <summary class="sp-theater-tpl-library-head">
+                <i class="fa-solid fa-chevron-right sp-theater-tpl-library-chevron"></i>
+                <span>模板库</span>
+                <span class="sp-theater-tpl-library-count">${count}</span>
+            </summary>
+            <div class="sp-theater-tpl-library-body">
+                ${rows || '<div class="sp-theater-list-empty">暂无模板</div>'}
+                <div class="sp-theater-tpl-add-row">
+                    <input type="text" id="sp-theater-tpl-new-title" class="sp-input" placeholder="新模板标题">
+                    <textarea id="sp-theater-tpl-new-text" class="sp-input" placeholder="新模板内容"></textarea>
+                    <button class="sp-btn sp-btn-primary" id="sp-theater-tpl-add">+ 新增模板</button>
+                </div>
+            </div>
+        </details>
+    `);
+}
+
+
 function renderEmptyOutlineState() {
     return `<div class="sp-empty"><i class="fa-solid fa-scroll"></i><p>当前还没有面，可以先直接聊天讨论，也可以生成一版面作为起点</p><button class="sp-gen-btn sp-outline-gen-btn" id="sp-gen-outline-now">生成面</button></div>`;
 }
@@ -2963,13 +3487,15 @@ function buildOutlinePrompt(userName, charName, perspective = 'user') {
 - 节点覆盖完整故事弧线：开局状态 → 摩擦/试探 → 第一次推进 → 受挫/退后 → 危机爆发 → 关键转折 → 余波 → 新平衡。每个阶段1个节点。
 - 每个节点的 Scene 和 Think 内容充实，不压缩质量。
 
-【标题要求】10字以内，有文学出处感——来自真实古诗词原句或改编、真实歌词改编、知名小说/影视台词化用。各节点标题风格不要全部相同，古诗词/歌词/小说三类至少各用一次。不要自造没有出处的文艺短语。
+【创作顺序】每个节点先想透 Scene（发生了什么）与 Think（创作思考），再从已构思好的内容里提炼 title 与 Subtext 引言，让标题和引言是对内容的凝练与升华。（脑内可先内容后标题，但**输出时仍严格按 Beat→Scene→Subtext→Think 的字段顺序排列**，不可打乱，否则大纲窗口无法解析。）
+
+【标题要求】title 是这一节点的凝练点题小标题——形式与长度都放开：可以是一个意象、一个动作、一个词或半句话，贴合这一节点的气质与情绪即可。
 
 【字段说明】
 Beat: 推演时间|标题|类型|所属故事线|结果
 - 推演时间：宏观、相对、粗略的长跨度时间锚（如"初期""数周内""约一两个月后""数月之后""半年左右"），不要精确到某一天；相邻节点之间通常间隔数天到数周乃至更久。
 Scene: 这一阶段大致发生了什么、故事整体推进到了哪一步（80-120字），着眼段落级的进展与走向，而非某一个镜头
-Subtext: 这一阶段暗涌却未言明的情绪或张力（不超过40字）
+Subtext: 这一节点的**引言**（题记）——含蓄、文艺、有留白的一句或几句话，为这一段定调。它是像卷首题记那样的文学化点睛，而非对 Scene 的复述总结；可自由取用说书、箴言、史评、心声、民谣、预言、判词等任一叙述口吻，用意象或余韵点出这一节点的情绪底色。直接写引言正文，风格、句式与长短随内容自然生发。
 Think: 创作思考（100-150字），必须覆盖：
  ① 如何体现核心吸引力和剧情模式
  ② 主要角色（至少一个）此刻的心理状态
@@ -2992,12 +3518,14 @@ function parseOutline(raw) {
     const m = raw.match(/<outline_widget[^>]*>([\s\S]*?)<\/outline_widget>/i);
     const content = m ? m[1] : raw;  // fallback: parse raw directly if no widget tag
     const beats = []; let cur = null;
-    for (const line of content.split('\n')) {
-        const t = line.trim();
+    for (const rawLine of content.split('\n')) {
+        // 容错：去掉行首的 Markdown 装饰（**、*、-、>、#、空格）再匹配字段名，
+        // 免得模型把 Beat/Scene 包成 **Beat:** 或 "- Beat:" 时整段落解析失败。
+        const t = rawLine.trim().replace(/^[>#*\-\s]+/, '').replace(/\*+/g, '');
         if (!t) continue;
-        if (/^Beat\s*:/i.test(t)) {
+        if (/^Beat\s*[:：]/i.test(t)) {
             if (cur) beats.push(cur);
-            const parts = t.replace(/^Beat\s*:\s*/i, '').split('|');
+            const parts = t.replace(/^Beat\s*[:：]\s*/i, '').split(/[|｜]/);
             cur = {
                 time   : (parts[0] || '').trim(),
                 title  : (parts[1] || '').trim(),
@@ -3008,12 +3536,12 @@ function parseOutline(raw) {
                 subtext: '',
                 think  : '',
             };
-        } else if (/^Scene\s*:/i.test(t) && cur) {
-            cur.scene = t.replace(/^Scene\s*:\s*/i, '').trim();
-        } else if (/^Subtext\s*:/i.test(t) && cur) {
-            cur.subtext = t.replace(/^Subtext\s*:\s*/i, '').trim();
-        } else if (/^Think\s*:/i.test(t) && cur) {
-            cur.think = t.replace(/^Think\s*:\s*/i, '').trim();
+        } else if (/^Scene\s*[:：]/i.test(t) && cur) {
+            cur.scene = t.replace(/^Scene\s*[:：]\s*/i, '').trim();
+        } else if (/^Subtext\s*[:：]/i.test(t) && cur) {
+            cur.subtext = t.replace(/^Subtext\s*[:：]\s*/i, '').trim();
+        } else if (/^Think\s*[:：]/i.test(t) && cur) {
+            cur.think = t.replace(/^Think\s*[:：]\s*/i, '').trim();
         }
     }
     if (cur) beats.push(cur);
@@ -3414,7 +3942,7 @@ function renderLines(raw) {
         ).join('');
         const injectParts = [`【线参考】${l.name}（${l.type}·${l.stage}${l.stall ? '·停滞' : ''}）`];
         if (l.desc) injectParts.push(l.desc);
-        if (l.next) injectParts.push((l.stall ? '恢复条件：' : '下一步：') + l.next);
+        if (l.next) injectParts.push(prefixNext(l.next, l.stall));
         const injectBtn = makeInjectBtn(injectParts.join('\n'));
         const stallCls  = l.stall ? ' sp-line-stall' : '';
         const stallTag  = l.stall ? `<span class="sp-line-stall-tag">停滞</span>` : '';
@@ -3570,6 +4098,7 @@ function toggleSettings() {
         renderWiList();     // async, fire-and-forget — fills list when done
         renderScaleRow();   // per-character scale radios (sync)
         renderMemorySection();   // memory status + settings sync
+        renderTheaterSection();  // 棱 settings + cache usage + template manager
         $overlay.stop(true).css({ display: 'flex', opacity: 0 }).animate({ opacity: 1 }, 180);
     } else {
         $overlay.stop(true).animate({ opacity: 0 }, 150, function () { $(this).css('display', 'none'); });
@@ -3624,6 +4153,96 @@ function refreshMemoryStatus() {
     if (r.paused) rows.push(`<div class="sp-mem-alert">⚠ 记忆系统已暂停：${escapeHtml(r.lastError || '连续失败')}。点补齐或重构以恢复。</div>`);
     if (r.busy)   rows.push(`<div class="sp-mem-alert sp-mem-alert-info">🔄 记忆系统正在后台工作</div>`);
     $('#sp-mem-status').html(rows.join(''));
+}
+
+// ─── 棱 settings renderer ───────────────────────────────────────────────────
+function renderTheaterSection() {
+    const s = getSettings();
+    $('#sp-theater-style').val(typeof s.theaterStylePrompt === 'string' ? s.theaterStylePrompt : '');
+    const warnMb = (Number(s.theaterCacheWarnBytes) || 4 * 1024 * 1024) / 1024 / 1024;
+    $('#sp-theater-cache-warn').val(Math.round(warnMb) || 4);
+    refreshTheaterCacheUsage();
+    refreshTheaterTemplates();   // async, fills #sp-theater-tpl-mgr when done
+}
+
+function refreshTheaterCacheUsage() {
+    const bytes = theater.pluginCacheBytes();
+    $('#sp-theater-cache-usage').text(theater.formatBytes(bytes));
+}
+
+// 棱设置分节的事件（config 字段即改即存；缓存治理；模板 CRUD）
+function bindTheaterHandlers() {
+    $('#sp-theater-style').on('change', function () {
+        getSettings().theaterStylePrompt = this.value;
+        saveSettingsDebounced();
+    });
+    $('#sp-theater-cache-warn').on('change', function () {
+        const mb = Math.max(1, Math.min(50, parseInt(this.value, 10) || 4));
+        getSettings().theaterCacheWarnBytes = mb * 1024 * 1024;
+        this.value = mb;
+        saveSettingsDebounced();
+    });
+    $('#sp-theater-cache-refresh').on('click', refreshTheaterCacheUsage);
+    $('#sp-theater-cache-clear').on('click', function () {
+        const n = theater.clearPluginCache();
+        refreshTheaterCacheUsage();
+        showToast(`已清理 ${n} 项插件缓存`);
+        // 缓存清空后草稿也没了，若正开着棱面板则刷新
+        if (theaterMode) { theaterCurrentPiece = null; renderTheaterPanel(); }
+    });
+
+    // 模板 CRUD（委托到管理器容器，内容动态渲染）
+    const $mgr = $('#sp-theater-tpl-mgr');
+    $mgr.on('click', '#sp-theater-tpl-add', async function () {
+        const title = String($('#sp-theater-tpl-new-title').val() || '').trim();
+        const text  = String($('#sp-theater-tpl-new-text').val() || '').trim();
+        if (!title && !text) { showToast('模板标题或内容不能都为空', null, true); return; }
+        try {
+            await theater.addTemplate(title || '(无标题)', text);
+            await refreshTheaterTemplates();  // 重渲染 → 新条目自动折叠收纳
+            showToast('模板已新增');
+        } catch (err) { showToast('新增失败：' + (err.message || err), null, true); }
+    });
+    // 「编辑」在 <summary> 里：拦掉默认 toggle，手动展开本行，并把内容框撑到贴合文字
+    $mgr.on('click', '.sp-theater-tpl-edit', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const $row = $(this).closest('.sp-theater-tpl-item');
+        $row.prop('open', true);
+        // 展开后按内容自动撑高（上限由 CSS max-height 兜住，超了才滚动），字多也一眼看全
+        const ta = $row.find('.sp-theater-tpl-text')[0];
+        if (ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, 420) + 'px'; }
+    });
+    // 编辑时随输入实时长高，免得一边打字一边挤在小框里
+    $mgr.on('input', '.sp-theater-tpl-text', function () {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight + 2, 420) + 'px';
+    });
+    $mgr.on('click', '.sp-theater-tpl-save', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const uid = $(this).data('uid');
+        const $row = $(this).closest('.sp-theater-tpl-item');
+        const title = String($row.find('.sp-theater-tpl-title').val() || '').trim();
+        const text  = String($row.find('.sp-theater-tpl-text').val() || '');
+        try {
+            await theater.updateTemplate(String(uid), title || '(无标题)', text);
+            await refreshTheaterTemplates();  // 重渲染 → 保存后自动收起
+            showToast('模板已保存');
+        } catch (err) { showToast('保存失败：' + (err.message || err), null, true); }
+    });
+    $mgr.on('click', '.sp-theater-tpl-del', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const uid = $(this).data('uid');
+        const ok = await spConfirm({ title: '删除模板', body: '确定删除这条小剧场模板？', confirmText: '删除', cancelText: '取消' });
+        if (!ok) return;
+        try {
+            await theater.deleteTemplate(String(uid));
+            await refreshTheaterTemplates();
+            showToast('模板已删除');
+        } catch (err) { showToast('删除失败：' + (err.message || err), null, true); }
+    });
 }
 
 function bindMemoryHandlers() {
@@ -4185,7 +4804,8 @@ function positionPanel() {
         bindViewportSync();
         return;
     }
-    const pos = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
+    let pos = null;
+    try { pos = JSON.parse(localStorage.getItem(POS_KEY) || 'null'); } catch { /* 位置数据损坏则忽略 */ }
     if (pos) {
         sheet.style.left  = Math.min(pos.left, window.innerWidth  - sheet.offsetWidth)  + 'px';
         sheet.style.top   = Math.min(pos.top,  window.innerHeight - 60) + 'px';

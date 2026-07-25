@@ -37,6 +37,11 @@ export function buildSpaceChatHistoryKey(chatId, view = 'user', charName = '') {
     return buildCacheKey(chatId, 'space-chat', view, charName);
 }
 
+// 棱（小剧场）草稿层：per-chat，不分我/TA 视角（view 恒 'user'）。
+export function buildTheaterDraftKey(chatId) {
+    return buildCacheKey(chatId, 'theater-draft', 'user');
+}
+
 export function getCreativeChatPlaceholder() {
     return '和 AI 讨论剧情、面或设定…';
 }
@@ -56,7 +61,22 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
         authorNote  ? `【作者注释（当前聊天）】\n${authorNote}` : '',
         wiContext,
         recentCtx,
-        '请以创作顾问身份回答，不要扮演任何角色。默认优先围绕剧情发展、设定补完、角色关系与灵感发散来回应。只有当用户明确要求你"写大纲"或明确要求输出大纲时，才输出完整的新大纲，并使用 <outline_widget>...</outline_widget> 包裹；其他时间不要输出 <outline_widget> 标签。',
+        `请以创作顾问身份回答，不要扮演任何角色。默认优先围绕剧情发展、设定补完、角色关系与灵感发散来回应。只有当用户明确要求你"写大纲"或明确要求输出大纲时，才输出完整的新大纲，并使用 <outline_widget>...</outline_widget> 包裹；其他时间不要输出 <outline_widget> 标签。`,
+        `\n【输出大纲时必须严格遵守以下格式，否则大纲窗口无法解析渲染】`,
+        `<outline_widget> 内每个节点由四行组成，字段名（Beat/Scene/Subtext/Think）用英文冒号，Beat 的五个字段用竖线 | 分隔：`,
+        `<outline_widget>`,
+        `Beat: 推演时间|标题|类型|所属故事线|结果`,
+        `Scene: 这一阶段大致发生了什么、推进到哪一步（80-120字）`,
+        `Subtext: 这一节点的引言（15字以内，见下方说明）`,
+        `Think: 创作思考（100-150字）`,
+        `（按剧情弧线给出 6-8 个节点，每个节点重复上述四行结构）`,
+        `</outline_widget>`,
+        `- 推演时间：宏观、相对、粗略的长跨度时间锚（如"初期""数周内""约一两个月后""数月之后"），不要精确到某一天`,
+        `- 类型：主线 / 情感线 / 成长线 / 势力线 / 悬疑线 等`,
+        `- 创作顺序：每个节点先想透 Scene 与 Think，再从已写内容里提炼 title 与引言（但输出仍按 Beat→Scene→Subtext→Think 顺序，不可打乱）`,
+        `- 标题：凝练点题的小标题，形式与长度都放开——意象、动作、一个词或半句话皆可，贴合节点气质即可`,
+        `- 引言（Subtext）：含蓄文艺、有留白的一句或几句话，像卷首题记那样为这段定调，是文学化点睛而非内容总结；可自由取用说书、箴言、史评、心声、民谣、预言、判词等口吻，风格与长短随内容自然生发，直接写引言正文`,
+        `- 至少包含一条【主线】；<outline_widget> 内只放这些字段行，不要写解释性文字或 Markdown。`,
     ].filter(Boolean).join('\n');
 }
 
