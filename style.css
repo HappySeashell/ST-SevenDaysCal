@@ -1456,8 +1456,17 @@ select.sp-input { appearance: none; cursor: pointer; }
     display    : flex;
     align-items: center;
     gap        : 7px;
-    flex-wrap  : wrap;
+    flex-wrap  : nowrap;
     margin-bottom: 6px;
+}
+/* 尾部图标组（面板：注入/锁/删除；楼内：注入/删除）——靠右对齐且永不换行/收缩。
+   前面字段过长时由 .sp-beat-line / .sp-inline-type 截断（见下），图标钉死不动。 */
+.sp-beat-actions {
+    display    : flex;
+    align-items: center;
+    gap        : 7px;
+    flex-shrink: 0;
+    margin-left: auto;
 }
 .sp-beat-index {
     width          : 20px;
@@ -1492,7 +1501,17 @@ select.sp-input { appearance: none; cursor: pointer; }
     border-radius: 99px;
     background   : rgba(79,195,247,0.12);
     color        : #4fc3f7;
+    /* 唯一允许收缩/截断的字段：空间不够时它变「…」，把图标组顶在原位 */
+    min-width    : 0;
+    overflow     : hidden;
+    text-overflow: ellipsis;
+    white-space  : nowrap;
 }
+/* 其余头部字段固定尺寸，不参与收缩——保证收缩只发生在类型字段上 */
+.sp-beat-head > .sp-seq-badge,
+.sp-beat-head > .sp-beat-type,
+.sp-beat-head > .sp-beat-time,
+.sp-beat-head > .sp-line-stall-tag { flex-shrink: 0; }
 .sp-beat-title {
     font-size    : 0.95rem;
     font-weight  : 600;
@@ -1911,7 +1930,7 @@ select.sp-input { appearance: none; cursor: pointer; }
     display      : flex;
     align-items  : center;
     gap          : 5px;
-    flex-wrap    : wrap;
+    flex-wrap    : nowrap;
     margin-bottom: 3px;
 }
 .sp-inline-stage {
@@ -1926,7 +1945,15 @@ select.sp-input { appearance: none; cursor: pointer; }
     border-radius: 99px;
     background   : rgba(128,128,128,0.13);
     opacity      : 0.75;
+    min-width    : 0;
+    overflow     : hidden;
+    text-overflow: ellipsis;
+    white-space  : nowrap;
 }
+.sp-inline-head > .sp-inline-stage,
+.sp-inline-head > .sp-inline-dots,
+.sp-inline-head > .sp-inline-when,
+.sp-inline-head > .sp-inline-stall { flex-shrink: 0; }
 /* ─── Bead level indicator ─────────────────────────── */
 /* A horizontal thread with beads strung on it: ○—○—●—● */
 .sp-inline-dots {
@@ -2378,6 +2405,35 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-inline-line:hover .sp-line-del-one,
 .sp-inline-line .sp-line-del-one:hover { opacity: 1; }
 .sp-inline-line .sp-line-del-one:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); }
+
+/* 锁定切换按钮 —— 仿 .sp-line-del-one 骨架，尺寸/布局一致，颜色语义不同（非危险操作） */
+.sp-line-pin-toggle {
+    width          : 22px;
+    height         : 22px;
+    padding        : 0;
+    border         : none;
+    background     : transparent;
+    color          : var(--sp-subtle);
+    cursor         : pointer;
+    border-radius  : 4px;
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : 0.68rem;
+    flex-shrink    : 0;
+    opacity        : 0;
+    transition     : opacity 0.15s, color 0.15s, background 0.15s;
+}
+.sp-beat:hover .sp-line-pin-toggle { opacity: 1; }
+.sp-line-pin-toggle:hover { color: var(--sp-primary); background: rgba(125, 125, 235, 0.12); }
+/* 已锁定时常驻亮出（不必 hover 才看到锁着没锁着） */
+.sp-line-card.sp-line-pinned .sp-line-pin-toggle { opacity: 0.85; color: var(--sp-primary); }
+
+/* 锁定态卡片：左边框改用主色调、轻微底色区分，一眼看出"保命线" */
+.sp-line-card.sp-line-pinned {
+    border-left-color: var(--sp-primary) !important;
+    background       : rgba(125, 125, 235, 0.05);
+}
 /* Only the FIRST .sp-panel-refresh should absorb margin-left:auto —
    the header already sets that. Sibling refresh buttons stack next to it. */
 .sp-schedule-header .sp-panel-refresh ~ .sp-panel-refresh { margin-left: 0; }

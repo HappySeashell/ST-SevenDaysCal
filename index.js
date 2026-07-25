@@ -463,9 +463,10 @@ function _buildLinesBlockHtml() {
                     <span class="sp-inline-dots">${beadsHtml}</span>
                     ${l.when ? `<span class="sp-inline-when">${escapeHtml(l.when)}</span>` : ''}
                     ${l.stall ? `<span class="sp-line-stall-tag sp-inline-stall">停滞</span>` : ''}
-                    ${agencyBadge(l.agency)}
-                    ${injectBtn}
-                    <button class="sp-line-del-one" data-line-idx="${i}" title="删除这条线"><i class="fa-solid fa-xmark"></i></button>
+                    <span class="sp-beat-actions">
+                        ${injectBtn}
+                        <button class="sp-line-del-one" data-line-idx="${i}" title="删除这条线"><i class="fa-solid fa-xmark"></i></button>
+                    </span>
                 </div>
                 <div class="sp-inline-name">${escapeHtml(l.name)}</div>
                 ${l.desc ? `<div class="sp-inline-desc">${escapeHtml(cleanText(l.desc))}</div>` : ''}
@@ -1155,6 +1156,12 @@ function injectModal() {
         e.stopPropagation();
         const idx = Number($(this).attr('data-line-idx'));
         if (Number.isInteger(idx)) triggerDeleteOneLine(idx);
+    });
+    // Per-line lock/unlock toggle (panel only — inline block shows a read-only marker).
+    $('#sp-lines-list, #chat').on('click', '.sp-line-pin-toggle', function (e) {
+        e.stopPropagation();
+        const idx = Number($(this).attr('data-line-idx'));
+        if (Number.isInteger(idx)) triggerToggleLinePin(idx);
     });
 
     // Inject buttons (event delegation)
@@ -2752,6 +2759,14 @@ function applyLineWidget(body, $btn, editIdx = null) {
             raw = `<storylines_widget>\n${raw}\n\n${block}\n</storylines_widget>`;
         }
     }
+    if (editIdx == null) {
+        // 「间」新增的线默认锁定：不靠正文锚定, 全靠 pin 保命。
+        const parsed = parseLines(raw);
+        if (parsed.length) {
+            parsed[parsed.length - 1].pin = true;
+            raw = linesToRaw(parsed);
+        }
+    }
     localStorage.setItem(key, JSON.stringify({ raw, ts: Date.now() }));
     // Refresh lines view + inline block on latest AI floor
     const html = renderLines(raw);
@@ -3613,8 +3628,21 @@ async function triggerGenerateLines() {
     // Manual refresh: clear cache so LLM generates fresh instead of just echoing
     // the previous raw. Auto-advance path (CHARACTER_MESSAGE_RENDERED) calls
     // runGenerateLines(true) directly and preserves previousRaw for continuity.
+    // Locked lines survive even a full regenerate — 全程保护：清空时只留锁定线,
+    // runGenerateLines 会把它们当 previousRaw 喂给 AI 延续, 写回时 mergePinnedLines 兜底。
     const key = getLinesCacheKey();
-    if (key) localStorage.removeItem(key);
+    if (key) {
+        let pinnedOnly = [];
+        try {
+            const saved = JSON.parse(localStorage.getItem(key) || 'null');
+            if (saved?.raw) pinnedOnly = parseLines(saved.raw).filter(l => l.pin);
+        } catch { /* ignore corrupt cache */ }
+        if (pinnedOnly.length) {
+            localStorage.setItem(key, JSON.stringify({ raw: linesToRaw(pinnedOnly), ts: Date.now() }));
+        } else {
+            localStorage.removeItem(key);
+        }
+    }
     cachedLines = null;
     isGeneratingLines = true;
     setLinesBody(loadingHtml('正在推演线', 'sp-abort-lines'));
@@ -3698,6 +3726,27 @@ async function triggerDeleteOneLine(idx) {
     showToast('已删除这条线');
 }
 
+// 锁定 / 解锁单条线（面板按钮，内联块只读不出现这个按钮）。
+function triggerToggleLinePin(idx) {
+    const key = getLinesCacheKey();
+    if (!key) return;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch {}
+    const raw = saved?.raw || '';
+    if (!raw) return;
+    const parsed = parseLines(raw);
+    const target = parsed[idx];
+    if (!target) { showToast('这条线已不存在，请刷新面板', null, true); return; }
+    target.pin = !target.pin;
+    const newRaw = linesToRaw(parsed);
+    localStorage.setItem(key, JSON.stringify({ raw: newRaw, ts: Date.now() }));
+    const html = renderLines(newRaw);
+    cachedLines = html;
+    if (linesMode) setLinesBody(html);
+    syncLatestInlineBlock();
+    showToast(target.pin ? '已锁定这条线' : '已解锁这条线');
+}
+
 async function runGenerateLines(silent = false) {
     const viewSnap = currentView;
     const charSnap = charViewName;
@@ -3729,8 +3778,9 @@ async function runGenerateLines(silent = false) {
             return;
         }
 
-        const html   = renderLines(raw);
-        if (cacheKey) localStorage.setItem(cacheKey, JSON.stringify({ raw, ts: Date.now() }));
+        const merged = mergePinnedLines(previousRaw, raw);
+        const html   = renderLines(merged);
+        if (cacheKey) localStorage.setItem(cacheKey, JSON.stringify({ raw: merged, ts: Date.now() }));
         isGeneratingLines = false;
         linesAbortController = null;
         cachedLines = html;
@@ -3885,15 +3935,17 @@ function parseLines(raw) {
             const parts = t.replace(/^Line\s*:\s*/i, '').split('|');
             const agencyRaw = (parts[5] || '').trim().toLowerCase();
             const stallRaw  = (parts[6] || '').trim().toLowerCase();
+            const pinRaw    = (parts[7] || '').trim().toLowerCase();
             cur = {
                 name  : (parts[0] || '').trim(),
                 type  : (parts[1] || '').trim(),
                 stage : (parts[2] || '').trim(),
                 level : (parts[3] || '').trim(),
                 when  : (parts[4] || '').trim(),
-                // Backward-compat migration: missing agency → 'world', missing stall → false
+                // Backward-compat migration: missing agency → 'world', missing stall/pin → false
                 agency: agencyRaw === 'player' ? 'player' : 'world',
                 stall : stallRaw === 'true' || stallRaw === '1' || stallRaw === 'yes',
+                pin   : pinRaw === 'true' || pinRaw === '1' || pinRaw === 'yes',
                 desc  : '',
                 next  : '',
             };
@@ -3907,17 +3959,35 @@ function parseLines(raw) {
     return lines;
 }
 
-// ─── Agency SVG icons (person / globe) ────────────────────────────────────────
-// Pure stroke, currentColor, 20×20 viewBox — inherits container text color.
-const AGENCY_ICONS = {
-    player: '<svg class="sp-agency-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-label="需推动"><circle cx="10" cy="7" r="3"/><path d="M4 17 c1-3 4-5 6-5 s5 2 6 5"/></svg>',
-    world : '<svg class="sp-agency-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-label="自演化"><circle cx="10" cy="10" r="7"/><ellipse cx="10" cy="10" rx="3" ry="7"/><path d="M3 10 h14"/></svg>',
-};
-const AGENCY_LABELS = { player: '需推动', world: '自演化' };
+// parseLines 的逆：把线对象数组序列化回 <storylines_widget> raw。
+// 字段与 parseLines 严格对称：Line: name|type|stage|level|when|agency|stall|pin
+function linesToRaw(lines) {
+    const blocks = (Array.isArray(lines) ? lines : []).map((l) => {
+        const cells = [
+            l.name || '', l.type || '', l.stage || '', l.level || '', l.when || '',
+            l.agency === 'player' ? 'player' : 'world',
+            l.stall ? 'true' : 'false',
+            l.pin ? 'true' : 'false',
+        ];
+        const rows = [`Line: ${cells.join('|')}`];
+        if (l.desc) rows.push(`Desc: ${l.desc}`);
+        if (l.next) rows.push(`Next: ${l.next}`);
+        return rows.join('\n');
+    });
+    return `<storylines_widget>\n${blocks.join('\n\n')}\n</storylines_widget>`;
+}
 
-function agencyBadge(agency) {
-    const key = agency === 'player' ? 'player' : 'world';
-    return `<span class="sp-agency-badge sp-agency-${key}" title="${AGENCY_LABELS[key]}">${AGENCY_ICONS[key]}</span>`;
+// 锁定保护：把 oldRaw 里 pin 的线并进 AI 新输出。无锁定线时原样返回（零副作用）。
+function mergePinnedLines(oldRaw, aiRaw) {
+    const oldPinned = parseLines(oldRaw).filter(l => l.pin);
+    if (!oldPinned.length) return aiRaw;
+    const newLines = parseLines(aiRaw);
+    for (const p of oldPinned) {
+        const hit = newLines.find(n => n.name && n.name === p.name);
+        if (hit) hit.pin = true;       // AI 保留 → 采纳其推进，重新标 pin
+        else newLines.push({ ...p });   // AI 删了 → 原样并回（保命）
+    }
+    return linesToRaw(newLines);
 }
 
 const STAGE_COLORS = {
@@ -3945,6 +4015,7 @@ function renderLines(raw) {
         if (l.next) injectParts.push(prefixNext(l.next, l.stall));
         const injectBtn = makeInjectBtn(injectParts.join('\n'));
         const stallCls  = l.stall ? ' sp-line-stall' : '';
+        const pinCls    = l.pin ? ' sp-line-pinned' : '';
         const stallTag  = l.stall ? `<span class="sp-line-stall-tag">停滞</span>` : '';
         const nextRow   = l.next
             ? `<div class="sp-line-next ${l.stall ? 'sp-line-next-stall' : 'sp-line-next-go'}">
@@ -3953,7 +4024,7 @@ function renderLines(raw) {
                </div>`
             : '';
         return `
-        <div class="sp-beat sp-line-card${stallCls}" data-line-idx="${i}" style="border-left:3px solid ${stageColor}30">
+        <div class="sp-beat sp-line-card${stallCls}${pinCls}" data-line-idx="${i}" style="border-left:3px solid ${stageColor}30">
             <div class="sp-beat-head">
                 <span class="sp-seq-badge">#${i + 1}</span>
                 <span class="sp-beat-type" style="color:${stageColor}">${escapeHtml(l.stage)}</span>
@@ -3961,9 +4032,11 @@ function renderLines(raw) {
                 <span class="sp-beat-time">${beadsHtml}</span>
                 ${l.when ? `<span class="sp-beat-time">${escapeHtml(l.when)}</span>` : ''}
                 ${stallTag}
-                ${agencyBadge(l.agency)}
-                ${injectBtn}
-                <button class="sp-line-del-one" data-line-idx="${i}" title="删除这条线"><i class="fa-solid fa-xmark"></i></button>
+                <span class="sp-beat-actions">
+                    ${injectBtn}
+                    <button class="sp-line-pin-toggle" data-line-idx="${i}" title="${l.pin ? '解锁' : '锁定'}"><i class="fa-solid fa-${l.pin ? 'lock' : 'lock-open'}"></i></button>
+                    <button class="sp-line-del-one" data-line-idx="${i}" title="删除这条线"><i class="fa-solid fa-xmark"></i></button>
+                </span>
             </div>
             <div class="sp-beat-title">${escapeHtml(l.name)}</div>
             ${l.desc ? `<div class="sp-beat-scene">${escapeHtml(cleanText(l.desc))}</div>` : ''}
@@ -4682,6 +4755,12 @@ function onDragStart(e) {
 
 function onDragMove(e) {
     if (!dragState) return;
+    // Self-heal: if the mouse left the window (or alt-tabbed away) mid-drag,
+    // the matching mouseup never reaches document and dragState gets stuck
+    // forever — every future mousemove keeps dragging the sheet until reload.
+    // e.buttons===0 means no mouse button is currently held, regardless of
+    // whether we ever received the mouseup event for it.
+    if (e.buttons === 0 && !e.touches) { onDragEnd(); return; }
     e.preventDefault();
     const cx = e.touches ? e.touches[0].clientX : e.clientX;
     const cy = e.touches ? e.touches[0].clientY : e.clientY;
