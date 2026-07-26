@@ -166,10 +166,27 @@ export async function listTemplates() {
         .sort((a, b) => Number(a.uid) - Number(b.uid));
 }
 
+// 新建一条模板 WI 条目。优先用 context 的 worldInfoEntry.create；老版 ST 的 context
+// 上没有 worldInfoEntry 对象（旧版会报 "reading 'create' of undefined"），退回手动
+// 分配 uid + 最小条目模板。本书为构画私有、永不注入，字段够读写即可。
+function createTemplateEntry(ctx, data) {
+    if (ctx.worldInfoEntry?.create) return ctx.worldInfoEntry.create(TEMPLATE_BOOK, data);
+    let uid = 0;
+    while (uid in data.entries) uid++;
+    const entry = {
+        uid, key: [], keysecondary: [], comment: '', content: '',
+        constant: false, vectorized: false, selective: true, selectiveLogic: 0,
+        order: 100, position: 0, disable: true, excludeRecursion: false,
+        preventRecursion: false, probability: 100, useProbability: true, depth: 4,
+    };
+    data.entries[uid] = entry;
+    return entry;
+}
+
 export async function addTemplate(title, text) {
     const ctx = getContext();
     const data = await ensureBook();
-    const entry = ctx.worldInfoEntry.create(TEMPLATE_BOOK, data);
+    const entry = createTemplateEntry(ctx, data);
     if (!entry) throw new Error('无法创建模板条目');
     entry.comment = String(title || '').trim();
     entry.content = String(text || '');

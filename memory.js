@@ -38,6 +38,7 @@ let _callApi = null;
 // ─── State ───────────────────────────────────────────────────────────────────
 let _queue = [];
 let _running = false;
+let _currentJob = null;           // job currently in handleJob (must be declared: strict-mode ES module)
 let _abortController = null;      // reserved for rebuild flow (see abortRebuild)
 let _jobAbortController = null;   // shared signal for per-job fetches; aborted on CHAT_CHANGED
 

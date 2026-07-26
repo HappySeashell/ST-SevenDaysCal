@@ -144,6 +144,8 @@ const isMobile = () => window.innerWidth <= 640;
 // dev workflows), we need to be able to unregister and rewire cleanly.
 let _themeObserver = null;
 const _stListeners = { chat: null, char: null };
+// 柏宝书加载顺序不固定：就绪事件监听句柄（幂等注册，见 jQuery init）
+let _bbbReadyListener = null;
 
 jQuery(async () => {
     injectExtButton();
@@ -257,6 +259,16 @@ jQuery(async () => {
         appendLinesInlineBlock(messageId, shouldAdvance);
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.char);
+    // 柏宝书就绪事件：加载顺序不固定，早期同步检测可能扑空而误报"未就绪"。
+    // 柏宝书文档推荐监听 st-baibai-book:ready 兜底——就绪后清掉"仅警告一次"的闩，
+    // 并在面板开着且选了柏宝书源时立刻把状态刷成"已就绪"。
+    if (_bbbReadyListener) window.removeEventListener('st-baibai-book:ready', _bbbReadyListener);
+    _bbbReadyListener = () => {
+        _bbbWarned = false;
+        getMemText._bbbWarned = false;
+        if (getSettings().useBaiBaiBook) { try { renderMemorySection(); } catch {} }
+    };
+    window.addEventListener('st-baibai-book:ready', _bbbReadyListener);
     // Track ST theme changes via MutationObserver on documentElement style
     _themeObserver?.disconnect();
     _themeObserver = new MutationObserver(() => {
@@ -1654,7 +1666,7 @@ async function memoryPreCheckConfirm() {
             return spConfirm({
                 title  : '柏宝书未就绪',
                 body   : '当前选的是柏宝书记忆源，但检测不到柏宝书 API。\n继续生成会没有历史记忆注入。',
-                note   : '可以先去插件面板启用柏宝书，或临时关掉本插件的"使用柏宝书作为记忆源"。',
+                note   : '请把柏宝书更新到最新版（旧版没有读取接口），或临时关掉本插件的"使用柏宝书作为记忆源"。',
                 confirmText: '仍然继续',
                 cancelText : '取消',
             });
@@ -4198,7 +4210,7 @@ function renderMemorySection() {
             } catch {}
             $('#sp-mem-bbb-status').html(`<i class="fa-solid fa-circle-check" style="color:var(--cardhub-accent,#7c9)"></i> ${escapeHtml(coverageMsg)}`);
         } else {
-            $('#sp-mem-bbb-status').html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 柏宝书 API 未就绪；点 / 线 / 面 / 间 生成时不会注入历史记忆');
+            $('#sp-mem-bbb-status').html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 检测不到柏宝书 API：请确认已安装并把柏宝书更新到最新版（旧版无读取接口）；点 / 线 / 面 / 间 生成时不会注入历史记忆');
         }
         return;
     }
