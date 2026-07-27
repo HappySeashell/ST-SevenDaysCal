@@ -1,0 +1,352 @@
+// store.js — 构画统一存储层（点/线/面/间 → chat_metadata）
+//
+// 背景：点(schedule)/线(lines)/面(outline)/面讨论(creative-chat)/间(space-chat) 原本散落在
+// localStorage（key = sp-cache-{chatId}-{kind}-{scope}，见 state.js），换浏览器/清缓存就丢，
+// 且从不随 chat 文件走、不跨设备。本模块把它们收进 chat_metadata 的单个顶层 key `sp-store`，
+// 跟 chat 文件一起被酒馆序列化到服务端 data/ 目录——脱离浏览器、跨设备、只留最新版。
+//
+// 记忆(sp-memory)、棱永久层(sp-theater) 各自已在 chat_metadata 里独立成 key、各有 schema，
+// 本模块不碰它们；锚(收藏)是全局的、走 /api/files，也不在这。
+//
+// 数据形状（子键 = `{kind}-{scope}`，scope = user | char-<encodeURIComponent(name)>）：
+//   chat_metadata['sp-store'] = {
+//     version: 1,
+//     data: {
+//       'schedule-user'      : { raw, userName, ts },
+//       'outline-user'       : { raw, ts },
+//       'outline-char-Alice' : { raw, ts },
+//       'lines-user'         : { raw, ts },
+//       'creative-chat-user' : [ { role, content }, ... ],
+//       'space-chat-user'    : [ ... ],
+//     }
+//   }
+//
+// 红线：存储管理面板只能增删构画自己拥有的 chat_metadata key（见 OWN_KEYS）。
+// baibai_book / variables / LWB_SNAP 等是别的插件的数据，一律只读、绝不删。
+
+import { getContext } from '../../../extensions.js';
+
+const STORE_KEY      = 'sp-store';
+const SCHEMA_VERSION = 1;
+
+// 构画自己拥有的 chat_metadata 顶层 key。面板据此区分"构画 vs 别的插件"，也是 clearOwnKey 的白名单。
+export const OWN_KEYS = ['sp-store', 'sp-memory', 'sp-theater'];
+
+// 收进 sp-store 的 6 类数据（theater-draft 是设备相关的草稿，留 localStorage，不在此列）。
+// dashed（虚线·冷知识）不分视角，运行时固定走 user scope（子键恒为 dashed-user）。
+// 顺序无所谓，但注意没有任何一个是另一个的前缀——子键解析(usageByKind/clearKind)依赖这点。
+export const KINDS = ['schedule', 'outline', 'lines', 'creative-chat', 'space-chat', 'dashed'];
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  scope / 子键
+// ═══════════════════════════════════════════════════════════════════════════
+
+// 复用 state.js 的 scope 规则：char 视角且有名字 → char-<enc>，否则 user。
+function scopeOf(view, charName) {
+    // .trim() 对齐 state.js normalizeScopePart，保证运行时子键与迁移搬过来的子键完全一致。
+    return (view === 'char' && charName)
+        ? `char-${encodeURIComponent(String(charName).trim())}`
+        : 'user';
+}
+
+// 子键 = `{kind}-{scope}`。注意 schedule 在这里**也带 kind 前缀**（`schedule-user`），
+// 与 localStorage 时代的裸 key（`sp-cache-{chatId}-user`）不同——迁移时由 store 层负责换算。
+export function subKey(kind, view = 'user', charName = '') {
+    return `${kind}-${scopeOf(view, charName)}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  chat_metadata 存取（照 theater.js meta()/persist() 同款）
+// ═══════════════════════════════════════════════════════════════════════════
+
+function freshStore() {
+    return { version: SCHEMA_VERSION, data: {} };
+}
+
+// 取当前 chat 的 sp-store。无 chat 时返回 null。
+// create=false（读路径）：sp-store 不存在就返回 null，**绝不实例化**——否则"读一下"就会往
+//   chatMetadata 塞个空壳、把 chat 存档写脏，还会让迁移误判"metadata 已有数据"。
+// create=true（写路径）：按需初始化 + 版本对齐。
+// 每次现取 getContext()，不缓存——CHAT_CHANGED 会换掉 chatMetadata 引用，缓存会读到旧 chat。
+function store(create = false) {
+    const ctx = getContext?.();
+    if (!ctx || !ctx.chatId) return null;
+    const cm = ctx.chatMetadata;
+    if (!cm) return null;
+    let s = cm[STORE_KEY];
+    if (!s || typeof s !== 'object') {
+        if (!create) return null;
+        s = cm[STORE_KEY] = freshStore();
+    }
+    if (!s.data || typeof s.data !== 'object') s.data = {};
+    if (s.version !== SCHEMA_VERSION) {
+        // v1 是初版，无历史结构要迁移；未来 bump 时在此补齐。
+        s.version = SCHEMA_VERSION;
+        if (create) persist();
+    }
+    return s;
+}
+
+function persist() {
+    getContext?.()?.saveMetadataDebounced?.();
+}
+
+// sp-store 顶层 key 是否已存在（不含内容判断，也不实例化）。
+export function hasStore() {
+    const cm = getContext?.()?.chatMetadata;
+    return !!(cm && cm[STORE_KEY] && typeof cm[STORE_KEY] === 'object');
+}
+
+// 当前 chat 的 sp-store 是否**含真实点线面间数据**（忽略空壳）。迁移冲突检测用这个，不用 hasStore。
+export function hasAnyData() {
+    const s = store(false);
+    if (!s) return false;
+    return Object.keys(s.data).some(sk => kindOfSubKey(sk));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  读 / 写 / 删（对外主 API，替换掉散落的 localStorage 调用）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// value 直接是对象/数组（不再 JSON.stringify）——chat_metadata 存活对象，由酒馆存档时统一序列化。
+
+export function readData(kind, view = 'user', charName = '') {
+    const s = store();
+    if (!s) return null;
+    const v = s.data[subKey(kind, view, charName)];
+    return v == null ? null : v;
+}
+
+export function writeData(kind, view, charName, value) {
+    const s = store(true);
+    if (!s) return false;
+    if (value == null) { removeData(kind, view, charName); return true; }
+    s.data[subKey(kind, view, charName)] = value;
+    persist();
+    return true;
+}
+
+export function removeData(kind, view = 'user', charName = '') {
+    const s = store();
+    if (!s) return;
+    const k = subKey(kind, view, charName);
+    if (k in s.data) { delete s.data[k]; persist(); }
+}
+
+// 按原始子键直接写（迁移时用——迁移已经算好了 `{kind}-{scope}` 子键，不必再拆 view/charName）。
+export function writeRaw(subKeyStr, value) {
+    const s = store(true);
+    if (!s || !subKeyStr) return false;
+    s.data[subKeyStr] = value;
+    persist();
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  用量统计 / 清理（供存储管理面板）
+// ═══════════════════════════════════════════════════════════════════════════
+
+// UTF-16 粗估字节，跟 anchor/theater 的 formatBytes 口径一致。
+function valueBytes(v) {
+    try { return (JSON.stringify(v) || '').length * 2; }
+    catch { return 0; }
+}
+
+// 子键 `{kind}-{scope}` → kind。kind 里 creative-chat/space-chat 含连字符，靠已知 KINDS 前缀匹配，
+// 且 KINDS 两两互不为前缀，故匹配唯一。
+function kindOfSubKey(sk) {
+    return KINDS.find(k => sk === k || sk.startsWith(k + '-')) || null;
+}
+
+// 本 chat 各 kind 用量：{ schedule, outline, lines, 'creative-chat', 'space-chat' } → 字节数。
+export function usageByKind() {
+    const out = {};
+    for (const k of KINDS) out[k] = 0;
+    const s = store();
+    if (!s) return out;
+    for (const [sk, v] of Object.entries(s.data)) {
+        const kind = kindOfSubKey(sk);
+        if (!kind) continue;
+        out[kind] += valueBytes(v) + sk.length * 2;
+    }
+    return out;
+}
+
+export function storeTotalBytes() {
+    return Object.values(usageByKind()).reduce((a, b) => a + b, 0);
+}
+
+// 清掉某 kind 的所有 scope 子键（我/TA 视角全清）。返回删除条数。
+export function clearKind(kind) {
+    const s = store();
+    if (!s) return 0;
+    let n = 0;
+    for (const sk of Object.keys(s.data)) {
+        if (sk === kind || sk.startsWith(kind + '-')) { delete s.data[sk]; n++; }
+    }
+    if (n) persist();
+    return n;
+}
+
+// 某个构画自有顶层 key（sp-store / sp-memory / sp-theater）当前占用字节。
+export function ownKeyBytes(key) {
+    const cm = getContext?.()?.chatMetadata;
+    if (!cm || cm[key] == null) return 0;
+    return valueBytes(cm[key]) + String(key).length * 2;
+}
+
+// 整体删掉一个构画自有 key（面板"清空本聊天全部点线面间 / 清空记忆 / 清空棱永久"用）。
+// 安全阀：只允许 OWN_KEYS 里的 key，别的插件的数据一律拒删。
+export function clearOwnKey(key) {
+    if (!OWN_KEYS.includes(key)) return false;
+    const cm = getContext?.()?.chatMetadata;
+    if (!cm || cm[key] == null) return false;
+    delete cm[key];
+    persist();
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  一次性迁移：localStorage(sp-cache-*) → chat_metadata['sp-store']
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 老用户的点/线/面/间散在 localStorage（state.js buildCacheKey：
+//   schedule 裸键 `sp-cache-{chatId}-{scope}`，其余 `sp-cache-{chatId}-{kind}-{scope}`，
+//   scope = user | char-<enc>）。首次切进某 chat 时把该 chat 的**所有 scope**搬进
+//   sp-store，再删 localStorage 副本。theater-draft 是设备相关草稿，明确跳过。
+//
+// 由 index.js 在 CHAT_CHANGED 里、**早于各视图 load** 同步调用。返回值告诉 index.js
+// 发生了什么；唯 'conflict'（云端/本机各一份且不同）需 index.js 事后弹窗决策——
+// 迁移函数本身绝不弹窗、绝不在冲突时改动任何一边数据。
+
+const LEGACY_PREFIX = 'sp-cache-';
+// 会以「前缀段」出现在裸键之后的非 schedule kind（theater-draft 也列出，用于识别→跳过）。
+const LEGACY_KINDS  = ['outline', 'lines', 'creative-chat', 'space-chat'];
+
+function isValidScope(scope) {
+    return scope === 'user' || scope.startsWith('char-');
+}
+
+// 把 `sp-cache-{chatId}-` 之后的剩余段解析成 { kind, scope }。认不出合法 scope
+// （多半是 chatId 撞前缀的别家键）或命中 theater-draft → 返回 null（跳过）。
+function parseLegacyRest(rest) {
+    for (const k of LEGACY_KINDS) {
+        if (rest === k || rest.startsWith(k + '-')) {
+            const scope = rest.slice(k.length + 1);
+            return isValidScope(scope) ? { kind: k, scope } : null;
+        }
+    }
+    if (rest === 'theater-draft' || rest.startsWith('theater-draft-')) return null; // 设备草稿，不迁
+    return isValidScope(rest) ? { kind: 'schedule', scope: rest } : null;           // 裸键 = schedule
+}
+
+// 扫出本 chat 的所有 legacy 键：[{ key, subKey, value }]（value 已 JSON.parse）。
+function scanLegacy(chatId) {
+    const out = [];
+    const prefix = `${LEGACY_PREFIX}${chatId}-`;
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith(prefix)) continue;
+        const parsed = parseLegacyRest(key.slice(prefix.length));
+        if (!parsed) continue;
+        let value;
+        try { value = JSON.parse(localStorage.getItem(key)); }
+        catch { continue; } // 损坏 → 跳过（留在 localStorage，不误删）
+        if (value == null) continue;
+        out.push({ key, subKey: `${parsed.kind}-${parsed.scope}`, value });
+    }
+    return out;
+}
+
+function tsOf(v) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && Number.isFinite(+v.ts)) return +v.ts;
+    return 0;
+}
+
+// legacy 与云端构画子键集合是否**完全一致**（子键集合 + 各自值 JSON 串都相等）。
+function legacyEqualsCloud(legacy, cloudData) {
+    const cloudKeys = Object.keys(cloudData).filter(kindOfSubKey);
+    if (cloudKeys.length !== legacy.length) return false;
+    for (const it of legacy) {
+        if (!(it.subKey in cloudData)) return false;
+        if (JSON.stringify(cloudData[it.subKey]) !== JSON.stringify(it.value)) return false;
+    }
+    return true;
+}
+
+// 概况（给冲突弹窗）：{ kinds:[kind...], latestTs, count }。中文标签由 index.js 映射。
+function summarizeData(dataMap) {
+    const kinds = new Set();
+    let latestTs = 0, count = 0;
+    for (const [sk, v] of Object.entries(dataMap)) {
+        const kind = kindOfSubKey(sk);
+        if (!kind) continue;
+        kinds.add(kind); count++;
+        const ts = tsOf(v);
+        if (ts > latestTs) latestTs = ts;
+    }
+    return { kinds: [...kinds], latestTs, count };
+}
+
+function summarizeLegacy(legacy) {
+    const map = {};
+    for (const it of legacy) map[it.subKey] = it.value;
+    return summarizeData(map);
+}
+
+// 主迁移。**同步**，返回：
+//   { status:'none' }                            localStorage 无本 chat 数据
+//   { status:'migrated', count }                 云端空 → 搬入 + 清 localStorage
+//   { status:'equal', count }                    两边一致 → 静默清 localStorage
+//   { status:'conflict', legacy, cloud, local }  两边都有且不同 → **不动数据**，交 index.js 弹窗
+export function migrateChatFromLocalStorage(chatId) {
+    if (!chatId) return { status: 'none' };
+    const legacy = scanLegacy(chatId);
+    if (!legacy.length) return { status: 'none' };
+
+    const s = store(true);
+    if (!s) return { status: 'none' };
+
+    const cloudHasData = Object.keys(s.data).some(kindOfSubKey);
+    if (!cloudHasData) {
+        for (const it of legacy) s.data[it.subKey] = it.value;
+        persist();
+        legacy.forEach(it => localStorage.removeItem(it.key));
+        return { status: 'migrated', count: legacy.length };
+    }
+    if (legacyEqualsCloud(legacy, s.data)) {
+        legacy.forEach(it => localStorage.removeItem(it.key));
+        return { status: 'equal', count: legacy.length };
+    }
+    return {
+        status: 'conflict',
+        legacy,
+        cloud: summarizeData(s.data),
+        local: summarizeLegacy(legacy),
+    };
+}
+
+// 冲突决策：用户选「保留本机」→ 清掉云端构画子键、写入 legacy、删 localStorage。
+export function applyLegacyOverCloud(legacy) {
+    const s = store(true);
+    if (!s || !Array.isArray(legacy)) return false;
+    for (const sk of Object.keys(s.data)) if (kindOfSubKey(sk)) delete s.data[sk];
+    for (const it of legacy) s.data[it.subKey] = it.value;
+    persist();
+    legacy.forEach(it => localStorage.removeItem(it.key));
+    return true;
+}
+
+// 冲突决策：用户选「保留云端」→ 云端不动，只丢掉 localStorage 副本。
+export function discardLegacy(legacy) {
+    if (!Array.isArray(legacy)) return;
+    legacy.forEach(it => localStorage.removeItem(it.key));
+}
+
+export function formatBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+export { STORE_KEY, SCHEMA_VERSION };

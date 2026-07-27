@@ -21,14 +21,12 @@ const THEATER_KEY   = 'sp-theater';     // chat_metadata 永久层 key
 const SCHEMA_VERSION = 1;
 const THEATER_DRAFT_CAP = 10;           // 草稿 sliding window 上限
 const TEMPLATE_BOOK = '构画-棱-小剧场模板';   // 专用世界书名（横杠命名，避开文件名 sanitize）
-const CACHE_WARN_BYTES = 4 * 1024 * 1024;    // 超此值提示清理
 
 // ─── 依赖注入 ─────────────────────────────────────────────────────────────────
 let _getSettings = () => ({
     theaterStylePrompt   : '',
     theaterFewShot       : '',
     theaterBeautifyPrompt: '',
-    theaterCacheWarnBytes: CACHE_WARN_BYTES,
 });
 let _callWriteApi    = null;   // (messages, {maxTokens, signal}) => Promise<string>
 let _callBeautifyApi = null;   // (messages, {maxTokens, signal}) => Promise<string>
@@ -197,6 +195,27 @@ export async function addTemplate(title, text) {
     return entryToTemplate(entry.uid, entry);
 }
 
+// 批量新增：一次 ensureBook + 循环 create（复用同一 data 对象，uid 分配互不冲突）+ **一次** saveWorldInfo。
+// 上千条时逐条 addTemplate 会触发上千次 load/save，必卡；批量把磁盘 I/O 收敛成一次。
+// items: [{ title, text }]。返回成功入库条数。
+export async function addTemplatesBatch(items) {
+    const list = (Array.isArray(items) ? items : []).filter(it => it && (String(it.title || '').trim() || String(it.text || '').trim()));
+    if (!list.length) return 0;
+    const ctx = getContext();
+    const data = await ensureBook();
+    for (const it of list) {
+        const entry = createTemplateEntry(ctx, data);
+        if (!entry) continue;
+        entry.comment  = String(it.title || '').trim();
+        entry.content  = String(it.text || '');
+        entry.disable  = true;
+        entry.key      = [];
+        entry.constant = false;
+    }
+    await ctx.saveWorldInfo(TEMPLATE_BOOK, data, true);
+    return list.length;
+}
+
 export async function updateTemplate(uid, title, text) {
     const ctx = getContext();
     const data = await ctx.loadWorldInfo(TEMPLATE_BOOK);
@@ -216,14 +235,30 @@ export async function deleteTemplate(uid) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  缓存治理（sp- 前缀）
+//  本机缓存治理（localStorage 里的「设备相关」键：界面位置 + 棱草稿）
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// 2.0.0 起点/线/面/间产物已迁进 chat_metadata，localStorage 只该留设备相关的东西：
+//   · 界面位置    sp-fab-pos / sp-outline-chat-h / sp-pos / sp-size
+//   · 棱草稿      sp-cache-{chatId}-theater-draft-user（滑窗草稿，不跨设备）
+// **绝不能**再无脑清所有 sp- 键：老用户没访问过的聊天，其点/线/面/间还以
+// sp-cache-{chatId}-{kind}-{scope} 的形态躺在 localStorage 里、等 CHAT_CHANGED 懒迁移；
+// 若在此被清就是数据丢失。故 isDeviceLocalKey 精确圈定「界面位置 + 棱草稿」，其余一律不碰。
+
+const UI_LOCAL_KEYS = ['sp-fab-pos', 'sp-outline-chat-h', 'sp-pos', 'sp-size'];
+
+function isDeviceLocalKey(k) {
+    if (!k) return false;
+    if (UI_LOCAL_KEYS.includes(k)) return true;
+    // 棱草稿：sp-cache-{chatId}-theater-draft-user（唯一带 theater-draft 段的 sp-cache 键）
+    return k.startsWith('sp-cache-') && /-theater-draft(-|$)/.test(k);
+}
 
 export function pluginCacheBytes() {
     let bytes = 0;
     for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (!k || !k.startsWith('sp-')) continue;
+        if (!isDeviceLocalKey(k)) continue;
         const v = localStorage.getItem(k) || '';
         bytes += (k.length + v.length) * 2; // UTF-16
     }
@@ -234,17 +269,10 @@ export function clearPluginCache() {
     const doomed = [];
     for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.startsWith('sp-')) doomed.push(k);
+        if (isDeviceLocalKey(k)) doomed.push(k);
     }
     doomed.forEach(k => localStorage.removeItem(k));
     return doomed.length;
-}
-
-// 超阈值返回 { over:true, bytes } 供 index.js 弹 toast；否则 { over:false }
-export function checkCacheSize() {
-    const warnAt = Number(_getSettings().theaterCacheWarnBytes) || CACHE_WARN_BYTES;
-    const bytes = pluginCacheBytes();
-    return { over: bytes > warnAt, bytes, warnAt };
 }
 
 export function formatBytes(bytes) {

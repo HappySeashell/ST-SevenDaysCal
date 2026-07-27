@@ -177,7 +177,10 @@ function getAiFloors() {
     const out = [];
     for (let i = 0; i < chat.length; i++) {
         const m = chat[i];
-        if (m && !m.is_user) out.push({ mesid: String(i), text: stripTags(m.mes || '', stripOpts) });
+        if (m && !m.is_user) {
+            const raw = m.mes || '';
+            out.push({ mesid: String(i), text: stripTags(raw, stripOpts), rawLen: raw.length });
+        }
     }
     return out;
 }
@@ -207,6 +210,21 @@ function getStableGroups() {
 // Hash the combined text of a group's floors — invalidates on any reroll/edit
 function groupHash(group) {
     return hashStr(group.floors.map(f => f.text).join('\x1f'));
+}
+
+// 判定「这组楼有实打实的原文、但净化后几乎空了」——典型是卡片把正文全裹在自定义标签里
+// （如 <gametxt>），而保留标签默认只留 content，导致净化后正文被清空、摘要生不出来。
+// 与「模型没返回」区分开：这是确定性的净化结果，不该白白重试/让人去调模型。
+// 阈值：原文合计够长（>= 楼数*40 字符，排除本就没内容的空组）但净化后去空白后不足 20 字符。
+function isStrippedEmpty(group) {
+    const floors = group.floors || [];
+    if (!floors.length) return false;
+    let rawTotal = 0, netTotal = 0;
+    for (const f of floors) {
+        rawTotal += Number(f.rawLen) || 0;
+        netTotal += String(f.text || '').replace(/\s+/g, '').length;
+    }
+    return rawTotal >= floors.length * 40 && netTotal < 20;
 }
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
@@ -325,6 +343,14 @@ async function runL0(groupKey) {
     const existing = m.L0[groupKey];
     if (existing && existing.hash === hash) return;
 
+    // 净化后正文几乎为空：确定性结果，不调模型、不算模型失败。标记后直接返回，
+    // 面板据此提示用户去查「保留标签」设置（多半正文被裹在自定义标签里）。
+    if (isStrippedEmpty(group)) {
+        recordStrippedEmpty(groupKey);
+        if (m.L0[groupKey]) delete m.L0[groupKey];
+        return;
+    }
+
     // Find previous group's summary for context
     const idx = groups.findIndex(g => g.key === groupKey);
     let prevSummary = '';
@@ -370,12 +396,21 @@ function recordFailure(groupKey, err) {
     const rec = m.failed[groupKey] || { count: 0 };
     rec.count += 1;
     rec.lastErr = String(err?.message || err);
+    delete rec.stripped;                 // 这次是真·模型失败，清掉可能残留的净化空标记
     m.failed[groupKey] = rec;
     m.system.consecutiveFails += 1;
     m.system.lastError = rec.lastErr;
     if (rec.count >= 3 || m.system.consecutiveFails >= 3) {
         m.system.paused = true;
     }
+}
+
+// 净化后正文几乎为空：直接标成 permaFailed（count=3，不再重试），但打 stripped 标记与
+// 模型失败区分，且**不触发全局暂停/consecutiveFails**——它不是模型的错，别让用户去调模型。
+function recordStrippedEmpty(groupKey) {
+    const m = meta();
+    m.failed[groupKey] = { count: 3, lastErr: '净化后正文几乎为空，请重查标签设置', stripped: true };
+    m.system.lastError = '净化后正文几乎为空，请重查标签设置';
 }
 
 // ─── L1 compression ──────────────────────────────────────────────────────────
@@ -433,9 +468,10 @@ export function getHealthReport() {
     const floors = getAiFloors();
     const totalGroups = groups.length;
 
-    let withL0 = 0, permaFailed = 0, pending = 0;
+    let withL0 = 0, permaFailed = 0, pending = 0, strippedEmpty = 0;
     for (const g of groups) {
         if (m.L0[g.key] && m.L0[g.key].hash === groupHash(g)) withL0++;
+        else if (m.failed[g.key]?.stripped) strippedEmpty++;
         else if (m.failed[g.key]?.count >= 3) permaFailed++;
         else pending++;
     }
@@ -446,6 +482,7 @@ export function getHealthReport() {
         withL0      : withL0,
         pending     : pending,
         permaFailed : permaFailed,
+        strippedEmpty: strippedEmpty,
         l1Chapters  : m.L1.length,
         latestFloorPending: floors.length > 0,   // the very latest AI floor is ALWAYS pending by design
         paused      : m.system.paused,
