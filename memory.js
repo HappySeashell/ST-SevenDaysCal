@@ -109,7 +109,7 @@ function parseTagList(csv) {
     return String(csv || '')
         .split(',')
         .map(s => s.trim().toLowerCase())
-        .filter(s => /^[a-zA-Z][\w-]*$/.test(s));
+        .filter(s => /^[\p{L}][\p{L}\p{N}_-]*$/u.test(s));
 }
 
 export function stripTags(raw, opts = {}) {

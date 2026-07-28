@@ -18,6 +18,12 @@ const FAB_ID     = 'sp-fab';
 const POS_KEY    = 'sp-pos';
 const SIZE_KEY    = 'sp-size';
 
+// 悬浮球图标（Solar「pen-new-round-outline」，MIT 免费素材；源 assets/pen.svg）。
+// 内联而非 <img>：单 path 用 fill=currentColor，直接继承按钮字色——主题日/夜换色、
+// 生成态霓虹变色（.sp-btn-generating 改 color）全都自动跟随，无需另写。宽高 1em 跟字号缩放，
+// 替换旧的 <i class="fa-...">，行为一致。仅悬浮球用；魔杖菜单入口仍是字体图标（见 injectExtButton）。
+const PEN_ICON_SVG = '<svg class="sp-pen-icon" viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M1.25 12C1.25 6.063 6.063 1.25 12 1.25a.75.75 0 0 1 0 1.5A9.25 9.25 0 1 0 21.25 12a.75.75 0 0 1 1.5 0c0 5.937-4.813 10.75-10.75 10.75S1.25 17.937 1.25 12m15.52-9.724a3.503 3.503 0 0 1 4.954 4.953l-6.648 6.649c-.371.37-.604.604-.863.806a5.3 5.3 0 0 1-.987.61c-.297.141-.61.245-1.107.411l-2.905.968a1.492 1.492 0 0 1-1.887-1.887l.968-2.905c.166-.498.27-.81.411-1.107q.252-.526.61-.987c.202-.26.435-.492.806-.863zm3.893 1.06a2.003 2.003 0 0 0-2.832 0l-.376.377q.032.145.098.338c.143.413.415.957.927 1.469a3.9 3.9 0 0 0 1.807 1.025l.376-.376a2.003 2.003 0 0 0 0-2.832m-1.558 4.391a5.4 5.4 0 0 1-1.686-1.146a5.4 5.4 0 0 1-1.146-1.686L11.218 9.95c-.417.417-.58.582-.72.76a4 4 0 0 0-.437.71c-.098.203-.172.423-.359.982l-.431 1.295l1.032 1.033l1.295-.432c.56-.187.779-.261.983-.358q.378-.18.71-.439c.177-.139.342-.302.759-.718z" clip-rule="evenodd"/></svg>';
+
 // Default plugin settings (stored in ST's settings.json via extension_settings)
 const DEFAULT_SETTINGS = {
     apiUrl  : '',
@@ -826,8 +832,8 @@ function injectFab() {
         : '';
     const html = `<div id="${FAB_ID}" style="position:fixed;z-index:2000000;${posStyle}${fabEnabled() ? '' : 'display:none'}">
         <button class="sp-fab-btn sp-${currentTheme}" title="构画"
-            style="width:44px;height:44px;border-radius:50%;background:#3a3648;color:#d0bcff;border:1.5px solid rgba(208,188,255,0.35);display:flex;align-items:center;justify-content:center;font-size:1rem;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.5);transform:translateZ(0);clip:auto;">
-            <i class="fa-solid fa-calendar-days"></i>
+            style="transform:translateZ(0);clip:auto;">
+            ${PEN_ICON_SVG}
         </button>
     </div>`;
     document.documentElement.insertAdjacentHTML('beforeend', html);
@@ -2858,7 +2864,7 @@ async function buildMessages(ctx, prompt, userName, charName) {
     // anchoring on dates from early in the conversation.
     const allMsgs = ctx.chat ?? [];
     let aiCount = 0;
-    let startIdx = allMsgs.length;
+    let startIdx = 0;   // 哨兵取 0：不足 10 个 AI 楼时喂全部历史；数满 10 个才把起点前移做截断
     for (let i = allMsgs.length - 1; i >= 0; i--) {
         if (!allMsgs[i].is_user) aiCount++;
         if (aiCount >= 10) { startIdx = i; break; }
@@ -4127,10 +4133,14 @@ async function renderAnchorFull(itemId) {
         const bg   = isNight ? '#272829' : '#F6F4E8';
         const link = isNight ? '#A8A49E' : '#DC9B9B';
         const root = host.shadowRoot || host.attachShadow({ mode: 'open' });
+        // Shadow DOM 的 :host{all:initial} 隔断了 ST 那条 `.mes q:before/:after{content:''}`，
+        // UA 默认的 q 自动引号在 shadow 里复活；而 ST 格式化阶段已把字面引号写进文本，
+        // 于是「字面引号 + UA 自动引号」= 双引号。这里补回同款压制。
         root.innerHTML = `<style>:host{all:initial;display:block;}
             .sp-anchor-snap{display:block;color:${fg};background:${bg};padding:10px 12px;border-radius:8px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;word-break:break-word;}
             .sp-anchor-snap img{max-width:100%;height:auto;}
             .sp-anchor-snap a{color:${link};}
+            .sp-anchor-snap q:before,.sp-anchor-snap q:after{content:'';}
         </style><div class="mes_text sp-anchor-snap">${it.html || ''}</div>`;
     }
 }
@@ -4448,8 +4458,8 @@ function triggerToggleLinePin(idx) {
 // 只留最新一版、随聊天文件跨设备。默认关（dashedEnabled），开了才在线生成时跟着抽一次。
 const DASHED_PROMPT = `请暂停角色扮演，跳出正文叙事，以设定考据者的身份回答。                                                                                                                   
   请无视上文里的状态栏、数值面板、表格等格式化内容，绝对不要复述或模仿它们。
-  完全遵循char与{{user}}的设定和世界观，列出一到两个关于char、{{user}}或这个世界的"冷知识"。可以是人物设定中的小细节，也可以是世界观相关、被隐藏的特性。绝对禁止ooc和脱离当前背景。               
-  只输出一到两行冷知识，每行一条，纯中文短句，不要序号、不要状态栏或任何格式符号。`;
+  完全遵循char与{{user}}的设定和世界观，列出一到两个关于char、{{user}}或这个世界的"冷知识"。可以是人物设定里的小细节、隐藏的性格侧写、习惯癖好、过往经历，也可以是世界观设定、势力/地点/物品的隐藏特性、未被明说的规则或因果。每一条都要展开讲清来龙去脉、给出背景和细节，不要只丢一句干巴巴的结论。绝对禁止ooc和脱离当前背景。               
+  每行一条冷知识，每条控制在50到100字之间，把细节讲透，纯中文叙述，条与条之间换行分隔，不要序号、不要状态栏或任何格式符号。`;
 
 function getDashedCacheKey() { return keyDesc('dashed', 'user', ''); }  // 固定 user scope = 不分视角
 
@@ -5113,7 +5123,7 @@ function bindMemoryHandlers() {
         return String(raw || '')
             .split(',')
             .map(s => s.trim().replace(/^<|>$/g, '').replace(/\/$/, ''))  // tolerate '<content>' or 'content/'
-            .filter(s => /^[a-zA-Z][\w-]*$/.test(s))
+            .filter(s => /^[\p{L}][\p{L}\p{N}_-]*$/u.test(s))
             .join(',');
     }
     $('#sp-mem-keeptags').on('change', function () {

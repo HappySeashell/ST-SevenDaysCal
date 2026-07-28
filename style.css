@@ -1276,9 +1276,11 @@ select.sp-input { appearance: none; cursor: pointer; }
     display       : flex;
     align-items   : center;
     justify-content: center;
-    font-size     : 1rem;
+    font-size     : 1.15rem;
     box-shadow    : 0 4px 14px rgba(0,0,0,0.4);
-    transition    : transform 0.15s, box-shadow 0.15s, color 0.15s;
+    /* 半透明常态：不挡楼内阅读；hover / 生成中 / 完成态再恢复到清晰（见下）。 */
+    opacity       : 0.45;
+    transition    : transform 0.15s, box-shadow 0.15s, color 0.15s, opacity 0.2s;
 }
 .sp-fab-btn {
     background: var(--sp-primary);
@@ -1288,8 +1290,16 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-fab-btn:hover {
     transform : scale(1.1);
     box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+    opacity   : 1;
 }
 .sp-fab-btn:active { transform: scale(0.95); }
+/* 生成中 / 刚完成时强制不透明——用户正等结果，别让它半隐形。 */
+.sp-fab-btn.sp-btn-generating,
+.sp-fab-btn.sp-btn-done { opacity: 1; }
+/* 内联笔图标：跟按钮字色走（fill=currentColor），随字号缩放。 */
+.sp-pen-icon { width: 1em; height: 1em; display: block; }
+/* 魔杖菜单入口保持字体图标（fa-calendar-days）：菜单行是 flex + align-items:baseline
+   （ST style.css:1268），换成内联 SVG 会因基线=盒底被顶歪、且行盒上下留白不等。 */
 
 /* ─── Generating state — neon bar animation ──────────────────────────────────── */
 @keyframes sp-neon-bar {
