@@ -142,6 +142,28 @@ export function writeRaw(subKeyStr, value) {
     return true;
 }
 
+// char 视角最近填过的名字（每卡一份：随 sp-store 进 chat_metadata，换卡即换一份）。
+// 存原始子键 'charnames-recent'——不属于 6 类 kind，kindOfSubKey 返回 null，故用量统计/按 kind 清理
+// 都会跳过它，只在整个 sp-store 被清时一起没（符合"边角便利、跟着聊天走"定位）。
+const CHARNAMES_SUBKEY = 'charnames-recent';
+export function readRecentCharNames() {
+    const s = store();
+    if (!s) return [];
+    const v = s.data[CHARNAMES_SUBKEY];
+    return Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()) : [];
+}
+// 把 name 提到最前、去重（大小写敏感按原样留）、只留最近 max 个。
+export function pushRecentCharName(name, max = 3) {
+    const n = String(name || '').trim();
+    if (!n) return;
+    const s = store(true);
+    if (!s) return;
+    const prev = Array.isArray(s.data[CHARNAMES_SUBKEY]) ? s.data[CHARNAMES_SUBKEY] : [];
+    const next = [n, ...prev.filter(x => x !== n)].slice(0, max);
+    s.data[CHARNAMES_SUBKEY] = next;
+    persist();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  用量统计 / 清理（供存储管理面板）
 // ═══════════════════════════════════════════════════════════════════════════

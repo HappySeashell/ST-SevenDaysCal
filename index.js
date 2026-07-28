@@ -36,6 +36,8 @@ const DEFAULT_SETTINGS = {
     linesMode: 'turns',  // 'turns' | 'days'
     linesInject: false,  // 潜伏注入：活跃线隐形注入主楼 AI（IN_CHAT/SYSTEM）；默认关（改 AI 行为+token 成本，opt-in）
     dashedEnabled: false, // 虚线·冷知识：跟线同触发多生成 1~2 条冷知识（纯展示、绝不注入）。多一次 API 调用，默认关 opt-in
+    outlineInject: false,       // 大纲自动注入：开启后每 N 楼独立判定剧情推进到哪个节点，把当前/下个节点隐形注入主楼 AI。多判定 API 调用，默认关 opt-in
+    outlineJudgeInterval: 3,    // 大纲推进判定节奏：每几条 AI 回复跑一次推进判定（独立于线的 linesInterval，不耦合）
     // Memory system
     memoryEnabled  : true,
     memoryL0Group  : 5,    // AI floors per L0 entry
@@ -233,6 +235,13 @@ jQuery(async () => {
         linesMode    = false;
         cachedLines  = null;
         linesAiMsgCounter = 0;
+        // 大纲自动注入：切 chat 复位判定追踪。起点设成当前末楼→载入历史楼不回判；
+        // 中断进行中的判定、清计数，避免旧 chat 的判定落到新 chat。
+        outlineLastJudgedMsgId = (getContext().chat?.length ?? 0) - 1;
+        outlineJudgeMsgCounter = 0;
+        outlineJudgeAbort?.abort();
+        outlineJudgeAbort = null;
+        isJudgingOutline = false;
         _lastDetectedDay  = null;   // days-mode: reset day tracker on chat switch
         spaceMode = false;
         spaceChatHistory = [];
@@ -284,6 +293,8 @@ jQuery(async () => {
         setTimeout(checkMemoryMigrationNotice, 500);
         // 跨设备冲突：本机和云端各有一份不同的点线面间 → 弹窗二选一（延后到面板/主题就绪）
         if (_mig.status === 'conflict') setTimeout(() => showStoreConflictDialog(_mig), 700);
+        // 切进来立即按新 chat 的大纲+游标重设注入（关着或无大纲时内部自清）。
+        refreshOutlineInjection();
     };
     eventSource.on(event_types.CHAT_CHANGED, _stListeners.chat);
     // 首屏补迁移：扩展初始化时当前 chat 往往已 ready（CHAT_CHANGED 早已错过），
@@ -316,6 +327,23 @@ jQuery(async () => {
         appendLinesInlineBlock(messageId, shouldAdvance);
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.char);
+    // 面·大纲自动注入：独立监听，跟线彻底解耦（绝不复用 _stListeners.char——它 linesEnabled=false
+    // 会 early-return，连坐大纲）。每隔 N 楼独立判定一次剧情是否推进到下一节点，推进则游标 +1。
+    if (_stListeners.outlineJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.outlineJudge);
+    _stListeners.outlineJudge = async (messageId) => {
+        if (getSettings().outlineInject !== true) return;
+        const chat = getContext().chat;
+        if (!Array.isArray(chat)) return;
+        // 只判「真·末楼」：backfill/历史重渲染会重放旧楼，靠 messageId===末楼 + 单调递增双闸挡掉
+        if (messageId !== chat.length - 1) return;
+        if (messageId <= outlineLastJudgedMsgId) return;
+        outlineLastJudgedMsgId = messageId;
+        // 攒够 interval 条真·新回复才跑判定（省 token）。计数只被真末楼 bump，历史重放到不了这
+        if (++outlineJudgeMsgCounter < getOutlineJudgeInterval()) return;
+        outlineJudgeMsgCounter = 0;
+        runJudgeOutlineStep();   // fire-and-forget，自带守卫
+    };
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.outlineJudge);
     // 聊天改名（酒馆改 chat 文件名 = chatId 变）→ 把坐标收藏里旧 chatId 的记录迁到新名，
     // 否则收藏夹里那个聊天桶名不跟新、且跳转来源失效。newFileName/oldFileName 均不带后缀，
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
@@ -670,6 +698,122 @@ function refreshLinesInjection() {
     const pt = ctx.constants?.promptTypes?.IN_CHAT ?? 1;   // IN_CHAT
     const pr = ctx.constants?.promptRoles?.SYSTEM  ?? 0;   // SYSTEM
     ctx.setExtensionPrompt(LINES_INJECT_KEY, buildLinesInjectionText(active), pt, LINES_INJECT_DEPTH, false, pr);
+}
+
+// ─── 面·大纲自动注入（游标沿节点前进，隐形喂主楼 AI）──────────────────────────────
+// 大纲本就是线性节点串（parseOutline 出 beats）。开启后每隔 N 楼独立判定一次剧情演到哪个
+// 节点（游标只进不退、无信号不动），把「当前节点 + 下个方向」以 SYSTEM/IN_CHAT 注入主楼 AI，
+// 让叙事自然顺着大纲走。游标存进大纲对象 {raw,ts,cursor}（随视角/聊天走）。默认关（opt-in，
+// 每次判定多一次 API 调用）。跟线彻底解耦：独立监听、独立 abort、不受 linesEnabled 影响。
+const OUTLINE_INJECT_KEY   = 'sp_outline_step';
+const OUTLINE_INJECT_DEPTH = 4;
+let   isJudgingOutline       = false;
+let   outlineJudgeAbort      = null;
+let   outlineLastJudgedMsgId = -1;   // 防重放：只判「比上次判过的更新的末楼」，切 chat 时设成末楼
+let   outlineJudgeMsgCounter = 0;    // 攒够 interval 条真·新回复才跑一次判定（照 linesAiMsgCounter 套路）
+
+// 判定间隔（缺省/非法 → 3；≥1）。独立于线的 getLinesInterval。
+function getOutlineJudgeInterval() {
+    const n = Number(getSettings().outlineJudgeInterval);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+}
+
+// 读当前视角大纲游标（1-based；无大纲 → 0 表示「无」；有大纲无 cursor 字段 → 默认停在第 1 节点）。
+function getOutlineCursor() {
+    const saved = readStore(getOutlineCacheKey());
+    if (!saved?.raw) return 0;
+    const n = Number(saved.cursor);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+}
+// 写游标（读-改-写，保留 raw/ts/其它字段）。clamp 到 [1, 节点数]。
+function setOutlineCursor(cursor) {
+    const key = getOutlineCacheKey();
+    const saved = readStore(key);
+    if (!saved?.raw) return;
+    const total = parseOutline(saved.raw).length || 1;
+    const c = Math.max(1, Math.min(total, Math.floor(cursor)));
+    writeStore(key, { ...saved, cursor: c });
+}
+
+function buildOutlineInjectionText(beats, cursor) {
+    const cur = beats[cursor - 1];
+    const nxt = beats[cursor];   // 可能 undefined（已到最后一个节点）
+    const fmt = b => `${b.time ? b.time + '·' : ''}《${b.title}》${b.type ? '·' + b.type : ''}`;
+    const parts = [
+        '【剧情大纲·当前进度参考·仅供你把握走向，切勿直接引用或点破】',
+        '故事正沿一条大纲缓慢推进。请把下面的「当前节点」当作此刻所处的阶段，',
+        '自然、含蓄地顺着它叙事；把「下个节点」当作隐约的方向，不要生硬跳进、不要提前抖开。',
+        `当前节点：${fmt(cur)}` + (cur.scene ? `\n  ${cleanText(cur.scene)}` : ''),
+    ];
+    if (nxt) parts.push(`下个节点（方向，勿急）：${fmt(nxt)}` + (nxt.scene ? `\n  ${cleanText(nxt.scene)}` : ''));
+    else     parts.push('已是大纲最后一个节点，可从容收束。');
+    return parts.join('\n');
+}
+
+// 重设大纲注入。读当前视角大纲+游标；关闭或无大纲时清空。幂等，可随处多调。
+function refreshOutlineInjection() {
+    const ctx = getContext();
+    if (typeof ctx.setExtensionPrompt !== 'function') return;
+    const clear = () => ctx.setExtensionPrompt(OUTLINE_INJECT_KEY, '');
+    if (getSettings().outlineInject !== true) { clear(); return; }
+    let beats = [], cursor = 0;
+    try {
+        const saved = readStore(getOutlineCacheKey());
+        if (saved?.raw) { beats = parseOutline(saved.raw); cursor = getOutlineCursor(); }
+    } catch { beats = []; cursor = 0; }
+    if (!beats.length || cursor < 1) { clear(); return; }
+    const pt = ctx.constants?.promptTypes?.IN_CHAT ?? 1;
+    const pr = ctx.constants?.promptRoles?.SYSTEM  ?? 0;
+    ctx.setExtensionPrompt(OUTLINE_INJECT_KEY, buildOutlineInjectionText(beats, cursor), pt, OUTLINE_INJECT_DEPTH, false, pr);
+}
+
+const OUTLINE_JUDGE_PROMPT = (cur, nxt, curScene, nxtScene) =>
+`请暂停角色扮演，作为剧情分析助手，判断上面的最近对话是否已经把剧情推进到了「下一个节点」。
+当前节点：${cur}${curScene ? '（' + curScene + '）' : ''}
+下一个节点：${nxt}${nxtScene ? '（' + nxtScene + '）' : ''}
+只有当最近剧情已经明确进入或跨过「下一个节点」所描述的阶段时，才算推进。
+若剧情仍停留在当前节点、或在写与主线无关的日常/支线，都算「没推进」。
+只回答一个词：推进 或 未推进。不要解释。`;
+
+// 判定当前视角大纲是否该前进一个节点。fire-and-forget，照 runGenerateDashed 的 abort/chatId 守卫。
+async function runJudgeOutlineStep() {
+    if (isJudgingOutline) return;
+    const chatIdSnap = getContext().chatId;
+    const saved = readStore(getOutlineCacheKey());
+    if (!saved?.raw) return;
+    const beats = parseOutline(saved.raw);
+    const cursor = getOutlineCursor();
+    if (!beats.length || cursor < 1 || cursor >= beats.length) return;   // 已在最后节点 → 无「下一个」可判
+    const cur = beats[cursor - 1], nxt = beats[cursor];
+    const myCtrl = outlineJudgeAbort = new AbortController();
+    isJudgingOutline = true;
+    try {
+        const ctx = getContext();
+        const userName = ctx.name1 || '用户', charName = ctx.name2 || '角色';
+        const cfg = loadCfg();
+        if (!cfg.url || !cfg.key) { isJudgingOutline = false; outlineJudgeAbort = null; return; }
+        const fmt = b => `${b.time ? b.time + '·' : ''}《${b.title}》`;
+        const prompt = OUTLINE_JUDGE_PROMPT(fmt(cur), fmt(nxt), cleanText(cur.scene || ''), cleanText(nxt.scene || ''));
+        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal);
+        if (outlineJudgeAbort !== myCtrl) return;                          // 被更新的判定取代
+        if (getContext().chatId !== chatIdSnap) { isJudgingOutline = false; outlineJudgeAbort = null; return; }
+        isJudgingOutline = false; outlineJudgeAbort = null;
+        // 只认明确「推进」；含「未/没/不/无 推进」一律不动（无信号不动的兜底）
+        const ans = String(raw || '').trim();
+        const advanced = /推进/.test(ans) && !/(未|没|不|无)\s*推进/.test(ans);
+        if (advanced) {
+            setOutlineCursor(cursor + 1);
+            refreshOutlineInjection();
+            if (outlineMode) {   // 面板开着看大纲 → 重渲染让高亮跟着走
+                const s2 = readStore(getOutlineCacheKey());
+                if (s2?.raw) { cachedOutline = renderOutline(s2.raw, getOutlineCursor()); setOutlineBody(cachedOutline); }
+            }
+        }
+    } catch {
+        if (outlineJudgeAbort !== myCtrl) return;
+        isJudgingOutline = false; outlineJudgeAbort = null;
+        // 判定失败静默（不弹错、不动游标）——纯增强功能，不该打断主聊天
+    }
 }
 
 // ─── 锚·收藏楼层：每楼收藏入口（快照捕获）────────────────────────────────────────
@@ -1190,7 +1334,26 @@ function injectModal() {
                                 </div>
                             </details>
 
-                            <!-- 模块设置 2：棱（小剧场） -->
+                            <!-- 模块设置 2：面（大纲）自动注入 -->
+                            <details class="sp-settings-section" id="sp-outline-section">
+                                <summary class="sp-settings-section-title">面（大纲）</summary>
+                                <div class="sp-settings-section-body">
+                                    <label class="sp-mode-opt">
+                                        <input type="checkbox" id="sp-outline-inject" ${getSettings().outlineInject === true ? 'checked' : ''}>
+                                        <span>大纲自动注入</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">开启后，剧情会沿着大纲的节点缓慢推进：每隔若干楼<b>独立判定</b>一次当前演到哪个节点，把「当前节点 + 下个方向」隐形注入主楼 AI（聊天里不显示），让叙事自然顺着大纲走。游标<b>只进不退、无推进信号不动</b>——你写多少跑题日常都不会硬推。默认关；开着需先有一版面。</p>
+
+                                    <label class="sp-mode-opt" style="margin-top:10px">
+                                        <span>每</span>
+                                        <input id="sp-outline-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getOutlineJudgeInterval()))}">
+                                        <span>条 AI 回复判定一次推进</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">判定节奏：楼数越大越省 token、推进越迟钝；越小越灵敏、开销越高（<b>每次判定 = 一次额外 API 调用</b>）。默认 3。</p>
+                                </div>
+                            </details>
+
+                            <!-- 模块设置 3：棱（小剧场） -->
                             <details class="sp-settings-section" id="sp-theater-section">
                                 <summary class="sp-settings-section-title">棱（小剧场）</summary>
                                 <div class="sp-settings-section-body">
@@ -1265,7 +1428,7 @@ function injectModal() {
                                 <div class="sp-chat-msgs" id="sp-chat-msgs"></div>
                                 <div class="sp-chat-input-row">
                                     <button id="sp-chat-clear" class="sp-icon-btn" title="清空对话"><i class="fa-solid fa-broom"></i></button>
-                                    <input type="text" id="sp-chat-input" class="sp-input" placeholder="和 AI 讨论面…">
+                                    <textarea id="sp-chat-input" class="sp-input sp-chat-input-ta" rows="1" placeholder="和 AI 讨论面…"></textarea>
                                     <button id="sp-chat-send" class="sp-icon-btn" title="发送"><i class="fa-solid fa-paper-plane"></i></button>
                                 </div>
                             </div>
@@ -1281,7 +1444,7 @@ function injectModal() {
                             <div class="sp-chat-msgs" id="sp-space-msgs"></div>
                             <div class="sp-chat-input-row">
                                 <button id="sp-space-clear" class="sp-icon-btn" title="清空对话"><i class="fa-solid fa-broom"></i></button>
-                                <input type="text" id="sp-space-input" class="sp-input" placeholder="局外聊聊：剧情、设定、关系、知识…">
+                                <textarea id="sp-space-input" class="sp-input sp-chat-input-ta" rows="1" placeholder="局外聊聊：剧情、设定、关系、知识…"></textarea>
                                 <button id="sp-space-send" class="sp-icon-btn" title="发送"><i class="fa-solid fa-paper-plane"></i></button>
                             </div>
                         </div>
@@ -1341,10 +1504,11 @@ function injectModal() {
     // Outline chat
     function doSendChat() {
         const msg = $('#sp-chat-input').val().trim();
-        if (msg && !isOutlineChatting) { $('#sp-chat-input').val(''); sendOutlineChat(msg); }
+        if (msg && !isOutlineChatting) { const $i = $('#sp-chat-input'); $i.val(''); autoGrowTextarea($i[0]); sendOutlineChat(msg); }
     }
     $('#sp-chat-send').on('click', doSendChat);
     $('#sp-chat-input').on('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSendChat(); } });
+    $('#sp-chat-input').on('input', function () { autoGrowTextarea(this); });
 
     // Delete a single message (leaves the rest alone — user chose "just this one")
     $('#sp-chat-msgs').on('click', '.sp-chat-msg-delete', function () {
@@ -1383,10 +1547,11 @@ function injectModal() {
     // Space chat (间)
     function doSendSpaceChat() {
         const msg = $('#sp-space-input').val().trim();
-        if (msg && !isSpaceChatting) { $('#sp-space-input').val(''); sendSpaceChat(msg); }
+        if (msg && !isSpaceChatting) { const $i = $('#sp-space-input'); $i.val(''); autoGrowTextarea($i[0]); sendSpaceChat(msg); }
     }
     $('#sp-space-send').on('click', doSendSpaceChat);
     $('#sp-space-input').on('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSendSpaceChat(); } });
+    $('#sp-space-input').on('input', function () { autoGrowTextarea(this); });
 
     $('#sp-space-msgs').on('click', '.sp-chat-msg-delete', function () {
         if (isSpaceChatting) return;
@@ -1771,6 +1936,23 @@ function injectModal() {
         renderDashedSection();
         syncLatestInlineBlock();   // 虚线已折进线块 → 重挂合并块（off 时无内容自然不显示）
     });
+    // 大纲自动注入（面）开关：on → 按当前大纲+游标立即注入；off → 清空扩展 prompt（游标留 chat_metadata，再开即续）
+    $('#sp-outline-inject').on('change', function () {
+        getSettings().outlineInject = this.checked;
+        saveSettingsDebounced();
+        outlineJudgeMsgCounter = 0;   // 开/关都重置计数，避免残留计数导致刚开就判
+        refreshOutlineInjection();
+        // 面板开着看大纲 → 重渲染让高亮出现/消失
+        if (outlineMode) { const s = readStore(getOutlineCacheKey()); if (s?.raw) { cachedOutline = renderOutline(s.raw, getOutlineCursor()); setOutlineBody(cachedOutline); } }
+    });
+    // 大纲判定间隔：改完即重新计数（避免旧计数立刻触发判定）
+    $('#sp-outline-judge-interval').on('change', function () {
+        const n = Math.max(1, parseInt(this.value, 10) || 3);
+        getSettings().outlineJudgeInterval = n;
+        this.value = String(n);
+        saveSettingsDebounced();
+        outlineJudgeMsgCounter = 0;
+    });
     // 锚：楼层收藏入口开关——on → 补按钮；off → 清掉所有已注入按钮
     $('#sp-anchor-inline-btn').on('change', function () {
         getSettings().anchorInlineBtn = this.checked;
@@ -1896,6 +2078,7 @@ function setView(view, charName) {
     // 真正该清 charViewName 的只有换聊天(CHAT_CHANGED)/主动重选角色(onRegenClick)。
     if (view === 'char' && charName) charViewName = charName;
     refreshLinesInjection();   // 视角切换 → 活跃线集合变了，重设潜伏注入跟随当前视角
+    refreshOutlineInjection(); // 视角切换 → 大纲/游标随视角变，重设注入（loadCached 已带高亮）
     $('.sp-view-btn').removeClass('sp-view-active');
     $(`.sp-view-btn[data-view="${view}"]`).addClass('sp-view-active');
     cachedSchedule = loadCachedForCurrentChat();
@@ -1916,6 +2099,14 @@ function switchToCharView() {
     const ctx     = getContext();
     // Prefer previously confirmed name; fall back to guessing from chat messages
     const guessed = charViewName || guessCharName(ctx);
+    // 最近填过的名字（本卡），做快捷 chip；排掉正预填在输入框里的那个，避免重复。
+    const recents = store.readRecentCharNames().filter(n => n !== guessed);
+    const chipsHtml = recents.length
+        ? `<div class="sp-char-recent">
+               <span class="sp-char-recent-label">最近：</span>
+               ${recents.map(n => `<button type="button" class="sp-char-recent-chip" data-name="${escapeAttr(n)}">${escapeHtml(n)}</button>`).join('')}
+           </div>`
+        : '';
     setBody(`<div class="sp-char-picker">
         <p class="sp-char-picker-hint"><i class="fa-solid fa-user-pen"></i> 输入要查看点的角色名</p>
         <div class="sp-char-picker-row">
@@ -1923,6 +2114,7 @@ function switchToCharView() {
                    placeholder="角色名" value="${escapeAttr(guessed)}">
             <button id="sp-char-name-confirm" class="sp-save-btn">确认</button>
         </div>
+        ${chipsHtml}
         ${guessed ? `<p class="sp-char-picker-sub">根据近期对话预填，可直接修改</p>` : ''}
     </div>`);
     $('.sp-view-btn').removeClass('sp-view-active');
@@ -1930,12 +2122,17 @@ function switchToCharView() {
     // .off().on() prevents duplicate bindings on repeated calls
     $('#sp-char-name-input').off('keydown.charview').on('keydown.charview', e => { if (e.key === 'Enter') confirmCharView(); });
     $('#sp-char-name-confirm').off('click.charview').on('click.charview', confirmCharView);
+    // 点 chip：填进输入框（不直接确认，留一步给用户改），聚焦到末尾。
+    $('.sp-char-recent-chip').off('click.charview').on('click.charview', function () {
+        $('#sp-char-name-input').val($(this).attr('data-name')).focus();
+    });
     setTimeout(() => { $('#sp-char-name-input').focus().select(); }, 50);
 }
 
 function confirmCharView() {
     const name = $('#sp-char-name-input').val().trim();
     if (!name) { $('#sp-char-name-input').focus(); return; }
+    store.pushRecentCharName(name);   // 记进"最近填过的名字"，供多人卡下次预填
     setView('char', name);
     if (cachedSchedule) {
         setBody(cachedSchedule);
@@ -2477,8 +2674,8 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
     }
 }
 
-async function callCustomApi(ctx, prompt, cfg, userName, charName, signal = null) {
-    const messages = await buildMessages(ctx, prompt, userName, charName);
+async function callCustomApi(ctx, prompt, cfg, userName, charName, signal = null, historyLimit = 10) {
+    const messages = await buildMessages(ctx, prompt, userName, charName, historyLimit);
     lastDebugPayload = { model: cfg.model || 'gpt-4o-mini', messages };
     // 8192 而非 4096：推理模型（GLM 等）会先耗一大段思维链预算，
     // 4096 常在长提示词（尤其「面」）下把正文挤空 → 代理回 <none>。留足空间。
@@ -2838,7 +3035,10 @@ function readCardExtras(ctx) {
     };
 }
 
-async function buildMessages(ctx, prompt, userName, charName) {
+// historyLimit：喂给这次调用的「最近 AI 楼」条数上限（连带其配对 user 楼）。默认 10。
+// 传 0 = 完全不喂近景，只靠 system 块（人设/卡描述/世界书/记忆库）——冷知识发散专用，
+// 免得被最近十楼里反复出现的某个道具/场景锚死。点/线/面/判定仍用默认 10（它们要贴当前剧情）。
+async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10) {
     const char = ctx.characters?.[ctx.characterId] ?? {};
     const wiContext = await buildWorldInfoContext(ctx);
     const { personaDesc, authorNote } = readCardExtras(ctx);
@@ -2860,24 +3060,27 @@ async function buildMessages(ctx, prompt, userName, charName) {
         wiContext,
         memBlock,
     ].filter(Boolean).join('\n\n');
-    // Only take the last 10 AI replies (+ their paired user messages) to avoid
-    // anchoring on dates from early in the conversation.
+    // 只取最近 historyLimit 个 AI 回复（连带配对的 user 楼），避免被早期上下文（如日期）锚定。
+    // historyLimit=0 → 完全不喂历史（history 为空），只留 system + prompt。
     const allMsgs = ctx.chat ?? [];
-    let aiCount = 0;
-    let startIdx = 0;   // 哨兵取 0：不足 10 个 AI 楼时喂全部历史；数满 10 个才把起点前移做截断
-    for (let i = allMsgs.length - 1; i >= 0; i--) {
-        if (!allMsgs[i].is_user) aiCount++;
-        if (aiCount >= 10) { startIdx = i; break; }
+    let history = [];
+    if (historyLimit > 0) {
+        let aiCount = 0;
+        let startIdx = 0;   // 哨兵取 0：AI 楼不足 historyLimit 时喂全部历史；数满才把起点前移做截断
+        for (let i = allMsgs.length - 1; i >= 0; i--) {
+            if (!allMsgs[i].is_user) aiCount++;
+            if (aiCount >= historyLimit) { startIdx = i; break; }
+        }
+        // 标签清洗（全局 keepTags/extraTags）：先剥标签结构、再替换变量占位符，
+        // 免得展开出的内容里的尖括号被当成标签。点/线/面主生成经此统一清洗，
+        // 与记忆采集(memory.getAiFloors)、间/面讨论(buildRecentChatContext)同口径。
+        const s = getSettings();
+        const stripOpts = { keepTags: s.keepTags, extraTags: s.extraTags };
+        history = allMsgs.slice(startIdx).map(m => ({
+            role   : m.is_user ? 'user' : 'assistant',
+            content: substituteParams(memory.stripTags(m.mes ?? '', stripOpts)),
+        }));
     }
-    // 标签清洗（全局 keepTags/extraTags）：先剥标签结构、再替换变量占位符，
-    // 免得展开出的内容里的尖括号被当成标签。点/线/面主生成经此统一清洗，
-    // 与记忆采集(memory.getAiFloors)、间/面讨论(buildRecentChatContext)同口径。
-    const s = getSettings();
-    const stripOpts = { keepTags: s.keepTags, extraTags: s.extraTags };
-    const history = allMsgs.slice(startIdx).map(m => ({
-        role   : m.is_user ? 'user' : 'assistant',
-        content: substituteParams(memory.stripTags(m.mes ?? '', stripOpts)),
-    }));
     return [{ role: 'system', content: sys }, ...history, { role: 'user', content: prompt }];
 }
 
@@ -2915,7 +3118,12 @@ function renderCreativeChatHistory() {
 
 function loadCachedOutlineForCurrentChat(view, charName) {
     const saved = readStore(getOutlineCacheKey(view, charName));
-    if (saved?.raw) return renderOutline(saved.raw);
+    if (saved?.raw) {
+        // 游标取自同一 saved 对象（对任意 view 都正确；有大纲无 cursor → 默认 1）。
+        const n = Number(saved.cursor);
+        const cursor = Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+        return renderOutline(saved.raw, cursor);
+    }
     return null;
 }
 
@@ -3330,10 +3538,12 @@ async function sendOutlineChat(userMsg) {
             const pendingRaw = reply;
             const $btn = $('<button class="sp-apply-outline-btn">应用此面</button>');
             $btn.on('click', () => {
-                const html = renderOutline(pendingRaw);
+                // 应用新大纲 → 游标归 1（第一个节点），先落库带 cursor 再渲染/刷注入。
+                writeStore(getOutlineCacheKey(), { raw: pendingRaw, ts: Date.now(), cursor: 1 });
+                refreshOutlineInjection();
+                const html = renderOutline(pendingRaw, 1);
                 setOutlineBody(html);
                 cachedOutline = html;
-                writeStore(getOutlineCacheKey(), { raw: pendingRaw, ts: Date.now() });
                 $btn.text('✓ 已应用').prop('disabled', true);
             });
             $('<div class="sp-chat-msg sp-chat-msg-system sp-apply-row"></div>').append($btn).appendTo('#sp-chat-msgs');
@@ -3870,8 +4080,10 @@ async function runGenerateOutline() {
             return;
         }
 
-        const html     = renderOutline(raw);
-        writeStore(getOutlineCacheKey(viewSnap, charSnap), { raw, ts: Date.now() });
+        // 新生成大纲 → 游标归 1，先落库带 cursor 再刷注入/渲染。
+        writeStore(getOutlineCacheKey(viewSnap, charSnap), { raw, ts: Date.now(), cursor: 1 });
+        refreshOutlineInjection();
+        const html     = renderOutline(raw, 1);
         isGeneratingOutline = false;
         outlineAbortController = null;
         cachedOutline = html;
@@ -3980,19 +4192,28 @@ function parseOutline(raw) {
     return beats;
 }
 
-function renderOutline(raw) {
+function renderOutline(raw, cursor = 0) {
     const beats = parseOutline(raw);
     const toolbar = `<div class="sp-panel-toolbar"><button class="sp-panel-refresh sp-refresh-outline" title="重新生成面"><i class="fa-solid fa-rotate-right"></i></button></div>`;
     if (beats.length === 0) return toolbar + `<div class="sp-raw">${escapeHtml(raw).replace(/\n/g, '<br>')}</div>`;
+    // 高亮仅在「大纲自动注入」开启时点亮：当前节点 .sp-beat-current + 下一节点 .sp-beat-next。
+    const injectOn = getSettings().outlineInject === true;
     const cards = beats.map((b, i) => {
         const injectParts = [`【剧情节点参考】`, `${b.time}·《${b.title}》${b.type ? '·' + b.type : ''}${b.line ? '（' + b.line + '）' : ''}`];
         if (b.scene)   injectParts.push(b.scene);
         if (b.outcome) injectParts.push(`结果：${b.outcome}`);
         const injectBtn = makeInjectBtn(injectParts.join('\n'));
+        const isCur  = injectOn && cursor >= 1 && i + 1 === cursor;
+        const isNext = injectOn && cursor >= 1 && i + 1 === cursor + 1;
+        const hi = isCur ? ' sp-beat-current' : (isNext ? ' sp-beat-next' : '');
+        const badge = isCur  ? `<span class="sp-beat-badge sp-beat-badge-cur">进行中</span>`
+                    : isNext ? `<span class="sp-beat-badge sp-beat-badge-next">预计下一步</span>`
+                    : '';
         return `
-        <div class="sp-beat">
+        <div class="sp-beat${hi}">
             <div class="sp-beat-head">
                 <span class="sp-beat-index">${i + 1}</span>
+                ${badge}
                 <span class="sp-beat-time">${escapeHtml(b.time)}</span>
                 ${b.type ? `<span class="sp-beat-type">${escapeHtml(b.type)}</span>` : ''}
                 ${b.line ? `<span class="sp-beat-line">${escapeHtml(b.line)}</span>` : ''}
@@ -4481,7 +4702,9 @@ async function runGenerateDashed() {
         const cfg = loadCfg();
         if (!cfg.url || !cfg.key) throw new Error('未配置自定义 API');
         const prompt = buildDashedPrompt(userName, charName);
-        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal);
+        // historyLimit=0：冷知识不喂最近对话，只靠 system 块（人设/卡描述/世界书/记忆库）发散。
+        // 否则最近十楼里反复出现的某个道具/场景会把它锚死，导致老围着同一件东西打转。
+        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 0);
         if (dashedAbortController !== myCtrl) return;            // 被更新的请求取代
         if (getContext().chatId !== chatIdSnap) {                // 切了 chat，别写脏
             isGeneratingDashed = false; dashedAbortController = null; return;
@@ -5863,6 +6086,13 @@ function renderEvent(ev) {
 
 function escapeHtml(s)  { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escapeAttr(s)  { return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// 聊天输入框随内容自增高：先归零再按 scrollHeight 撑，CSS 用 max-height 封顶后转滚动条。
+// 清空发送后也调一次即可缩回单行。
+function autoGrowTextarea(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+}
 function cleanText(s) {
     return String(s)
         .replace(/<ruby[^>]*>[\s\S]*?<\/ruby>/gi, (m) =>

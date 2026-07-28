@@ -1095,7 +1095,7 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-type-character .sp-type-badge { color: #f48fb1; }
 
 .sp-event-title { font-size: 0.88rem; font-weight: 500; color: var(--sp-on-surface); flex: 1; }
-.sp-event-time  { font-family: 'Roboto Mono', monospace; font-size: 0.73rem; color: var(--sp-subtle); flex-shrink: 0; }
+.sp-event-time  { font-family: 'Roboto Mono', monospace; font-size: 0.73rem; color: var(--sp-subtle); min-width: 0; overflow-wrap: anywhere; }
 .sp-event-desc  { font-size: 0.82rem; color: var(--sp-on-surface); opacity: 0.8; line-height: 1.55; margin: 3px 0 5px; }
 .sp-event-meta  { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
 .sp-event-loc   {
@@ -1403,6 +1403,27 @@ select.sp-input { appearance: none; cursor: pointer; }
     gap    : 8px;
 }
 .sp-char-picker-row .sp-input { flex: 1; }
+/* 最近填过的名字 chip（多人卡快捷预填）：点一下填进输入框，弱一档的次级按钮外观。 */
+.sp-char-recent {
+    display    : flex;
+    flex-wrap  : wrap;
+    align-items: center;
+    gap        : 6px;
+    margin     : -2px 0 0;
+}
+.sp-char-recent-label { font-size: 0.75rem; color: var(--sp-subtle); }
+.sp-char-recent-chip {
+    padding      : 3px 11px;
+    background   : var(--sp-sheet-bg);
+    color        : var(--sp-on-surface);
+    border       : 1px solid var(--sp-divider);
+    border-radius: 99px;
+    cursor       : pointer;
+    font-size    : 0.78rem;
+    font-family  : var(--sp-font);
+    transition   : border-color 0.15s, color 0.15s;
+}
+.sp-char-recent-chip:hover { border-color: var(--sp-primary); color: var(--sp-primary); }
 .sp-char-picker-sub {
     font-size: 0.75rem;
     color    : var(--sp-subtle);
@@ -1461,6 +1482,37 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-beat:last-child { border-bottom: none; }
 .sp-beat:hover      { background: var(--sp-hover-bg); }
+
+/* 大纲自动注入·游标高亮：当前节点(进行中) + 下一节点(预计下一步)。
+   仅 outlineInject 开启时由 renderOutline 挂 class；关着就是普通 .sp-beat。
+   用 inset box-shadow 画左侧强调条，避免 border 改变盒宽导致内容位移。 */
+.sp-beat-current {
+    background : rgba(208,188,255,0.10);
+    box-shadow : inset 3px 0 0 var(--sp-primary);
+}
+.sp-beat-current:hover { background: rgba(208,188,255,0.14); }
+.sp-beat-next {
+    box-shadow : inset 3px 0 0 rgba(208,188,255,0.35);
+}
+/* 头部小徽标：比 .sp-beat-type 再小一号 */
+.sp-beat-badge {
+    font-size     : 0.62rem;
+    font-weight   : 700;
+    padding       : 1px 6px;
+    border-radius : 99px;
+    flex-shrink   : 0;
+    letter-spacing: 0.02em;
+    white-space   : nowrap;
+}
+.sp-beat-badge-cur {
+    background: var(--sp-primary);
+    color     : var(--sp-on-primary);
+}
+.sp-beat-badge-next {
+    background: rgba(208,188,255,0.16);
+    color     : var(--sp-primary);
+    border    : 1px dashed rgba(208,188,255,0.5);
+}
 
 .sp-beat-head {
     display    : flex;
@@ -1653,8 +1705,20 @@ select.sp-input { appearance: none; cursor: pointer; }
     padding    : 7px 10px;
     border-top : 1px solid var(--sp-divider);
     flex-shrink: 0;
+    align-items: flex-end;   /* textarea 长高时，发送/清空按钮贴底对齐 */
 }
 .sp-chat-input-row .sp-input { flex: 1; font-size: 0.82rem; padding: 5px 10px; }
+/* 聊天输入框自增高：单行起步，随内容长高（autoGrowTextarea 设 height），
+   到 max-height 封顶后转内部滚动，不再撑破面板。 */
+.sp-chat-input-ta {
+    resize     : none;
+    overflow-y : auto;
+    line-height: 1.4;
+    min-height : 32px;
+    max-height : 120px;
+    white-space: pre-wrap;
+    word-break : break-word;
+}
 /* Chat message wrap — contains the bubble + external action buttons.
    Bubble handles alignment (user right / ai left), actions align with the
    bubble edge (right side for user, left side for ai) and sit below it. */

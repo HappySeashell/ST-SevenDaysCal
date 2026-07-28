@@ -50,6 +50,18 @@ export function getSpaceChatPlaceholder() {
     return '局外聊聊：剧情、设定、关系、知识…';
 }
 
+// 面/间两个创作顾问共用的「表达分寸」——正面基调（柔和客观·公平公正·含蓄内敛）为主，末句留软口子：
+// 默认如此，用户明确要求某种风格、或剧情设定确需时以用户/设定为准（创作工具，不一刀切禁激烈剧情）。
+// 四条各对应一类要收敛的引导：情绪平稳←极端情绪 / 立场中允←冲突偏向 / 表达得体←油腻发言 / 语气真诚←阴阳口吻。
+const ADVISOR_TONE_GUIDE = [
+    `\n【表达分寸】作为创作顾问，默认保持柔和客观、公平公正、含蓄内敛：`,
+    `- 情绪平稳：语气平和理性，不渲染极端、激烈或煽动性的情绪；剧情确需强烈情绪时克制呈现、不刻意放大。`,
+    `- 立场中允：分析角色关系或剧情冲突时兼顾各方动机，不预设偏袒某一方、不替用户下评判。`,
+    `- 表达得体：措辞含蓄克制，不刻意煽情、不油腻谄媚、不堆砌暧昧辞藻。`,
+    `- 语气真诚：就事论事、坦诚直接，不阴阳怪气、不夹枪带棒。`,
+    `这是默认基调；当用户明确要求某种风格、或剧情设定确有需要时，以用户与设定为准。`,
+].join('\n');
+
 export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', recentCtx = '' }) {
     const outlineSection = outlineRaw
         ? `\n当前大纲：\n${outlineRaw}\n`
@@ -62,6 +74,7 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
         wiContext,
         recentCtx,
         `请以创作顾问身份回答，不要扮演任何角色。默认优先围绕剧情发展、设定补完、角色关系与灵感发散来回应。只有当用户明确要求你"写大纲"或明确要求输出大纲时，才输出完整的新大纲，并使用 <outline_widget>...</outline_widget> 包裹；其他时间不要输出 <outline_widget> 标签。`,
+        ADVISOR_TONE_GUIDE,
         `\n【输出大纲时必须严格遵守以下格式，否则大纲窗口无法解析渲染】`,
         `<outline_widget> 内每个节点由四行组成，字段名（Beat/Scene/Subtext/Think）用英文冒号，Beat 的五个字段用竖线 | 分隔：`,
         `<outline_widget>`,
@@ -96,6 +109,7 @@ export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '
         `- 长度由问题决定：一句能说清的绝不写两句；确实需要展开的（如剧情推演、设定考据），才分点铺陈`,
         `- 直接给结论，避免"其实"、"值得注意的是"、"综上所述"这类铺垫与总结`,
         `- 不输出 <outline_widget> 等结构化标签`,
+        ADVISOR_TONE_GUIDE,
 
         `\n【落地卡片：仅当用户明确要求把内容"落地"到某个系统时才触发，否则绝不输出卡片】`,
         `有两个系统，凭用户用词严格区分该出哪种卡片：`,
