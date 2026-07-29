@@ -105,6 +105,18 @@
     --sp-chat-bg     : var(--sp-chat-bg-legacy);
 }
 
+/* 只跟随酒馆「配色」，不继承酒馆的「文字阴影」。酒馆核心 style.css 在全局 *
+   选择器上加了 text-shadow（--shadowWidth / --SmartThemeShadowColor），会渗进
+   所有 .sp-* 文字。这里显式清零：面板内元素靠 .sp-root *，注入到聊天流/根节点
+   的元素（线内联块、锚收藏按钮、toast）在 .sp-root 之外须单列。颜色级联与
+   box-shadow（卡片/FAB 自己的投影）不受影响。 */
+.sp-root, .sp-root *,
+.sp-lines-inline, .sp-lines-inline *,
+.sp-anchor-btn, .sp-anchor-btn *,
+.sp-toast, .sp-toast * {
+    text-shadow: none !important;
+}
+
 /* ─── Root — desktop: no backdrop, floating ─────────────────────────────────── */
 .sp-root {
     position  : fixed;

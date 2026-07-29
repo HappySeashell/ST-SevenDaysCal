@@ -148,6 +148,9 @@ let linesMode           = false;
 let isGeneratingLines   = false;
 let cachedLines         = null;
 let linesAbortController = null;
+// 线·swipe 重算：楼层单调递增闸（区分真·新楼层 vs swipe/历史重渲染），及"待重算 swipe"标记。
+let _lastSeenMaxMesId   = -1;
+let _pendingSwipeGen    = null;   // { mesId }：swipe 触发新生成，等对应 RENDERED 后从楼层基线 B0 重算
 let isGeneratingDashed  = false;   // 虚线·冷知识生成中
 let dashedAbortController = null;  // 虚线独立 abort，跟线互不干扰
 let spaceMode           = false;
@@ -250,6 +253,10 @@ jQuery(async () => {
         linesMode    = false;
         cachedLines  = null;
         linesAiMsgCounter = 0;
+        // 线·swipe：切 chat 复位单调闸到当前末楼（历史楼不误判为新楼），清待重算标记 + 所有临时层。
+        _lastSeenMaxMesId = (getContext().chat?.length ?? 0) - 1;
+        _pendingSwipeGen = null;
+        _clearAllSwipeLines();
         // 大纲自动注入：切 chat 复位判定追踪。起点设成当前末楼→载入历史楼不回判；
         // 中断进行中的判定、清计数，避免旧 chat 的判定落到新 chat。
         outlineLastJudgedMsgId = (getContext().chat?.length ?? 0) - 1;
@@ -329,19 +336,58 @@ jQuery(async () => {
         setTimeout(scanAnchorButtons, 150);
         // Master switch: linesEnabled=false disables auto-advance + inline block
         if (getSettings().linesEnabled === false) return;
-        const mode = getLinesMode();
+        const mid = Number(messageId);
+        // 单调递增闸：mid 递增 = 真·新楼层；同 mid 重渲染 = swipe/刷新/历史回渲。
+        // counter++ 与自动推进只在真·新楼层做（修掉 swipe/重渲染误触 counter 的老 bug）；
+        // 但内联块要在**每次**渲染时补回最新楼——重渲染会清掉旧 DOM，不补则硬刷后主楼线块消失。
+        const isNewFloor = Number.isFinite(mid) && mid > _lastSeenMaxMesId;
         let shouldAdvance = false;
-        if (mode === 'days') {
-            shouldAdvance = detectInGameDayChange(messageId, /* excludeCurrent */ true);
-        } else if (mode === 'turns') {
-            const interval = getLinesInterval();
-            if (linesAiMsgCounter >= interval) { linesAiMsgCounter = 0; shouldAdvance = true; }
-            linesAiMsgCounter++;
+        if (isNewFloor) {
+            _lastSeenMaxMesId = mid;
+            const mode = getLinesMode();
+            if (mode === 'days') {
+                shouldAdvance = detectInGameDayChange(mid, /* excludeCurrent */ true);
+            } else if (mode === 'turns') {
+                const interval = getLinesInterval();
+                if (linesAiMsgCounter >= interval) { linesAiMsgCounter = 0; shouldAdvance = true; }
+                linesAiMsgCounter++;
+            }
+            // mode === 'manual': never auto-advance, only inline block append
+        } else if (_pendingSwipeGen && _pendingSwipeGen.mesId === mid) {
+            // swipe 触发的新回复刚渲染完 → 先贴当前线（避免重算期间主楼空白），再从楼层基线 B0 重算。
+            // 不动 counter、不走常规推进；_regenLinesForSwipe 完成后 syncLatestInlineBlock 覆盖显示。
+            _pendingSwipeGen = null;
+            appendLinesInlineBlock(mid, false);
+            _regenLinesForSwipe(mid);
+            return;
         }
-        // mode === 'manual': never auto-advance, only inline block append
-        appendLinesInlineBlock(messageId, shouldAdvance);
+        // 新楼层按 shouldAdvance 推进并贴块；刷新/历史/swipe 回退重渲染 shouldAdvance=false，仅把内联块补回最新楼。
+        appendLinesInlineBlock(mid, shouldAdvance);
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.char);
+    // 线·swipe：滑到新 swipe 时线跟着重算（临时存 localStorage，发下条消息即固定）。
+    // pendingGeneration=true → 该 swipe 会触发新生成，此刻新回复还没好，先记标记，等它的
+    // CHARACTER_MESSAGE_RENDERED 再从楼层基线 B0 重算；=false → 滑回已生成的 swipe，直接取临时层已存线，不请求 API。
+    if (_stListeners.swiped) eventSource.removeListener?.(event_types.MESSAGE_SWIPED, _stListeners.swiped);
+    _stListeners.swiped = async (mesId, info) => {
+        if (getSettings().linesEnabled === false) return;
+        const mid = Number(mesId);
+        if (info?.pendingGeneration) { _pendingSwipeGen = { mesId: mid }; return; }
+        _applyStoredSwipeLines(mid, Number(info?.nextSwipeId ?? getContext().chat?.[mid]?.swipe_id ?? 0));
+    };
+    eventSource.on(event_types.MESSAGE_SWIPED, _stListeners.swiped);
+    // 线·固定：用户发出下一条消息 → 上一 AI 楼层定稿，清掉它的 swipe 临时层（store 已是当前 swipe 的线）。
+    if (_stListeners.sent) eventSource.removeListener?.(event_types.MESSAGE_SENT, _stListeners.sent);
+    _stListeners.sent = (insertAt) => {
+        if (getSettings().linesEnabled === false) return;
+        const chat = getContext().chat;
+        if (!Array.isArray(chat)) return;
+        const upto = Number.isFinite(Number(insertAt)) ? Number(insertAt) : chat.length;
+        for (let i = Math.min(upto, chat.length) - 1; i >= 0; i--) {
+            if (!chat[i]?.is_user) { _clearSwipeLines(getContext().chatId, i); break; }
+        }
+    };
+    eventSource.on(event_types.MESSAGE_SENT, _stListeners.sent);
     // 面·大纲自动注入：独立监听，跟线彻底解耦（绝不复用 _stListeners.char——它 linesEnabled=false
     // 会 early-return，连坐大纲）。每隔 N 楼独立判定一次剧情是否推进到下一节点，推进则游标 +1。
     if (_stListeners.outlineJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.outlineJudge);
@@ -633,7 +679,10 @@ async function appendLinesInlineBlock(messageId, shouldAdvance) {
     // If we need to advance, run generation and then update the same block in-place
     const cfg = loadCfg();
     if (shouldAdvance && !isGeneratingLines && cfg.url && cfg.key) {
-        await runGenerateLines(true /* silent */);
+        // 新楼层首次推进：带上 swipeCtx（当前 swipeId，通常 0），把本次 pre-commit 基线 B0
+        // 连同结果记进 swipe 临时层，后续在本楼 swipe 时能从 B0 重推、来回 swipe 复用。
+        const swipeId = Number(getContext().chat?.[messageId]?.swipe_id ?? 0);
+        await runGenerateLines(true /* silent */, { mesId: Number(messageId), swipeId });
         // Re-render into the same block element (it may still be in the DOM)
         if (block.isConnected) {
             block.innerHTML = _buildLinesBlockHtml();
@@ -4279,6 +4328,62 @@ function getLinesCacheKey(view, charName) {
     return keyDesc('lines', view, charName);
 }
 
+// ── 线·swipe 临时层（localStorage）─────────────────────────────────────────
+// 楼层没「固定」（用户还没发下一条消息）前，每份 swipe 的线临时存这里：
+// key = sp-lines-swipe-<chatId>-<mesId>；value = { baseline:<B0>, swipes:{ "<swipeId>": <merged> }, view, charName }。
+// baseline = 本楼生成前的线（pre-commit B0），保证每份 swipe 都从 B0 重推、不互相叠加污染。
+function _swipeLinesKey(chatId, mesId) { return `sp-lines-swipe-${chatId}-${mesId}`; }
+function _readSwipeLines(chatId, mesId) {
+    try { return JSON.parse(localStorage.getItem(_swipeLinesKey(chatId, mesId)) || 'null'); }
+    catch { return null; }
+}
+function _writeSwipeLines(chatId, mesId, data) {
+    try { localStorage.setItem(_swipeLinesKey(chatId, mesId), JSON.stringify(data)); } catch { /* 忽略 */ }
+}
+function _clearSwipeLines(chatId, mesId) {
+    try { localStorage.removeItem(_swipeLinesKey(chatId, mesId)); } catch { /* 忽略 */ }
+}
+function _clearAllSwipeLines() {
+    try {
+        const rm = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith('sp-lines-swipe-')) rm.push(k);
+        }
+        rm.forEach(k => localStorage.removeItem(k));
+    } catch { /* 忽略 */ }
+}
+// 滑回已生成的 swipe：从临时层取回该 swipe 的线写回 store 当前活跃集 + 刷 UI，不请求 API。
+// 命中返回 true；无记录返回 false（交给调用方决定是否重算）。
+function _applyStoredSwipeLines(mesId, swipeId) {
+    const chatId = getContext().chatId;
+    const rec = _readSwipeLines(chatId, mesId);
+    const hit = rec?.swipes?.[String(swipeId)];
+    if (hit == null) return false;
+    const key = getLinesCacheKey();
+    if (!key) return false;
+    writeStore(key, { raw: hit, ts: Date.now() });
+    cachedLines = renderLines(hit);
+    if (linesMode) setLinesBody(cachedLines);
+    syncLatestInlineBlock(chatId);
+    return true;
+}
+// swipe 触发的新回复渲染完 → 重算线：先看临时层有没有算过（有则复用），没有就从楼层基线 B0 重推。
+function _regenLinesForSwipe(mesId) {
+    const cfg = loadCfg();
+    if (!cfg.url || !cfg.key) return;
+    const chatId = getContext().chatId;
+    const swipeId = Number(getContext().chat?.[mesId]?.swipe_id ?? 0);
+    if (_applyStoredSwipeLines(mesId, swipeId)) return;   // 该 swipe 已算过，直接复用
+    if (isGeneratingLines) return;
+    const rec = _readSwipeLines(chatId, mesId);
+    // 无临时层记录 = 这楼当初不是「推进楼」（swipe 0 没生成过线）→ swipe 不该凭空推进，保持现状。
+    // 只有推进楼才有 baseline B0；从 B0 重推，保证各 swipe 互不叠加。
+    if (!rec || rec.baseline == null) return;
+    isGeneratingLines = true;
+    runGenerateLines(true, { mesId: Number(mesId), swipeId, baselineRaw: rec.baseline });
+}
+
 function loadCachedLinesForCurrentChat(view, charName) {
     const saved = readStore(getLinesCacheKey(view, charName));
     if (saved?.raw) return renderLines(saved.raw);
@@ -4852,7 +4957,7 @@ function _buildDashedSubsectionHtml() {
         + `<ul class="sp-dashed-list">${list}</ul></div>`;
 }
 
-async function runGenerateLines(silent = false) {
+async function runGenerateLines(silent = false, swipeCtx = null) {
     const viewSnap = currentView;
     const charSnap = charViewName;
     const chatIdSnap = getContext().chatId;
@@ -4867,9 +4972,16 @@ async function runGenerateLines(silent = false) {
             throw new Error('请先在设置中填写自定义 API 的 URL 和 Key');
         }
         const cacheKey = getLinesCacheKey(viewSnap, charSnap);
+        // previousRaw = 推进基线。swipe 重算时用楼层 pre-commit 基线 B0（swipeCtx.baselineRaw），
+        // 保证每份 swipe 都从「本楼生成前」的状态推进，不叠加到别的 swipe 的推进上；
+        // 常规新楼/手动重生成则从 store 当前活跃集推进。
         let previousRaw = '';
-        const savedLines = readStore(cacheKey);
-        if (savedLines?.raw) previousRaw = savedLines.raw;
+        if (swipeCtx && typeof swipeCtx.baselineRaw === 'string') {
+            previousRaw = swipeCtx.baselineRaw;
+        } else {
+            const savedLines = readStore(cacheKey);
+            if (savedLines?.raw) previousRaw = savedLines.raw;
+        }
         const prompt = buildLinesPrompt(userName, charName, viewSnap, previousRaw, getScale(charStableKey(ctx)));
         const raw    = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal);
 
@@ -4884,6 +4996,14 @@ async function runGenerateLines(silent = false) {
         const merged = mergePinnedLines(previousRaw, raw);
         const html   = renderLines(merged);
         writeStore(cacheKey, { raw: merged, ts: Date.now() });
+        // 线·swipe 临时层：记本楼基线 B0 + 各 swipe 的线，供来回 swipe 复用/发消息时固定清理。
+        if (swipeCtx && swipeCtx.mesId != null) {
+            const rec = _readSwipeLines(chatIdSnap, swipeCtx.mesId)
+                || { baseline: previousRaw, swipes: {}, view: viewSnap, charName: charSnap };
+            if (rec.baseline == null) rec.baseline = previousRaw;
+            rec.swipes[String(swipeCtx.swipeId ?? 0)] = merged;
+            _writeSwipeLines(chatIdSnap, swipeCtx.mesId, rec);
+        }
         isGeneratingLines = false;
         linesAbortController = null;
         cachedLines = html;

@@ -67,13 +67,19 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
         ? `\n当前大纲：\n${outlineRaw}\n`
         : '\n当前还没有既定大纲，可先从灵感、剧情走向、角色关系、人物设定或世界观想法开始讨论。\n';
 
+    // 已有大纲时：改大纲走增量修改，别整份重写（否则用户改个细节，8 个节点全被重刷，像新开一份）。
+    const editRule = outlineRaw
+        ? `\n【修改已有大纲时（重要）】上方"当前大纲"已存在。当用户要求修改、调整、补充或改某个细节时，必须在它的基础上做**增量修改**：只改动用户明确指出的部分，其余节点**逐字原样保留**（Beat/Scene/Subtext/Think 一字不动、顺序不变、数量不变），不得擅自重写或润色未提及的节点。输出时仍给出**完整的** <outline_widget>（含所有未改动节点），供面板整体解析。`
+        : '';
+
     return [
         `你是一位故事创作顾问，正在帮助用户和 ${charName} 讨论 ${userName} 与 ${charName} 的故事发展。${outlineSection}`,
         personaDesc ? `【${userName} 的人物设定】\n${personaDesc}` : '',
         authorNote  ? `【作者注释（当前聊天）】\n${authorNote}` : '',
         wiContext,
         recentCtx,
-        `请以创作顾问身份回答，不要扮演任何角色。默认优先围绕剧情发展、设定补完、角色关系与灵感发散来回应。只有当用户明确要求你"写大纲"或明确要求输出大纲时，才输出完整的新大纲，并使用 <outline_widget>...</outline_widget> 包裹；其他时间不要输出 <outline_widget> 标签。`,
+        `请以创作顾问身份回答，不要扮演任何角色。默认优先围绕剧情发展、设定补完、角色关系与灵感发散来回应。只有当用户明确要求你"写大纲"或明确要求输出大纲时，才输出完整大纲，并使用 <outline_widget>...</outline_widget> 包裹；其他时间不要输出 <outline_widget> 标签。`,
+        editRule,
         ADVISOR_TONE_GUIDE,
         `\n【输出大纲时必须严格遵守以下格式，否则大纲窗口无法解析渲染】`,
         `<outline_widget> 内每个节点由四行组成，字段名（Beat/Scene/Subtext/Think）用英文冒号，Beat 的五个字段用竖线 | 分隔：`,
