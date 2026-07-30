@@ -89,9 +89,10 @@ async function deleteFile(name) {
     if (!res.ok && res.status !== 404) throw new Error(`delete ${name}: ${res.status}`);
 }
 // ═══════════════════════════════════════════════════════════════════════════
-//  索引（sp-anchor-index.json）：{ version, items:[ meta... ] }
-//  meta = { id, chatId, chatName, charName, messageId, floorIndex, textPreview, ts, bytes }
+//  索引（sp-anchor-index.json）：{ version, items:[ meta... ], tags:[ {id,name,color}... ] }
+//  meta = { id, chatId, chatName, charName, messageId, floorIndex, textPreview, ts, bytes, tags }
 //  —— 不含 html；html 在各自 sp-anchor-{id}.json 里。bytes = 该条完整快照的估算字节。
+//  tags = 该条打的标签 id 数组（注册表在 idx.tags，item 只存 id，解析时按 id 查注册表）。
 // ═══════════════════════════════════════════════════════════════════════════
 
 let _indexCache   = null;    // 内存里的索引 { version, items:[] }
@@ -105,6 +106,7 @@ async function loadIndex(force = false) {
         if (!idx || typeof idx !== 'object' || !Array.isArray(idx.items)) {
             idx = { version: 1, items: [] };
         }
+        if (!Array.isArray(idx.tags)) idx.tags = [];   // 标签注册表：老索引无此字段 → 归一化为空
         _indexCache = idx;
         return idx;
     })();
@@ -139,6 +141,7 @@ function toMeta(item) {
         textPreview: item.textPreview || '',
         ts        : item.ts || 0,
         bytes     : itemBytes(item),
+        tags      : Array.isArray(item.tags) ? item.tags : [],
     };
 }
 
@@ -182,6 +185,93 @@ export async function deleteItem(id) {
 export async function countItems() {
     const idx = await loadIndex();
     return idx.items.length;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  标签（全局注册表 idx.tags = [{ id, name, color }]）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 标签全局共用：一次定义，任意角色/聊天可打可筛。注册表挂在索引文件上（idx.tags），
+// item 只存标签 id 数组（item.tags）——renameTag/recolorTag 只改注册表、不重写 item；
+// 唯 deleteTag 需扫所有 item 剥掉该 id（照 renameChatId 的「改索引 + 逐条刷单文件」范式）。
+// color 存的是色板 key（rose/amber/…），实际颜色由 style.css 按 [data-color] 定义（日/夜自洽）。
+
+export async function getTags() {
+    const idx = await loadIndex();
+    return Array.isArray(idx.tags) ? idx.tags : [];
+}
+
+// 新建标签（按名去重：已存在则原样返回，不重复建）。返回该 tag。
+export async function addTag(name, color) {
+    const nm = String(name || '').trim();
+    if (!nm) return null;
+    const idx = await loadIndex();
+    if (!Array.isArray(idx.tags)) idx.tags = [];
+    const exist = idx.tags.find(t => t.name === nm);
+    if (exist) return exist;
+    const tag = {
+        id   : (crypto?.randomUUID?.() || `t-${Date.now()}-${Math.floor(performance.now())}`),
+        name : nm,
+        color: String(color || ''),
+    };
+    idx.tags.push(tag);
+    await saveIndex();
+    return tag;
+}
+
+// 改名 / 改色：注册表单点改，item 不动（item 存的是 id）。
+export async function renameTag(id, name) {
+    const nm = String(name || '').trim();
+    if (!id || !nm) return;
+    const idx = await loadIndex();
+    const t = (idx.tags || []).find(x => x.id === id);
+    if (t && t.name !== nm) { t.name = nm; await saveIndex(); }
+}
+
+export async function recolorTag(id, color) {
+    if (!id) return;
+    const idx = await loadIndex();
+    const t = (idx.tags || []).find(x => x.id === id);
+    if (t) { t.color = String(color || ''); await saveIndex(); }
+}
+
+// 删标签：从注册表删；再扫所有 item.tags 去掉该 id（索引 meta 一次性改 + 逐条刷单文件）。
+// 返回受影响条数。属全局破坏性操作，调用侧应先确认。
+export async function deleteTag(id) {
+    if (!id) return 0;
+    const idx = await loadIndex();
+    if (Array.isArray(idx.tags)) idx.tags = idx.tags.filter(t => t.id !== id);
+    const affected = (idx.items || []).filter(m => Array.isArray(m.tags) && m.tags.includes(id));
+    for (const m of affected) m.tags = m.tags.filter(x => x !== id);
+    await saveIndex();
+    for (const m of affected) {
+        try {
+            const item = await getItem(m.id);
+            if (!item) continue;
+            item.tags = Array.isArray(item.tags) ? item.tags.filter(x => x !== id) : [];
+            await uploadJson(fileNameOf(item.id), item);
+        } catch (err) { console.warn('[SP anchor] 删标签同步单条失败:', m.id, err); }
+    }
+    return affected.length;
+}
+
+// 给某条收藏设标签 id 数组（addItem 重传单文件 + 经 toMeta 刷索引 meta，含新 tags）。
+export async function setItemTags(id, tagIds) {
+    const it = await getItem(id);
+    if (!it) return;
+    it.tags = Array.isArray(tagIds) ? [...tagIds] : [];
+    await addItem(it);
+}
+
+// 找某楼的全部收藏 id（同楼可能有多条，取消收藏时要全删）。messageId 与 floorIndex 同值，匹配其一即可。
+export async function findItemIdsByFloor(chatId, floorIndex) {
+    const idx = await loadIndex();
+    const cid = String(chatId);
+    const fi  = +floorIndex;
+    if (!Number.isFinite(fi)) return [];
+    return (idx.items || [])
+        .filter(m => String(m.chatId) === cid && (Number(m.messageId) === fi || Number(m.floorIndex) === fi))
+        .map(m => m.id);
 }
 
 // 聊天改名（酒馆改 chat 文件名 = chatId 变）后，把索引 + 单条文件里 chatId===oldId 的记录
@@ -383,6 +473,7 @@ export async function saveSnapshot(meta, rawInnerHtml) {
         html,
         textPreview: makePreview(html),
         ts        : Date.now(),
+        tags      : [],
     };
     await addItem(item);
     return item;

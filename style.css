@@ -113,6 +113,7 @@
 .sp-root, .sp-root *,
 .sp-lines-inline, .sp-lines-inline *,
 .sp-anchor-btn, .sp-anchor-btn *,
+.sp-tagpicker, .sp-tagpicker *,
 .sp-toast, .sp-toast * {
     text-shadow: none !important;
 }
@@ -2747,7 +2748,7 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-theater-result-empty { min-height: 120px; padding: 30px 20px; }
 
 /* ── 长篇预览折叠 ── */
-.sp-theater-result-wrap { display: flex; flex-direction: column; }
+.sp-theater-result-wrap { display: flex; flex-direction: column; position: relative; }
 .sp-theater-result-collapsed {
     max-height: 360px;
     overflow  : hidden;
@@ -2783,6 +2784,59 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-theater-fold-toggle:hover {
     background: color-mix(in oklab, var(--sp-primary) 16%, var(--sp-sheet-bg));
+}
+
+/* ── 全屏浏览小剧场 ── */
+.sp-theater-fullscreen-btn {
+    position   : absolute;
+    top        : 6px;
+    right      : 6px;
+    z-index    : 3;
+    width      : 30px;
+    height     : 30px;
+    display    : inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size  : 0.85rem;
+    color      : var(--sp-primary);
+    background : var(--sp-sheet-bg);
+    border     : 1px solid var(--sp-divider);
+    border-radius: 8px;
+    box-shadow : 0 1px 5px rgba(0, 0, 0, 0.18);
+    cursor     : pointer;
+    opacity    : 0.75;
+    transition : opacity 0.15s, background 0.15s;
+}
+.sp-theater-fullscreen-btn:hover { opacity: 1; background: color-mix(in oklab, var(--sp-primary) 16%, var(--sp-sheet-bg)); }
+
+/* 结果区进入全屏：脱离面板、铺满视口、内部滚动 */
+.sp-theater-result.sp-theater-fullscreen {
+    position   : fixed;
+    inset      : 0;
+    z-index    : 2000010;              /* 高于面板 .sp-root(2000001) */
+    max-height : none;
+    border     : 0;
+    border-radius: 0;
+    overflow-y : auto;
+    -webkit-overflow-scrolling: touch;
+    padding    : 20px clamp(10px, 1.4vw, 16px);   /* 左右压到最小、只留一点不糊边 */
+}
+.sp-theater-result.sp-theater-fullscreen .sp-theater-result-inner {
+    max-width: none;                    /* 去掉宽度上限：内容框整屏铺满、不再居中留白 */
+    margin   : 0;
+    font-size: 15px;                    /* 全屏阅读稍放大 */
+}
+/* 全屏时锁背景滚动 */
+body.sp-theater-fs-lock { overflow: hidden; }
+/* 全屏时把退出按钮钉到视口右上，盖在全屏内容之上（否则被 fixed 的结果区遮住，只能靠 Esc 退） */
+.sp-theater-result-wrap:has(> .sp-theater-result.sp-theater-fullscreen) .sp-theater-fullscreen-btn {
+    position: fixed;
+    top     : 14px;
+    right   : 14px;
+    z-index : 2000011;
+    width   : 38px;
+    height  : 38px;
+    opacity : 0.9;
 }
 
 /* 三块之间的分隔线：创作 / 预览 / 保存 */
@@ -3099,20 +3153,25 @@ select.sp-input { appearance: none; cursor: pointer; }
 
 /* 第二层：缩略卡片 */
 .sp-anchor-item-card {
-    display      : flex;
-    align-items  : baseline;
-    gap          : 8px;
-    width        : 100%;
-    padding      : 10px 12px;
-    text-align   : left;
-    background   : var(--sp-surface);
-    border       : 1px solid var(--sp-divider);
-    border-radius: 10px;
-    cursor       : pointer;
-    color        : var(--sp-on-surface);
-    transition   : background .15s, transform .1s;
+    display        : flex;
+    flex-direction : column;
+    align-items    : stretch;
+    gap            : 6px;
+    width          : 100%;
+    padding        : 10px 12px;
+    text-align     : left;
+    background     : var(--sp-surface);
+    border         : 1px solid var(--sp-divider);
+    border-radius  : 10px;
+    cursor         : pointer;
+    color          : var(--sp-on-surface);
+    transition     : background .15s, transform .1s;
 }
 .sp-anchor-item-card:hover  { background: var(--sp-surface-high); transform: translateY(-1px); }
+/* 承接原「楼号 · 预览 · 时间」单行；tags 行渲染在其上方（卡片顶端），无标签则整行塌陷 */
+.sp-anchor-item-main        { display: flex; align-items: baseline; gap: 8px; width: 100%; }
+.sp-anchor-item-tags        { display: flex; flex-wrap: wrap; gap: 4px; }
+.sp-anchor-item-tags:empty  { display: none; }   /* 无标签卡片与改动前逐像素一致 */
 .sp-anchor-item-floor       { flex-shrink: 0; font-size: 0.72rem; font-weight: 700; color: var(--sp-primary); }
 .sp-anchor-item-preview {
     flex               : 1;
@@ -3127,6 +3186,96 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-anchor-item-ts { flex-shrink: 0; font-size: 0.64rem; color: var(--sp-subtle); }
 
+/* ─── 坐标·标签 chip（非交互 span，可安全放进 <button> 卡片）─ 对齐 .sp-line-stall-tag 尺度 */
+.sp-anchor-tagchip {
+    display       : inline-flex;
+    align-items   : center;
+    padding       : 1px 7px;
+    border-radius : 999px;
+    font-size     : 0.58rem;
+    font-weight   : 600;
+    letter-spacing: 0.02em;
+    line-height   : 1.5;
+    background    : rgba(150,150,150,0.14);
+    color         : var(--sp-subtle);
+    border        : 1px solid rgba(150,150,150,0.24);
+    white-space   : nowrap;
+}
+/* 8 预设色 — 日间：淡底 + 中深字 */
+.sp-anchor-tagchip[data-color="rose"]   { background: rgba(199,120,130,0.15); color: #b26773; border-color: rgba(199,120,130,0.30); }
+.sp-anchor-tagchip[data-color="amber"]  { background: rgba(198,150,74,0.16);  color: #a67a2e; border-color: rgba(198,150,74,0.32); }
+.sp-anchor-tagchip[data-color="olive"]  { background: rgba(140,150,80,0.16);  color: #767f3e; border-color: rgba(140,150,80,0.32); }
+.sp-anchor-tagchip[data-color="teal"]   { background: rgba(90,160,160,0.15);  color: #468080; border-color: rgba(90,160,160,0.30); }
+.sp-anchor-tagchip[data-color="indigo"] { background: rgba(110,120,190,0.15); color: #5c66a3; border-color: rgba(110,120,190,0.30); }
+.sp-anchor-tagchip[data-color="plum"]   { background: rgba(160,110,160,0.15); color: #8a5a8a; border-color: rgba(160,110,160,0.30); }
+.sp-anchor-tagchip[data-color="slate"]  { background: rgba(120,130,145,0.16); color: #64707e; border-color: rgba(120,130,145,0.32); }
+.sp-anchor-tagchip[data-color="clay"]   { background: rgba(180,120,90,0.15);  color: #9a6544; border-color: rgba(180,120,90,0.30); }
+/* 夜间：稍深底 + 亮字 */
+.sp-night .sp-anchor-tagchip[data-color="rose"]   { background: rgba(199,120,130,0.22); color: #d99aa4; border-color: rgba(199,120,130,0.38); }
+.sp-night .sp-anchor-tagchip[data-color="amber"]  { background: rgba(198,150,74,0.22);  color: #d7b06a; border-color: rgba(198,150,74,0.40); }
+.sp-night .sp-anchor-tagchip[data-color="olive"]  { background: rgba(140,150,80,0.22);  color: #b3bd77; border-color: rgba(140,150,80,0.40); }
+.sp-night .sp-anchor-tagchip[data-color="teal"]   { background: rgba(90,160,160,0.22);  color: #7fc3c3; border-color: rgba(90,160,160,0.38); }
+.sp-night .sp-anchor-tagchip[data-color="indigo"] { background: rgba(120,130,200,0.24); color: #9aa4e0; border-color: rgba(120,130,200,0.42); }
+.sp-night .sp-anchor-tagchip[data-color="plum"]   { background: rgba(170,120,170,0.22); color: #c99ac9; border-color: rgba(170,120,170,0.40); }
+.sp-night .sp-anchor-tagchip[data-color="slate"]  { background: rgba(140,150,170,0.22); color: #a3b0c0; border-color: rgba(140,150,170,0.40); }
+.sp-night .sp-anchor-tagchip[data-color="clay"]   { background: rgba(190,130,95,0.22);  color: #cf9a72; border-color: rgba(190,130,95,0.40); }
+
+/* 全文视图顶部标签行（chips + 编辑按钮） */
+.sp-anchor-full-tags {
+    display      : flex;
+    flex-wrap    : wrap;
+    align-items  : center;
+    gap          : 6px;
+    margin-bottom: 10px;
+}
+
+/* ─── 坐标 · 全文视图内联标签编辑（「编辑标签」→ 面板内展开，非 body 浮层）──────
+   全文铺满面板，body 浮层会被盖住；故在面板里内联展开一个卡片，复用标签 chip/色块视觉。 */
+.sp-anchor-full-tagedit {
+    margin-bottom: 10px;
+    padding      : 10px;
+    background   : var(--sp-surface);
+    border       : 1px solid var(--sp-divider);
+    border-radius: 10px;
+}
+.sp-anchor-ftag-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sp-anchor-ftag-chip {
+    padding      : 0;
+    background   : transparent;
+    border       : none;
+    cursor       : pointer;
+    line-height  : 0;
+    opacity      : 0.5;
+    transition   : opacity 0.12s;
+}
+.sp-anchor-ftag-chip:hover              { opacity: 0.82; }
+.sp-anchor-ftag-chip .sp-anchor-tagchip { pointer-events: none; }
+.sp-anchor-ftag-chip.sp-tp-chip-on      { opacity: 1; }
+.sp-anchor-ftag-new {
+    display     : flex;
+    align-items : center;
+    flex-wrap   : wrap;
+    gap         : 6px;
+    margin-top  : 10px;
+    padding-top : 10px;
+    border-top  : 1px solid var(--sp-divider);
+}
+.sp-anchor-ftag-new .sp-anchor-ftag-name { flex: 1 1 100%; }
+.sp-anchor-ftag-new .sp-tagmgr-swatches  { flex: 1; }
+.sp-anchor-ftag-swatch {
+    padding      : 0;
+    background   : transparent;
+    border       : 2px solid transparent;
+    border-radius: 999px;
+    cursor       : pointer;
+    line-height  : 0;
+    transition   : border-color 0.12s, transform 0.12s;
+}
+.sp-anchor-ftag-swatch:hover              { transform: scale(1.08); }
+.sp-anchor-ftag-swatch .sp-anchor-tagchip { pointer-events: none; }
+.sp-anchor-ftag-swatch.sp-tp-swatch-on    { border-color: var(--sp-primary); }
+.sp-anchor-ftag-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
+
 /* 第三层：全文（Shadow host 外壳，内部样式由 Shadow DOM 隔离） */
 .sp-anchor-full-host {
     background   : var(--sp-chat-ai-bg, var(--sp-surface));
@@ -3136,6 +3285,174 @@ select.sp-input { appearance: none; cursor: pointer; }
     overflow-x   : auto;
 }
 .sp-anchor-full-ts { margin-top: 10px; text-align: center; font-size: 0.66rem; color: var(--sp-subtle); }
+
+/* ─── 坐标 · 标签筛选栏（三层通用，scroll 顶部）────────────────────────────── */
+.sp-anchor-filterbar {
+    display      : flex;
+    flex-wrap    : wrap;
+    align-items  : center;
+    gap          : 6px;
+    padding      : 2px 2px 10px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--sp-divider);
+}
+.sp-anchor-filter-chip {
+    padding      : 2px 10px;
+    background   : transparent;
+    border       : 1px solid var(--sp-divider);
+    border-radius: 999px;
+    color        : var(--sp-subtle);
+    font-size    : 0.68rem;
+    line-height  : 1.6;
+    cursor       : pointer;
+    transition   : background 0.12s, color 0.12s, border-color 0.12s;
+}
+.sp-anchor-filter-chip:hover { border-color: var(--sp-primary); color: var(--sp-primary); }
+.sp-anchor-filter-chip .sp-anchor-tagchip { pointer-events: none; }
+.sp-anchor-filter-chip.sp-anchor-filter-on {
+    border-color: var(--sp-primary);
+    background  : color-mix(in oklab, var(--sp-primary) 14%, transparent);
+    color       : var(--sp-on-surface);
+}
+/* 标签筛选 chip：外层不再自套胶囊（否则「胶囊里套胶囊」），只留内层彩色 tagchip；
+   选中=不透明、未选=半透明。「全部」无内层 chip，仍走上面 .sp-anchor-filter-chip 的按钮胶囊。 */
+.sp-anchor-filter-tag {
+    padding      : 0;
+    border       : none;
+    background   : none;
+    opacity      : 0.5;
+}
+.sp-anchor-filter-tag:hover               { opacity: 0.82; background: none; border: none; }
+.sp-anchor-filter-tag.sp-anchor-filter-on { opacity: 1; background: none; border: none; }
+.sp-anchor-filter-empty {
+    padding   : 22px 12px;
+    text-align: center;
+    color     : var(--sp-subtle);
+    font-size : 0.78rem;
+}
+
+/* ─── 坐标 · L1 标签行 + 标签管理标题栏：整行压缩 ──────────────────────────
+   仅这两条 head 变矮变小（padding / 返回键 / 标题 / count / 图标按钮一并缩小），
+   最顶 float/close/theme 行与全文/缩略层的 head 不受影响。 */
+.sp-anchor-chars-head,
+.sp-anchor-tagmgr-head {
+    padding: 3px 10px;
+    gap    : 6px;
+}
+.sp-anchor-chars-head .sp-anchor-head-title,
+.sp-anchor-tagmgr-head .sp-anchor-head-title {
+    font-size    : 0.7rem;
+    font-weight  : 500;
+    letter-spacing: 0.04em;
+    color        : var(--sp-subtle);
+}
+.sp-anchor-tagmgr-head .sp-anchor-head-count { font-size: 0.62rem; }
+.sp-anchor-tagmgr-head .sp-anchor-back {
+    width    : 22px;
+    height   : 22px;
+    font-size: 0.72rem;
+}
+.sp-anchor-chars-head .sp-anchor-tagmgr-btn {
+    width    : 24px;
+    height   : 24px;
+    font-size: 0.72rem;
+}
+
+/* ─── 坐标 · 标签管理面 ─────────────────────────────────────────────────── */
+.sp-anchor-tagmgr-new {
+    display      : flex;
+    align-items  : center;
+    flex-wrap    : wrap;
+    gap          : 8px;
+    padding      : 4px 2px 12px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--sp-divider);
+}
+.sp-anchor-tagmgr-new .sp-tagmgr-new-name { flex: 1; min-width: 120px; }
+.sp-tagmgr-swatches { display: flex; flex-wrap: wrap; gap: 4px; }
+.sp-tagmgr-swatch {
+    padding      : 0;
+    background   : transparent;
+    border       : 2px solid transparent;
+    border-radius: 999px;
+    cursor       : pointer;
+    line-height  : 0;
+    transition   : border-color 0.12s, transform 0.12s;
+}
+.sp-tagmgr-swatch:hover     { transform: scale(1.08); }
+.sp-tagmgr-swatch .sp-anchor-tagchip { pointer-events: none; }
+.sp-tagmgr-swatch.sp-tp-swatch-on { border-color: var(--sp-primary); }
+.sp-anchor-tagmgr-list { display: flex; flex-direction: column; gap: 6px; }
+.sp-anchor-tagmgr-row {
+    display      : flex;
+    align-items  : center;
+    gap          : 8px;
+    padding      : 6px 8px;
+    background   : var(--sp-surface);
+    border       : 1px solid var(--sp-divider);
+    border-radius: 8px;
+}
+.sp-anchor-tagmgr-row .sp-anchor-tagchip { flex-shrink: 0; }
+.sp-tagmgr-usage      { flex: 1; font-size: 0.68rem; color: var(--sp-subtle); }
+.sp-tagmgr-row-actions { flex-shrink: 0; display: flex; gap: 4px; align-items: center; }
+.sp-tagmgr-editing .sp-tagmgr-name-input { flex: 1; min-width: 100px; }
+.sp-tagmgr-editing .sp-tagmgr-swatches   { flex: 1 1 auto; }
+.sp-tagmgr-confirm-text { flex: 1; font-size: 0.74rem; color: var(--sp-on-surface); }
+
+/* ─── 坐标 · 标签选择器（body 级 fixed 浮层，收藏时 & 全文编辑共用）──────── */
+.sp-tagpicker {
+    position     : fixed;
+    z-index      : 2000012;   /* 高于面板 2000001、确认框 2000002、小剧场全屏 2000011 */
+    width        : min(320px, calc(100vw - 24px));
+    max-height   : min(60vh, 480px);
+    overflow-y   : auto;
+    background-color: var(--sp-sheet-bg-legacy);
+    background-image: linear-gradient(var(--sp-sheet-bg), var(--sp-sheet-bg));
+    border       : 1px solid var(--sp-divider);
+    border-radius: 12px;
+    box-shadow   : var(--sp-shadow);
+    padding      : 12px;
+    color        : var(--sp-on-surface);
+    font-size    : 0.82rem;
+}
+.sp-tagpicker-title { font-size: 0.76rem; font-weight: 600; color: var(--sp-subtle); margin-bottom: 8px; }
+.sp-tagpicker-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.sp-tagpicker-empty { font-size: 0.76rem; color: var(--sp-subtle); padding: 4px 0 10px; }
+.sp-tagpicker-chip {
+    padding      : 0;
+    background   : transparent;
+    border       : none;
+    cursor       : pointer;
+    line-height  : 0;
+    opacity      : 0.5;
+    transition   : opacity 0.12s;
+}
+.sp-tagpicker-chip:hover        { opacity: 0.82; }
+.sp-tagpicker-chip .sp-anchor-tagchip { pointer-events: none; }
+.sp-tagpicker-chip.sp-tp-chip-on { opacity: 1; }
+.sp-tagpicker-new {
+    display      : flex;
+    align-items  : center;
+    flex-wrap    : wrap;
+    gap          : 6px;
+    padding-top  : 10px;
+    border-top   : 1px solid var(--sp-divider);
+}
+.sp-tagpicker-new .sp-tagpicker-name { flex: 1 1 100%; }
+.sp-tagpicker-swatches { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
+.sp-tagpicker-swatch {
+    padding      : 0;
+    background   : transparent;
+    border       : 2px solid transparent;
+    border-radius: 999px;
+    cursor       : pointer;
+    line-height  : 0;
+    transition   : border-color 0.12s, transform 0.12s;
+}
+.sp-tagpicker-swatch:hover      { transform: scale(1.08); }
+.sp-tagpicker-swatch .sp-anchor-tagchip { pointer-events: none; }
+.sp-tagpicker-swatch.sp-tp-swatch-on { border-color: var(--sp-primary); }
+.sp-tagpicker-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
 
 /* 空态 */
 .sp-anchor-empty-glyph { display: inline-flex; opacity: 0.3; }
