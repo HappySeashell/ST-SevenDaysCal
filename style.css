@@ -357,6 +357,55 @@
 /* ─── Model row ──────────────────────────────────────────────────────────────── */
 .sp-model-row    { display: flex; gap: 6px; }
 .sp-model-input  { flex: 1; }
+
+/* API 预设行：下拉 flex:1 + 右侧两个方形图标钮，与模型行/Key 行视觉统一 */
+.sp-preset-row    { display: flex; gap: 6px; margin-bottom: 6px; }
+.sp-preset-hint   { margin-top: 2px; color: var(--sp-primary); }
+/* 酒馆内置浏览器里原生 <select> 无视 appearance:none，自绘椭圆药丸，CSS 压不住（模型选择器同因弃用原生，
+   index.js:4158）。方案：真正的矩形是 .sp-preset-box 这个 div，我们全权控形；原生 <select> 铺满其上、透明，
+   只借它弹系统选择轮（用户已确认这交互好用）。假框文字由 syncPresetLabel() 跟原生选中项同步。 */
+.sp-preset-box {
+    position     : relative;
+    flex         : 1;
+    min-width    : 0;
+    display      : flex;
+    align-items  : center;
+    gap          : 8px;
+    padding      : 7px 11px;
+    background   : var(--sp-sheet-bg);
+    border       : 1px solid var(--sp-divider);
+    border-radius: 8px;
+    box-sizing   : border-box;
+    cursor       : pointer;
+    transition   : border-color 0.15s;
+}
+.sp-preset-box:focus-within { border-color: var(--sp-primary); }
+.sp-preset-label {
+    flex         : 1;
+    min-width    : 0;
+    overflow     : hidden;
+    text-overflow: ellipsis;
+    white-space  : nowrap;
+    color        : var(--sp-on-surface);
+    font-size    : 0.85rem;
+    font-family  : var(--sp-font);
+}
+.sp-preset-caret { flex: none; color: var(--sp-muted, var(--sp-on-surface)); font-size: 0.7rem; opacity: 0.7; }
+/* 原生 select 透明铺满假框，接管点击唤起系统选择轮 */
+.sp-preset-native {
+    position: absolute;
+    inset   : 0;
+    width   : 100%;
+    height  : 100%;
+    margin  : 0;
+    padding : 0;
+    border  : 0;
+    opacity : 0;
+    cursor  : pointer;
+    -webkit-appearance: none;
+    appearance        : none;
+}
+
 .sp-fetch-btn {
     width        : 34px;
     flex-shrink  : 0;
@@ -2449,6 +2498,25 @@ select.sp-input { appearance: none; cursor: pointer; }
     color       : #5c9ea0;
     border-color: #5c9ea0;
 }
+.sp-space-widget-badge-almanac {
+    background  : rgba(90, 166, 214, 0.15);
+    color       : #5aa6d6;
+    border-color: #5aa6d6;
+}
+.sp-space-widget-almrow {
+    display    : flex;
+    align-items: baseline;
+    gap        : 8px;
+    font-size  : 0.8rem;
+    line-height: 1.5;
+    padding    : 2px 0;
+}
+.sp-space-widget-almrow + .sp-space-widget-almrow {
+    border-top: 1px solid rgba(127, 127, 127, 0.14);
+}
+.sp-space-widget-almdate { font-weight: 600; color: var(--sp-on-surface); white-space: nowrap; }
+.sp-space-widget-almname { flex: 1; color: var(--sp-on-surface); word-break: break-word; }
+.sp-space-widget-almtype { font-size: 0.7rem; color: var(--sp-subtle); white-space: nowrap; }
 .sp-space-widget-body { display: flex; flex-direction: column; gap: 4px; }
 .sp-space-widget-title {
     font-size  : 0.88rem;
@@ -2828,6 +2896,25 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 /* 全屏时锁背景滚动 */
 body.sp-theater-fs-lock { overflow: hidden; }
+
+/* 坐标全屏浏览（照搬小剧场全屏）：普通 DOM 容器 .sp-anchor-scroll 脱离面板、铺满视口、内部滚动，便于系统截图 */
+.sp-anchor-scroll.sp-anchor-fullscreen {
+    position     : fixed;
+    inset        : 0;
+    z-index      : 2000010;              /* 高于面板 .sp-root(2000001) */
+    background   : var(--sp-sheet-bg);   /* 铺底，盖住底层面板 */
+    padding      : 20px clamp(10px, 1.4vw, 16px) 40px;
+    overflow-y   : auto;
+    -webkit-overflow-scrolling: touch;
+}
+body.sp-anchor-fs-lock { overflow: hidden; }
+/* 全屏时把「退出全屏」按钮钉到视口右上，盖在全屏内容之上（按钮在 .sp-anchor-head，随 body 脱离流故 fixed 钉住） */
+body.sp-anchor-fs-lock .sp-anchor-fullscreen {
+    position: fixed;
+    top     : 14px;
+    right   : 14px;
+    z-index : 2000011;
+}
 /* 全屏时把退出按钮钉到视口右上，盖在全屏内容之上（否则被 fixed 的结果区遮住，只能靠 Esc 退） */
 .sp-theater-result-wrap:has(> .sp-theater-result.sp-theater-fullscreen) .sp-theater-fullscreen-btn {
     position: fixed;
@@ -3277,11 +3364,8 @@ body.sp-theater-fs-lock { overflow: hidden; }
 .sp-anchor-ftag-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
 
 /* 第三层：全文（Shadow host 外壳，内部样式由 Shadow DOM 隔离） */
+/* 只当透明壳：视觉框只留 Shadow 内的 .sp-anchor-snap 一层，双框显拥挤 */
 .sp-anchor-full-host {
-    background   : var(--sp-chat-ai-bg, var(--sp-surface));
-    border       : 1px solid var(--sp-divider);
-    border-radius: 10px;
-    padding      : 14px;
     overflow-x   : auto;
 }
 .sp-anchor-full-ts { margin-top: 10px; text-align: center; font-size: 0.66rem; color: var(--sp-subtle); }
@@ -3525,4 +3609,241 @@ body.sp-theater-fs-lock { overflow: hidden; }
     color         : var(--sp-subtle);
 }
 .sp-dashed-inline-sub .sp-dashed-list li { font-size: 0.74rem; }
+
+/* ═══ 历（日历）════════════════════════════════════════════════════════════════
+   四类日期各一色（固定 hex，与 .sp-type-* 同思路，切主题不需重渲）。--alm-c 由类型类
+   下沉，日期图标/类型标签/月历圆点都取它，一处定义多处复用。 */
+.sp-alm-type-festival    { --alm-c: #ffb74d; }
+.sp-alm-type-birthday    { --alm-c: #f48fb1; }
+.sp-alm-type-anniversary { --alm-c: #e57373; }
+.sp-alm-type-custom      { --alm-c: #6bb6d6; }
+
+/* ── 顶部工具条：左 sheet 切换（分段控件）｜右 添加 / 生成 ── */
+.sp-alm-toolbar {
+    display        : flex;
+    align-items    : center;
+    justify-content: space-between;
+    gap            : 8px;
+    padding        : 8px 12px;
+    border-bottom  : 1px solid var(--sp-divider);
+    flex-shrink    : 0;
+}
+.sp-alm-sheet-toggle {
+    display      : inline-flex;
+    border       : 1px solid var(--sp-divider);
+    border-radius: 8px;
+    overflow     : hidden;
+}
+.sp-alm-sheet-btn {
+    background : transparent;
+    border     : 0;
+    color      : var(--sp-subtle);
+    padding    : 5px 14px;
+    font-size  : 0.78rem;
+    font-weight: 500;
+    line-height: 1;
+    cursor     : pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition : color 0.12s, background 0.12s;
+}
+.sp-alm-sheet-btn + .sp-alm-sheet-btn { border-left: 1px solid var(--sp-divider); }
+.sp-alm-sheet-btn:hover { color: var(--sp-on-surface); }
+.sp-alm-sheet-active {
+    background: color-mix(in oklab, var(--sp-primary) 16%, transparent);
+    color     : var(--sp-on-surface);
+}
+.sp-alm-tools { display: inline-flex; gap: 2px; }
+
+.sp-alm-body {
+    flex       : 1;
+    min-height : 0;
+    overflow-y : auto;
+    padding    : 10px 12px 14px;
+}
+
+/* ── 列表 / 条目 ── */
+.sp-alm-list { display: flex; flex-direction: column; gap: 7px; }
+.sp-alm-item {
+    display      : flex;
+    flex-direction: column;
+    gap          : 3px;
+    padding      : 7px 10px;
+    background   : var(--sp-sheet-bg);
+    border       : 1px solid var(--sp-divider);
+    border-left  : 3px solid var(--alm-c, var(--sp-divider));
+    border-radius: 9px;
+    transition   : background 0.12s;
+}
+.sp-alm-item:hover { background: var(--sp-hover-bg); }
+.sp-alm-pinned     { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--sp-primary) 30%, transparent); }
+/* 第一行：日期 + 节日名 + 标签 …… 右对齐操作按钮 */
+.sp-alm-top {
+    display    : flex;
+    align-items: center;
+    gap        : 6px;
+    min-width  : 0;
+}
+.sp-alm-date-icon { color: var(--alm-c, var(--sp-primary)); font-size: 0.8rem; width: 14px; text-align: center; flex-shrink: 0; }
+.sp-alm-date-txt  { font-size: 0.78rem; color: var(--sp-on-surface); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.sp-alm-name {
+    font-size  : 0.86rem;
+    color      : var(--sp-on-surface);
+    font-weight: 500;
+    line-height: 1.35;
+    min-width  : 0;
+    overflow   : hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sp-alm-type-tag {
+    font-size    : 0.63rem;
+    font-weight  : 600;
+    color        : var(--alm-c, var(--sp-subtle));
+    border       : 1px solid color-mix(in oklab, var(--alm-c, var(--sp-divider)) 45%, transparent);
+    border-radius: 99px;
+    padding      : 0 7px;
+    line-height  : 1.5;
+    flex-shrink  : 0;
+}
+.sp-alm-src-tag {
+    font-size    : 0.63rem;
+    font-weight  : 600;
+    color        : var(--sp-primary);
+    background   : color-mix(in oklab, var(--sp-primary) 14%, transparent);
+    border-radius: 99px;
+    padding      : 0 7px;
+    line-height  : 1.5;
+    flex-shrink  : 0;
+}
+/* 操作按钮组：推到第一行末尾右对齐 */
+.sp-alm-acts { display: flex; align-items: center; gap: 0; flex-shrink: 0; margin-left: auto; }
+.sp-alm-acts .sp-icon-btn { width: 23px; height: 23px; font-size: 0.7rem; }
+/* 第二行：备注整行铺开 */
+.sp-alm-note { font-size: 0.76rem; color: var(--sp-subtle); line-height: 1.5; overflow-wrap: anywhere; padding-left: 20px; }
+.sp-alm-pinned .sp-alm-pin { color: var(--sp-primary); }
+
+/* ── 空态 ── */
+.sp-alm-empty { gap: 8px; padding: 30px 20px; }
+.sp-alm-empty-glyph i { font-size: 2rem; opacity: 0.35; }
+.sp-alm-empty-hint    { font-size: 0.76rem; color: var(--sp-subtle); line-height: 1.6; max-width: 260px; }
+.sp-alm-empty-actions { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+.sp-alm-add-link {
+    background : transparent;
+    border     : 0;
+    color      : var(--sp-subtle);
+    font-size  : 0.8rem;
+    cursor     : pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+.sp-alm-add-link:hover { color: var(--sp-on-surface); }
+
+/* ── 月历 ── */
+.sp-alm-cal-head {
+    display       : flex;
+    align-items   : center;
+    justify-content: space-between;
+    margin-bottom : 8px;
+}
+.sp-alm-cal-title { flex: 1; text-align: center; font-size: 0.9rem; font-weight: 600; color: var(--sp-on-surface); }
+.sp-alm-grid {
+    display              : grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap                  : 3px;
+}
+.sp-alm-cell {
+    display        : flex;
+    flex-direction : column;
+    align-items    : center;
+    justify-content: center;
+    gap            : 3px;
+    min-height     : 40px;
+    border-radius  : 8px;
+    cursor         : pointer;
+    position       : relative;
+    transition     : background 0.12s;
+}
+.sp-alm-cell:hover { background: var(--sp-hover-bg); }
+.sp-alm-cell-num {
+    min-width      : 20px;
+    height         : 20px;
+    display        : inline-flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : 0.8rem;
+    color          : var(--sp-on-surface);
+}
+.sp-alm-cell-has  .sp-alm-cell-num { font-weight: 600; }
+.sp-alm-cell-today .sp-alm-cell-num {
+    background   : var(--sp-primary);
+    color        : var(--sp-on-primary);
+    border-radius: 50%;
+}
+.sp-alm-cell-sel { background: var(--sp-hover-bg); box-shadow: inset 0 0 0 1.5px var(--sp-primary); }
+.sp-alm-cell-dots {
+    display    : flex;
+    gap        : 3px;
+    height     : 5px;
+    align-items: center;
+    line-height: 0;
+}
+.sp-alm-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--alm-c, var(--sp-subtle)); display: inline-block; }
+
+.sp-alm-cal-detail { margin-top: 12px; border-top: 1px solid var(--sp-divider); padding-top: 10px; }
+.sp-alm-cal-detail-head {
+    display        : flex;
+    align-items    : center;
+    justify-content: space-between;
+    gap            : 8px;
+    margin-bottom  : 8px;
+    font-size      : 0.8rem;
+    font-weight    : 600;
+    color          : var(--sp-on-surface);
+}
+.sp-alm-cal-detail-tools { display: inline-flex; gap: 6px; }
+.sp-alm-cal-detail .sp-alm-list { gap: 6px; }
+.sp-alm-cal-empty { font-size: 0.76rem; color: var(--sp-subtle); font-style: italic; padding: 6px 2px; }
+
+/* ── 添加 / 编辑（内联窗，非弹窗；head 在滚动区外，body 复用 .sp-alm-body）── */
+.sp-alm-editor-head {
+    display      : flex;
+    align-items  : center;
+    gap          : 6px;
+    padding      : 9px 12px;
+    border-bottom: 1px solid var(--sp-divider);
+    flex-shrink  : 0;
+}
+.sp-alm-editor-title { font-size: 0.9rem; font-weight: 600; color: var(--sp-on-surface); }
+.sp-alm-editor-body  { display: flex; flex-direction: column; gap: 11px; }
+.sp-alm-field        { display: flex; flex-direction: column; gap: 5px; }
+.sp-alm-field > span { font-size: 0.76rem; color: var(--sp-subtle); font-weight: 500; }
+.sp-alm-field > span small { font-weight: 400; opacity: 0.75; }
+.sp-alm-field input,
+.sp-alm-field select,
+.sp-alm-field textarea {
+    width        : 100%;
+    padding      : 7px 11px;
+    background   : var(--sp-sheet-bg);
+    border       : 1px solid var(--sp-divider);
+    border-radius: 8px;
+    color        : var(--sp-on-surface);
+    font-size    : 0.85rem;
+    font-family  : var(--sp-font);
+    outline      : none;
+    box-sizing   : border-box;
+    transition   : border-color 0.15s;
+}
+.sp-alm-field textarea { resize: vertical; line-height: 1.5; }
+.sp-alm-field select   { appearance: none; cursor: pointer; }
+.sp-alm-field input:focus,
+.sp-alm-field select:focus,
+.sp-alm-field textarea:focus { border-color: var(--sp-primary); }
+.sp-alm-field-row    { display: flex; gap: 10px; }
+.sp-alm-field-sm     { flex: 1; }
+.sp-alm-editor-actions {
+    display        : flex;
+    justify-content: flex-end;
+    gap            : 10px;
+    margin-top     : 16px;
+}
 

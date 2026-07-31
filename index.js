@@ -29,6 +29,12 @@ const DEFAULT_SETTINGS = {
     apiUrl  : '',
     apiKey  : '',
     apiModel: '',
+    // API 存储快切：把整套 API 配置存成命名预设，多套之间切换。
+    // 每项 {id,name,url,key,model,excludeParams,timeoutSec,stream}——即 loadCfg 的完整快照。
+    // 与上面扁平的 apiUrl/apiKey/... 并存：那六个字段仍是「当前生效」的唯一真源，
+    // 预设只是备份仓库；切换 = 把某个预设填回输入框，用户点保存才写进那六个字段。
+    apiPresets       : [],
+    apiPresetActiveId: '',   // 上次选中的预设 id，纯 UI 高亮/回显用，不代表已生效
     fabShow : true,
     themeMode: 'auto',   // 'auto' | 'day' | 'night' — 'auto' follows ST theme; day/night force
     linesEnabled : true, // master switch: false disables both auto-advance AND inline block rendering
@@ -55,7 +61,6 @@ const DEFAULT_SETTINGS = {
     theaterBeautifyPrompt: '',   // 美化 agent 提示词（空=用内置默认）
     // 坐标（收藏楼层）
     anchorInlineBtn      : true,               // 楼层头部显示「收藏此楼」入口（关掉则只能从别处收藏，暂无）
-    anchorTagOnSave      : true,               // 收藏时弹轻量标签选择器（可跳过）；关掉则收藏后不弹，去全文视图补打
     anchorSizeWarnBytes  : 8 * 1024 * 1024,    // 坐标收藏占用预警阈值（快照带样式偏大，给足余量）
 };
 
@@ -171,6 +176,13 @@ let _anchorSavedKeys     = new Set();   // 已收藏楼层键 `${chatId}::${mesi
 let _anchorView          = { level: 'chars', charName: null, chatId: null, itemId: null };  // 四层抽屉：角色→聊天→收藏→全文
 let _anchorCurrentItem   = null;   // 当前全文视图的 item（跳转/删除/导出用）
 let _anchorFullTagEdit   = false;  // 全文视图「编辑标签」是否内联展开（避免 body 浮层被面板盖住）
+let almanacMode          = false;  // 历（日历）视图是否激活
+let isGeneratingAlmanac  = false;
+let almanacAbortController = null;
+let _almanacSheet        = 'upcoming';   // 历子视图：'upcoming'（即将到来清单）| 'calendar'（月历网格）
+let _almanacCalMonth     = null;   // 月历当前月份（0-11）；null → 首次渲染取真实今天所在月。历不挂年，只按月/日
+let _almanacCalDay       = null;   // 月历里选中的某天（1-31）；null → 详情区显示整月
+let _almanacEditor       = null;   // 内联添加/编辑态：{ id, prefill } 或 null（历的表单走内联窗，不用弹窗）
 const _injectTexts      = {};
 let   _injectIdSeq      = 0;
 let viewportSyncBound   = false;
@@ -279,6 +291,14 @@ jQuery(async () => {
         theaterAbortController = null;
         anchorMode = false;
         _anchorView = { level: 'chars', charName: null, chatId: null, itemId: null };
+        almanacMode = false;
+        isGeneratingAlmanac = false;
+        almanacAbortController?.abort();
+        almanacAbortController = null;
+        _almanacSheet = 'upcoming';
+        _almanacCalMonth = null;
+        _almanacCalDay = null;
+        _almanacEditor = null;
         $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
         $(`.sp-side-tab.sp-view-btn[data-view="schedule"]`).addClass('sp-view-active');
         $('.sp-sub-btn').removeClass('sp-view-active');
@@ -292,6 +312,7 @@ jQuery(async () => {
             $('#sp-space-wrap').hide();
             $('#sp-theater-wrap').hide();
             $('#sp-anchor-wrap').hide();
+            $('#sp-almanac-wrap').hide();
             $('#sp-body').show();
             $(`#${MODAL_ID} .sp-outline-btn`).removeClass('sp-btn-active');
             updateCreativeChatModeUI();
@@ -309,10 +330,13 @@ jQuery(async () => {
         //（改名那刻插件没在听 → 旧 chatId 残留、跳转失效）。命中则静默迁到当前 chat 并刷新按钮态。
         const _healHash = getContext()?.chatMetadata?.chat_id_hash;
         const _healChatId = getContext()?.chatId;
-        if (_healHash && _healChatId) {
-            anchor.healChatByHash(_healChatId, getChatDisplayName(), _healHash)
-                .then(n => { if (n > 0) { refreshAnchorSavedKeys(); if (anchorMode) renderAnchorPanel(); } })
-                .catch(err => console.warn('[SP anchor] 自愈失败:', err));
+        if (_healChatId) {
+            (async () => {
+                let n = 0;
+                if (_healHash) n += await anchor.healChatByHash(_healChatId, getChatDisplayName(), _healHash).catch(() => 0);
+                n += await adoptOrphanAnchors(_healChatId, _healHash).catch(() => 0);
+                if (n > 0) { refreshAnchorSavedKeys(); if (anchorMode) renderAnchorPanel(); }
+            })().catch(err => console.warn('[SP anchor] 自愈失败:', err));
         }
         // Surface memory schema-migration notice, if any (once per upgraded chat)
         setTimeout(checkMemoryMigrationNotice, 500);
@@ -415,10 +439,17 @@ jQuery(async () => {
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
     if (_stListeners.rename) eventSource.removeListener?.(event_types.CHAT_RENAMED, _stListeners.rename);
     _stListeners.rename = async (data) => {
-        const oldId = data?.oldFileName, newId = data?.newFileName;
+        // ST 的 CHAT_RENAMED 事件里 oldFileName/newFileName 带 .jsonl 后缀（script.js 的
+        // original_file/renamed_file），而 ctx.chatId 不带——不剥后缀就永远匹配不上，
+        // 改名同步等于从没生效过（正是"改了所有名字坐标全没跟上"的根因）。
+        const stripExt = v => String(v ?? '').replace(/\.jsonl$/i, '');
+        const oldId = stripExt(data?.oldFileName), newId = stripExt(data?.newFileName);
         if (!oldId || !newId) return;
         try {
-            const n = await anchor.renameChatId(oldId, newId, newId);
+            // 改名后重载 chat，chat_id_hash 已随文件搬到新 chat 上；顺手传进去补到收藏上，
+            // 让后续分桶/自愈有稳定键（改名多少次都并一个桶）。
+            const hash = getContext()?.chatMetadata?.chat_id_hash ?? null;
+            const n = await anchor.renameChatId(oldId, newId, newId, hash);
             if (n && anchorMode) renderAnchorPanel();
         } catch (err) { console.warn('[7dayscal] 坐标改名同步失败:', err); }
     };
@@ -480,6 +511,53 @@ function saveCfg(c) {
     s.apiExcludeParams = Array.isArray(c.excludeParams) ? c.excludeParams : [];
     s.apiTimeoutSec    = Number.isFinite(c.timeoutSec) && c.timeoutSec > 0 ? Math.floor(c.timeoutSec) : 180;
     s.apiStream        = c.stream === true;
+    saveSettingsDebounced();
+}
+
+// ─── API 存储快切：预设仓库 ────────────────────────────────────────────────────
+// 预设是「整套 API 配置的命名快照」。存的是当前输入框里的这套（含未点保存的改动），
+// 切换只把某个预设填回输入框，不直接改生效配置——用户核对后点「保存设置」才落地。
+function loadApiPresets() {
+    const arr = getSettings().apiPresets;
+    return Array.isArray(arr) ? arr : [];
+}
+
+function genPresetId() {
+    return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+// 把一套 cfg（loadCfg 形状）存成预设。有 id 且已存在→覆盖(改名+更新内容)，否则新建。
+// 返回被写入/新建的预设 id。
+function upsertApiPreset(name, cfg, id) {
+    const list = loadApiPresets();
+    const snap = {
+        name         : String(name || '').trim() || '未命名',
+        url          : cfg.url   || '',
+        key          : cfg.key   || '',
+        model        : cfg.model || '',
+        excludeParams: Array.isArray(cfg.excludeParams) ? cfg.excludeParams : [],
+        timeoutSec   : Number.isFinite(cfg.timeoutSec) && cfg.timeoutSec > 0 ? Math.floor(cfg.timeoutSec) : 180,
+        stream       : cfg.stream === true,
+    };
+    const existing = id ? list.find(p => p.id === id) : null;
+    if (existing) { Object.assign(existing, snap); }
+    else { snap.id = genPresetId(); list.push(snap); id = snap.id; }
+    getSettings().apiPresets = list;
+    getSettings().apiPresetActiveId = id;
+    saveSettingsDebounced();
+    return id;
+}
+
+// 按已有预设名查（存为预设时判重，用于「同名→覆盖」）。返回预设对象或 null。
+function findApiPresetByName(name) {
+    const n = String(name || '').trim();
+    return loadApiPresets().find(p => p.name === n) || null;
+}
+
+function deleteApiPreset(id) {
+    const list = loadApiPresets().filter(p => p.id !== id);
+    getSettings().apiPresets = list;
+    if (getSettings().apiPresetActiveId === id) getSettings().apiPresetActiveId = '';
     saveSettingsDebounced();
 }
 
@@ -603,10 +681,16 @@ function detectInGameDayChange(messageId, excludeCurrent = false) {
 // 自带前缀（甚至混用），会导致「下一步：下一步：xxx」；先剥掉任意已有前缀再统一加。
 function prefixNext(next, stall) {
     let clean = String(next || '').trim();
-    // 循环剥掉开头任意层「下一步：/恢复条件：」前缀（模型偶尔叠两层）
+    // 循环剥掉开头任意层模型自带的「下一步/恢复条件」标签，再统一加前缀。
+    // 只在能确认是"标签"而非正文时才剥（避免误伤"下一步行动是…"这类正文）：
+    //   (a) 被成对强调符包裹：**下一步** / **下一步：** / *恢复条件*（模型有时不加冒号，只加粗）
+    //   (b) 裸标签＋冒号：下一步： / 恢复条件：（必须带冒号才算标签）
     let prev;
-    do { prev = clean; clean = clean.replace(/^(下一步|恢复条件)\s*[:：]\s*/, '').trim(); }
-    while (clean !== prev);
+    do {
+        prev = clean;
+        clean = clean.replace(/^(\*\*|__|\*|_)\s*(下一步|恢复条件)\s*[:：]?\s*\1\s*[:：]?\s*/, '').trim();
+        clean = clean.replace(/^\s*(下一步|恢复条件)\s*[:：]\s*/, '').trim();
+    } while (clean !== prev);
     return (stall ? '恢复条件：' : '下一步：') + clean;
 }
 
@@ -721,6 +805,34 @@ function syncLatestInlineBlock(expectedChatId = null) {
     if (!lastMesEl) return;
     const msgEl = lastMesEl.querySelector('.mes_text');
     if (!msgEl) return;
+    const block = document.createElement('details');
+    block.className = 'sp-lines-inline';
+    block.innerHTML = _buildLinesBlockHtml();
+    msgEl.appendChild(block);
+}
+
+// 掉块兜底：搭 anchor 的 #chat MutationObserver（防抖 400ms）顺风车。ST 流式重排、
+// 消息编辑、其他扩展（酒馆助手/正则/JSR）重渲 .mes_text 都会把塞在正文里的线块冲掉，
+// 而这些多数不发 CHARACTER_MESSAGE_RENDERED —— 以前没兜底就表现为「线块隔一会儿没了」。
+// 这里每次 DOM 变动后检查最新 AI 楼是否还挂着块，没了就补回。
+// 幂等是关键：最新楼已有块 → 直接返回不动 DOM，既保住 <details> 展开态，也断开
+// 「补块→改 DOM→再触发 observer→再补」的自激循环（补完下一轮就走这个 no-op 分支停下）。
+function ensureLatestLineBlock() {
+    if (getSettings().linesEnabled === false) return;   // 主开关关：保持 chat 干净，不补
+    if (isGeneratingLines) return;                      // 生成中：交给 appendLinesInlineBlock 自管，别插手
+    const aiMes = document.querySelectorAll('#chat .mes:not([is_user="true"])');
+    const lastMesEl = aiMes.length ? aiMes[aiMes.length - 1] : null;
+    if (!lastMesEl) return;
+    if (lastMesEl.querySelector('.sp-lines-inline')) {
+        // 最新楼已有块：只顺手清掉「漂到非最新楼」的残留，维持单副本，然后收工
+        document.querySelectorAll('#chat .mes:not([is_user="true"]) .sp-lines-inline').forEach(el => {
+            if (!lastMesEl.contains(el)) el.remove();
+        });
+        return;
+    }
+    const msgEl = lastMesEl.querySelector('.mes_text');
+    if (!msgEl) return;
+    _removeAllInlineBlocks();   // 清任何残留（历史楼/半个块），再在最新楼补一个
     const block = document.createElement('details');
     block.className = 'sp-lines-inline';
     block.innerHTML = _buildLinesBlockHtml();
@@ -945,6 +1057,130 @@ function scanAnchorButtons() {
     });
 }
 
+// 用 ST 自己的 messageFormatting 把这楼的原始文本重新渲染一遍，从结果里抠出 <style> 块。
+// 这是美化 CSS 最可靠的来源：正则替换出的 <style> 经 ST 管线会得到 .mes_text .custom-* 选择器，
+// 但落进 DOM 后常被页面优化机制（酒馆助手等）挪走去重，收藏时楼内已经没有了；而 messageFormatting
+// 是纯字符串函数，随时能重放出完整带样式的 HTML，不依赖页面此刻的样式放在哪。
+function collectMessageStyles(messageId) {
+    try {
+        const ctx = getContext();
+        const msg = ctx?.chat?.[messageId];
+        if (!msg || typeof ctx?.messageFormatting !== 'function') return '';
+        const html = ctx.messageFormatting(String(msg.mes ?? ''), msg.name, !!msg.is_system, !!msg.is_user, messageId);
+        return [...String(html).matchAll(/<style>([\s\S]*?)<\/style>/gi)].map(m => m[1]).join('\n');
+    } catch { return ''; }
+}
+
+// 收集页面里作用于消息美化的 CSS 规则（选择器含 .custom- 或 .mes_text 的），冻进快照。
+// 背景：正则美化输出的 <style> 经 ST 管线（encodeStyleTags→DOMPurify 改名 class→decodeStyleTags 加
+// .mes_text 前缀）后会被酒馆助手等从楼层里挪走去重，收藏时楼内已无 style，只剩 custom-* 结构（中间态）。
+// 快照渲染在 :host{all:initial} 的 Shadow DOM 里，页面样式够不着，必须在收藏时把这些规则一并带走。
+// 注意：不能用 `if (r.cssRules) 递归` 判断分组规则——支持 CSS nesting 的浏览器里普通样式规则
+// 也带（空的）cssRules，会把所有规则都当成分组跳过；这里以 selectorText 有无区分。
+function collectCustomCss() {
+    const seen = new Set();
+    const walk = (rules, sink) => {
+        for (const r of rules) {
+            try {
+                const sel = r.selectorText;
+                if (sel) {
+                    // 只收 .custom-* 或 .mes_text 的**后代**规则；裸 .mes_text{} 是容器级主题规则，
+                    // 冻进快照会反过来命中快照容器本身（它也挂着 mes_text class），顶掉容器内边距
+                    const ok = sel.includes('.custom-') || /\.mes_text\s+\S/.test(sel);
+                    if (ok && !seen.has(r.cssText)) {
+                        seen.add(r.cssText);
+                        sink.push(r.cssText);
+                    }
+                } else if (r.cssRules && r.cssRules.length) {
+                    // @media/@supports/@layer 等分组：保留条件头，只收里面命中的规则
+                    const inner = [];
+                    walk(r.cssRules, inner);
+                    if (inner.length) {
+                        const head = String(r.cssText || '').split('{', 1)[0].trim();
+                        sink.push(head ? `${head} {\n${inner.join('\n')}\n}` : inner.join('\n'));
+                    }
+                }
+            } catch { }
+        }
+    };
+    const out = [];
+    for (const sheet of document.styleSheets) {
+        try { if (sheet.cssRules) walk(sheet.cssRules, out); } catch { }   // 跨域表读不了，跳过
+    }
+    return out.join('\n');
+}
+
+// 收藏前把楼层里"活的"渲染冻成静态 HTML，再交给 saveSnapshot 序列化。
+// 关键：酒馆助手(TavernHelper/JS-Slash-Runner)把角色卡状态栏渲染成 <div class="TH-render"><iframe srcdoc>，
+// 真正的状态栏 DOM 活在 iframe.contentDocument 里；直接取 .mes_text.innerHTML 只拿到空的 <iframe> 壳，
+// 序列化后状态栏就没了（且 stripRenderBoxes 还会把 .TH-render 整块删掉）。这里在克隆体上就地把每个
+// same-origin iframe 的 contentDocument 正文 + <style> 一并搬进一个静态容器，替换掉 iframe，状态栏遂被冻存。
+// 跨域/取不到 doc 的 iframe 保持原样（后续 stripRenderBoxes 兜底删除），不至于报错。
+function captureFloorHtml(textEl, messageId = null) {
+    if (!textEl) return '';
+    let clone;
+    try { clone = textEl.cloneNode(true); }
+    catch { return textEl.innerHTML; }
+    // 克隆体里的 iframe 是空壳，得按顺序对应回源 DOM 里那些"活"的 iframe 去读 contentDocument。
+    const liveFrames  = textEl.querySelectorAll('.TH-render iframe, iframe');
+    const cloneFrames = clone.querySelectorAll('.TH-render iframe, iframe');
+    cloneFrames.forEach((cf, i) => {
+        const live = liveFrames[i];
+        let inner = '';
+        try {
+            const doc = live && (live.contentDocument || live.contentWindow?.document);
+            if (doc && doc.body) {
+                const styles = [...doc.querySelectorAll('style')].map(st => st.outerHTML).join('');
+                inner = styles + doc.body.innerHTML;
+            }
+        } catch { inner = ''; }   // 跨域读不到 → 留空，交给下游按 .TH-render 删除
+        if (!inner) return;
+        const frozen = document.createElement('div');
+        frozen.className = 'sp-anchor-frozen-render';
+        frozen.innerHTML = inner;
+        // 连同外层 .TH-render 一起换掉，避免 stripRenderBoxes 把冻好的内容再删一遍
+        const box = cf.closest('.TH-render') || cf;
+        box.replaceWith(frozen);
+    });
+    let css = '';
+    try { css = collectCustomCss(); } catch { css = ''; }
+    let msgCss = '';
+    try { msgCss = collectMessageStyles(messageId); } catch { msgCss = ''; }
+    // data-sp-cap 是捕获代码版本标记（DOMPurify 会保留 data- 属性），排查"改了没生效"时看它
+    return '<div hidden data-sp-cap="3"></div>'
+        + (msgCss ? `<style>${msgCss}</style>` : '')
+        + (css ? `<style>${css}</style>` : '')
+        + clone.innerHTML;
+}
+
+// 孤儿收藏收养（hash 链断掉的旧数据）：拉当前角色现存聊天文件清单，
+// 仅当"该角色只有当前这一个聊天"时，把挂在已消失旧名下、charName 相同的收藏认领进来。
+// 详见 anchor.adoptOrphans 的判据说明。群聊跳过（无 avatar 概念）。
+async function adoptOrphanAnchors(currentChatId, chatIdHash) {
+    const ctx = getContext();
+    if (!currentChatId || ctx.groupId) return 0;
+    const avatar = ctx.characters?.[ctx.characterId]?.avatar;
+    const charName = ctx.name2;
+    if (!avatar || !charName) return 0;
+    let list;
+    try {
+        const res = await fetch('/api/characters/chats', {
+            method : 'POST',
+            headers: ctx.getRequestHeaders(),
+            body   : JSON.stringify({ avatar_url: avatar, simple: true }),
+        });
+        if (!res.ok) return 0;
+        list = await res.json();
+    } catch { return 0; }
+    const rows = Array.isArray(list) ? list : Object.values(list || {});
+    const existing = new Set(
+        rows.map(c => String(c?.file_name || '').replace(/\.jsonl$/i, '')).filter(Boolean)
+    );
+    // 该角色不止一个聊天 → 孤儿归属有歧义，不动
+    if (existing.size !== 1 || !existing.has(String(currentChatId))) return 0;
+    return anchor.adoptOrphans(charName, existing, currentChatId, getChatDisplayName(), chatIdHash ?? null);
+}
+
 async function onAnchorButtonClick(mes) {
     const ctx    = getContext();
     const chatId = ctx.chatId ?? null;
@@ -974,19 +1210,16 @@ async function onAnchorButtonClick(mes) {
     try {
         const savedItem = await anchor.saveSnapshot({
             chatId,
+            chatIdHash: ctx?.chatMetadata?.chat_id_hash ?? null,   // 改名不变的稳定键，落到每条上，供分桶/自愈用
             chatName  : getChatDisplayName(),
             charName  : mes.getAttribute('ch_name') || ctx.name2 || '角色',
             messageId : mid,
             floorIndex: Number.isFinite(+mid) ? +mid : null,
-        }, textEl.innerHTML);
+        }, captureFloorHtml(textEl, Number.isFinite(+mid) ? +mid : null));
         _anchorSavedKeys.add(key);
         if (btn) { btn.classList.add('sp-anchor-saved'); btn.title = '已收藏 · 点击取消'; }
         showToast('已收藏此楼', () => openAnchorAtChat(chatId));
         if (anchorMode) renderAnchorPanel();
-        // 收藏时弹轻量标签选择器（opt-in，默认开；点外面/Esc 可跳过）
-        if (savedItem?.id && getSettings().anchorTagOnSave !== false) {
-            openTagPicker({ itemId: savedItem.id, anchorEl: btn });
-        }
         anchor.checkSize()
             .then(r => { if (r.over) showToast(`收藏已占 ${anchor.formatBytes(r.bytes)}，可在坐标面板清理`, null, true); })
             .catch(() => {});
@@ -1010,13 +1243,14 @@ function openAnchorAtChat(chatId) {
 // #chat 变动（swipe/编辑/重渲染会抹掉注入的按钮）→ 防抖补齐
 let _anchorObserver  = null;
 let _anchorScanTimer = null;
+// 盯 #chat 的共用 observer：既给每楼补「收藏」按钮，也兜底补回被冲掉的线块（防掉块）。
 function initAnchorObserver() {
     const chat = document.querySelector('#chat');
     if (!chat) { setTimeout(initAnchorObserver, 600); return; }
     _anchorObserver?.disconnect();
     _anchorObserver = new MutationObserver(() => {
         clearTimeout(_anchorScanTimer);
-        _anchorScanTimer = setTimeout(scanAnchorButtons, 400);
+        _anchorScanTimer = setTimeout(() => { scanAnchorButtons(); ensureLatestLineBlock(); }, 400);
     });
     _anchorObserver.observe(chat, { childList: true, subtree: true });
 }
@@ -1170,6 +1404,10 @@ function injectModal() {
                             <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.4" fill="currentColor" stroke="none"/></svg></span>
                             <span class="sp-tab-label">点</span>
                         </button>
+                        <button class="sp-side-tab sp-view-btn" data-view="almanac">
+                            <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="9" r="1.9" fill="currentColor" stroke="none"/><circle cx="15.5" cy="9" r="1.9" fill="currentColor" stroke="none"/><circle cx="8.5" cy="15" r="1.9" fill="currentColor" stroke="none"/><circle cx="15.5" cy="15" r="1.9" fill="currentColor" stroke="none"/></svg></span>
+                            <span class="sp-tab-label">历</span>
+                        </button>
                         <button class="sp-side-tab sp-view-btn" data-view="lines">
                             <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="4" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="20" r="2.2" fill="currentColor" stroke="none"/></svg></span>
                             <span class="sp-tab-label">线</span>
@@ -1232,6 +1470,18 @@ function injectModal() {
                                             : '未配置独立 API：生成期间将<b>占用聊天通道</b>，无法同时聊天'}
                                     </div>
                                     <p class="sp-cfg-hint">留空则使用酒馆当前模型</p>
+
+                                    <!-- API 存储快切：选预设→填入下方输入框（仍需点保存生效）；＋新增按域名自动命名、🗑删除，均即时落 settings.json -->
+                                    <div class="sp-preset-row">
+                                        <div class="sp-preset-box">
+                                            <span id="sp-preset-label" class="sp-preset-label">选择预设…</span>
+                                            <i class="fa-solid fa-chevron-down sp-preset-caret"></i>
+                                            <select id="sp-preset-select" class="sp-preset-native" title="切换 API 预设"></select>
+                                        </div>
+                                        <button id="sp-preset-save" class="sp-fetch-btn" title="把当前这套 API 设置存为新预设"><i class="fa-solid fa-plus"></i></button>
+                                        <button id="sp-preset-del" class="sp-fetch-btn" title="删除当前选中的预设"><i class="fa-solid fa-trash"></i></button>
+                                    </div>
+                                    <p id="sp-preset-hint" class="sp-cfg-hint sp-preset-hint" style="display:none"></p>
                                     <input id="sp-cfg-url" class="sp-input" type="url"
                                            placeholder="Base URL，如 https://api.openai.com/v1"
                                            value="${escapeAttr(cfg.url || '')}">
@@ -1484,11 +1734,6 @@ function injectModal() {
                                         <span>在楼层角色名旁显示「收藏此楼」入口</span>
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">关掉后楼层不再出现坐标图标（已有收藏不受影响）。收藏占用与清空已收进「存储管理」分节。</p>
-                                    <label class="sp-mode-opt" style="margin-top:10px">
-                                        <input type="checkbox" id="sp-anchor-tag-onsave" ${getSettings().anchorTagOnSave !== false ? 'checked' : ''}>
-                                        <span>收藏时弹出标签选择器</span>
-                                    </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">收藏成功后弹一个轻量标签选择器（可跳过，点外面或 Esc 关闭）。关掉则收藏后不弹，可进收藏全文视图再补打标签。</p>
                                 </div>
                             </details>
 
@@ -1559,6 +1804,8 @@ function injectModal() {
                         <div class="sp-anchor-wrap" id="sp-anchor-wrap" style="display:none;flex-direction:column;flex:1;min-height:0">
                             <div class="sp-anchor-body" id="sp-anchor-body"></div>
                         </div>
+
+                        <div class="sp-almanac-wrap" id="sp-almanac-wrap" style="display:none;flex-direction:column;flex:1;min-height:0"></div>
                     </div><!-- /sp-main -->
 
                     <details class="sp-debug-drawer" id="sp-debug-drawer">
@@ -1610,7 +1857,7 @@ function injectModal() {
         if (msg && !isOutlineChatting) { const $i = $('#sp-chat-input'); $i.val(''); autoGrowTextarea($i[0]); sendOutlineChat(msg); }
     }
     $('#sp-chat-send').on('click', doSendChat);
-    $('#sp-chat-input').on('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSendChat(); } });
+    // 回车换行、只用按钮发送（用户偏好）——不再拦 Enter；自动长高保留。
     $('#sp-chat-input').on('input', function () { autoGrowTextarea(this); });
 
     // Delete a single message (leaves the rest alone — user chose "just this one")
@@ -1653,7 +1900,7 @@ function injectModal() {
         if (msg && !isSpaceChatting) { const $i = $('#sp-space-input'); $i.val(''); autoGrowTextarea($i[0]); sendSpaceChat(msg); }
     }
     $('#sp-space-send').on('click', doSendSpaceChat);
-    $('#sp-space-input').on('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSendSpaceChat(); } });
+    // 回车换行、只用按钮发送（用户偏好）——不再拦 Enter；自动长高保留。
     $('#sp-space-input').on('input', function () { autoGrowTextarea(this); });
 
     $('#sp-space-msgs').on('click', '.sp-chat-msg-delete', function () {
@@ -1682,6 +1929,7 @@ function injectModal() {
         if (!stored) { showToast('这张卡片已过期，请再让 AI 生成一次', null, true); return; }
         if (stored.kind === 'schedule_widget') applyScheduleWidget(stored.body, $btn, stored.editIdx);
         else if (stored.kind === 'line_widget') applyLineWidget(stored.body, $btn, stored.editIdx);
+        else if (stored.kind === 'almanac_widget') applyAlmanacWidget(stored.body, $btn, $btn.attr('data-idx'));
     });
 
     $('#sp-space-clear').on('click', async () => {
@@ -1858,7 +2106,7 @@ function injectModal() {
         else                     _anchorView = { level: 'chars', charName: null, chatId: null, itemId: null };
         renderAnchorPanel();
     });
-    $anchor.on('click', '.sp-anchor-jump', anchorJumpToSource);
+    $anchor.on('click', '.sp-anchor-fullscreen', function () { toggleAnchorFullscreen(this); });
     $anchor.on('click', '.sp-anchor-tag-edit', function () {
         if (!_anchorCurrentItem) return;
         _anchorFullTagEdit = true;
@@ -1990,6 +2238,27 @@ function injectModal() {
         } catch (err) { showToast('删除标签失败：' + (err?.message || ''), null, true); }
     });
 
+    // ── 历（日历）事件（委托到 #sp-almanac-wrap，两个 sheet 动态重渲染）──
+    const $almanac = $('#sp-almanac-wrap');
+    $almanac.on('click', '.sp-alm-sheet-btn', function () { almSetSheet($(this).attr('data-sheet')); });
+    $almanac.on('click', '.sp-alm-add', function () { openAlmanacEditor(null); });
+    $almanac.on('click', '.sp-alm-gen', triggerGenerateAlmanac);
+    $almanac.on('click', '.sp-alm-pin', function () { toggleAlmanacPin($(this).attr('data-id')); });
+    $almanac.on('click', '.sp-alm-edit', function () { openAlmanacEditor($(this).attr('data-id')); });
+    $almanac.on('click', '.sp-alm-del', function () { deleteAlmanacItem($(this).attr('data-id')); });
+    // 月历：翻月 / 选日（再点已选=取消回全月）/ 看全月 / 加到某天
+    $almanac.on('click', '.sp-alm-cal-prev', function () { almNavMonth(-1); });
+    $almanac.on('click', '.sp-alm-cal-next', function () { almNavMonth(1); });
+    $almanac.on('click', '.sp-alm-cell[data-day]', function () { almSelectDay(parseInt($(this).attr('data-day'), 10)); });
+    $almanac.on('click', '.sp-alm-cal-clearsel', function () { _almanacCalDay = null; renderAlmanacPanel(); });
+    $almanac.on('click', '.sp-alm-add-day', function () {
+        openAlmanacEditor(null, { month: almCalMonth() + 1, day: parseInt($(this).attr('data-day'), 10) || 1 });
+    });
+    $almanac.on('click', '#sp-abort-almanac', abortAlmanacGen);
+    // 内联编辑器：保存 / 取消 / 返回
+    $almanac.on('click', '.sp-alm-editor-save', saveAlmanacEditor);
+    $almanac.on('click', '.sp-alm-editor-cancel, .sp-alm-editor-back', closeAlmanacEditor);
+
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
     $(`#${MODAL_ID}`).on('click', '.sp-view-btn', function () {
         if (isGenerating) return;
@@ -2018,11 +2287,13 @@ function injectModal() {
                 spaceMode = false;
                 theaterMode = false;
                 anchorMode = false;
+                almanacMode = false;
                 $('#sp-body').hide();
                 $('#sp-lines-wrap').hide();
                 $('#sp-space-wrap').hide();
                 $('#sp-theater-wrap').hide();
                 $('#sp-anchor-wrap').hide();
+                $('#sp-almanac-wrap').hide();
                 $('#sp-outline-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
                 $('#sp-content-title').text('面');
@@ -2046,11 +2317,13 @@ function injectModal() {
                 spaceMode = false;
                 theaterMode = false;
                 anchorMode = false;
+                almanacMode = false;
                 $('#sp-body').hide();
                 $('#sp-outline-wrap').hide();
                 $('#sp-space-wrap').hide();
                 $('#sp-theater-wrap').hide();
                 $('#sp-anchor-wrap').hide();
+                $('#sp-almanac-wrap').hide();
                 $('#sp-lines-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
                 $('#sp-content-title').text('线');
@@ -2071,11 +2344,13 @@ function injectModal() {
                 linesMode = false;
                 theaterMode = false;
                 anchorMode = false;
+                almanacMode = false;
                 $('#sp-body').hide();
                 $('#sp-outline-wrap').hide();
                 $('#sp-lines-wrap').hide();
                 $('#sp-theater-wrap').hide();
                 $('#sp-anchor-wrap').hide();
+                $('#sp-almanac-wrap').hide();
                 $('#sp-space-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
                 $('#sp-content-title').text('间');
@@ -2091,11 +2366,13 @@ function injectModal() {
                 linesMode = false;
                 spaceMode = false;
                 anchorMode = false;
+                almanacMode = false;
                 $('#sp-body').hide();
                 $('#sp-outline-wrap').hide();
                 $('#sp-lines-wrap').hide();
                 $('#sp-space-wrap').hide();
                 $('#sp-anchor-wrap').hide();
+                $('#sp-almanac-wrap').hide();
                 $('#sp-theater-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
                 $('#sp-content-title').text('棱');
@@ -2118,23 +2395,46 @@ function injectModal() {
                 linesMode = false;
                 spaceMode = false;
                 theaterMode = false;
+                almanacMode = false;
                 $('#sp-body').hide();
                 $('#sp-outline-wrap').hide();
                 $('#sp-lines-wrap').hide();
                 $('#sp-space-wrap').hide();
                 $('#sp-theater-wrap').hide();
+                $('#sp-almanac-wrap').hide();
                 $('#sp-anchor-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
                 $('#sp-content-title').text('坐标');
                 renderAnchorPanel();
                 return;
             }
-            // view === 'schedule' — leaving outline/lines/space/theater/anchor, restore body
+            if (view === 'almanac') {
+                if (almanacMode) return;
+                almanacMode = true;
+                outlineMode = false;
+                linesMode = false;
+                spaceMode = false;
+                theaterMode = false;
+                anchorMode = false;
+                $('#sp-body').hide();
+                $('#sp-outline-wrap').hide();
+                $('#sp-lines-wrap').hide();
+                $('#sp-space-wrap').hide();
+                $('#sp-theater-wrap').hide();
+                $('#sp-anchor-wrap').hide();
+                $('#sp-almanac-wrap').css('display', 'flex');
+                $('#sp-sub-toggle').hide();
+                $('#sp-content-title').text('历');
+                renderAlmanacPanel();
+                return;
+            }
+            // view === 'schedule' — leaving outline/lines/space/theater/anchor/almanac, restore body
             if (outlineMode) { outlineMode = false; $('#sp-outline-wrap').hide(); }
             if (linesMode)   { linesMode   = false; $('#sp-lines-wrap').hide(); }
             if (spaceMode)   { spaceMode   = false; $('#sp-space-wrap').hide(); }
             if (theaterMode) { theaterMode = false; $('#sp-theater-wrap').hide(); }
             if (anchorMode)  { anchorMode  = false; $('#sp-anchor-wrap').hide(); }
+            if (almanacMode) { almanacMode = false; $('#sp-almanac-wrap').hide(); }
             $('#sp-body').show();
             $('#sp-sub-toggle').show();
             $('#sp-content-title').text('点');
@@ -2166,6 +2466,8 @@ function injectModal() {
     $('#sp-cfg-save').on('click',      saveSettings);
     $('#sp-key-toggle').on('click',    toggleKeyVisibility);
     $('#sp-fetch-models').on('click',  fetchModels);
+    bindApiPresetEvents();
+    renderApiPresetSelect();
     // Master switch: apply immediately so the user sees inline blocks appear/
     // disappear the moment they toggle, not on next AI message.
     $('#sp-lines-enabled').on('change', function () {
@@ -2210,10 +2512,6 @@ function injectModal() {
         getSettings().anchorInlineBtn = this.checked;
         saveSettingsDebounced();
         scanAnchorButtons();
-    });
-    $('#sp-anchor-tag-onsave').on('change', function () {
-        getSettings().anchorTagOnSave = this.checked;
-        saveSettingsDebounced();
     });
     // Inline model list: pick an item → write to input + refresh active highlight
     $('#sp-model-list-items').on('click', '.sp-model-list-item', function () {
@@ -2567,7 +2865,7 @@ function spConfirm({ title, body, note, confirmText = '确定', cancelText = '�
 // 三态：保留云端(丢 localStorage 副本) / 保留本机(localStorage 覆盖云端 + 重载) /
 // 点窗外=暂不决定(什么都不动，下次进本 chat 再问)。故意不设「默认破坏动作」——
 // 数据两难时，不选就谁都不动。
-const KIND_LABEL = { schedule: '点', outline: '面', lines: '线', 'creative-chat': '面·讨论', 'space-chat': '间' };
+const KIND_LABEL = { schedule: '点', outline: '面', lines: '线', 'creative-chat': '面·讨论', 'space-chat': '间', almanac: '历' };
 
 function fmtStoreSide(sum) {
     const labels = (sum?.kinds || []).map(k => KIND_LABEL[k] || k).join('、') || '（无）';
@@ -2728,6 +3026,13 @@ function abortTheaterGen() {
     isGeneratingTheater = false;
     theater.resetTheaterGenerating();   // 同步清 theater.js 内部标志，避免立刻再点生成误报"正在生成中"
     renderTheaterPanel();
+}
+function abortAlmanacGen() {
+    if (!isGeneratingAlmanac) return;
+    almanacAbortController?.abort();
+    almanacAbortController = null;
+    isGeneratingAlmanac = false;
+    if (almanacMode) renderAlmanacPanel();
 }
 
 // 保存/查看时同步草稿里同 id 条目的 title（保证草稿列表与永久保存一致）
@@ -3315,6 +3620,12 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10)
         ? `【故事记忆库】以下由本插件在对话过程中自动生成的客观摘要，反映从最早到近期的关键事件与伏笔。请**优先信任记忆库描述**，即使它与角色卡/世界书中较早的描述冲突（因为记忆库记录了事件后的最新状态）。以 ${currentView === 'char' ? charName : userName} 的视角优先关注对其有意义的信息。\n\n${memText}`
         : '';
 
+    // 历（本世界观重要日期）：历自己不进主楼，只在这里作为数据源反哺点/线/大纲。
+    const almanacText = getAlmanacInjectText();
+    const almanacBlock = almanacText
+        ? `【本世界观·重要日期（历）】以下是这个世界一年之中的既定节日、生日、纪念日等重要日子（按月日排序）。推演点/线/大纲时，若时间线临近或涉及这些日子，应自然地纳入考量，使故事与该世界的历法自洽。\n${almanacText}`
+        : '';
+
     const sys  = [
         `你是一位旁观者和叙事分析助手，负责以第三人称视角分析 ${userName} 与 ${charName} 的故事。`,
         `不要扮演任何角色，不要使用第一人称。所有输出必须以第三人称叙述。`,
@@ -3325,6 +3636,7 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10)
         authorNote       ? `【作者注释（当前聊天）】\n${authorNote}` : '',
         wiContext,
         memBlock,
+        almanacBlock,
     ].filter(Boolean).join('\n\n');
     // 只取最近 historyLimit 个 AI 回复（连带配对的 user 楼），避免被早期上下文（如日期）锚定。
     // historyLimit=0 → 完全不喂历史（history 为空），只留 system + prompt。
@@ -3440,13 +3752,13 @@ function renderAiMessageHtml(text) {
 }
 
 // ─── Space chat widget extraction ─────────────────────────────────────────
-// AI 输出 <schedule_widget> / <line_widget> 时切成三段：
+// AI 输出 <schedule_widget> / <line_widget> / <almanac_widget> 时切成三段：
 //   1. widget 之外的正文（如果有）走 markdown 渲染
 //   2. 每个 widget 转成"卡片 + 应用按钮"预览
 // 多个 widget 一起出可以并列显示，用户挑一个应用。
 function extractSpaceWidgets(raw) {
     const widgets = [];
-    const rx = /<(schedule_widget|line_widget)([^>]*)>([\s\S]*?)<\/\1\s*>/gi;
+    const rx = /<(schedule_widget|line_widget|almanac_widget)([^>]*)>([\s\S]*?)<\/\1\s*>/gi;
     let cleaned = String(raw || '');
     let m;
     while ((m = rx.exec(cleaned)) !== null) {
@@ -3516,6 +3828,33 @@ function renderSpaceWidgetCard(kind, body, wid, editIdx = null) {
                 <button class="sp-space-widget-apply" data-wid="${wid}"><i class="fa-solid ${editIdx != null ? 'fa-pen' : 'fa-plus'}"></i> ${editIdx != null ? `替换第 ${editIdx} 条` : '应用到线'}</button>
             </div>
         </div>`;
+    }
+    if (kind === 'almanac_widget') {
+        // 每个日期渲染成**独立一张卡 + 独立按钮**，可分别注入（用 data-idx 对齐 parseAlmanacWidget 的下标）。
+        const items = parseAlmanacWidget(body);
+        if (!items.length) return '';
+        const TYPE_LABEL = { festival: '节日', birthday: '生日', anniversary: '纪念日', custom: '自定义' };
+        return items.map((it, i) => {
+            const dateTxt = it.displayDate || `${it.month}月${it.day}日`;
+            const label = TYPE_LABEL[it.type] || '自定义';
+            return `<div class="sp-space-widget-card" data-wid="${wid}" data-kind="almanac">
+                <div class="sp-space-widget-head">
+                    <span class="sp-space-widget-badge sp-space-widget-badge-almanac">
+                        <i class="fa-regular fa-calendar-check"></i> 建议加到历
+                    </span>
+                </div>
+                <div class="sp-space-widget-body">
+                    <div class="sp-space-widget-almrow">
+                        <span class="sp-space-widget-almdate">${escapeHtml(dateTxt)}</span>
+                        <span class="sp-space-widget-almname">${escapeHtml(it.name)}</span>
+                        <span class="sp-space-widget-almtype">${escapeHtml(label)}</span>
+                    </div>
+                </div>
+                <div class="sp-space-widget-actions">
+                    <button class="sp-space-widget-apply" data-wid="${wid}" data-idx="${i}"><i class="fa-solid fa-plus"></i> 应用到历</button>
+                </div>
+            </div>`;
+        }).join('');
     }
     return '';
 }
@@ -3668,6 +4007,30 @@ function applyLineWidget(body, $btn, editIdx = null) {
     syncLatestInlineBlock();
     $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> ${editIdx != null ? `已改第 ${editIdx} 条` : '已加到线'}`);
     showToast(editIdx != null ? `已替换线·第 ${editIdx} 条` : '已加到线');
+}
+
+// ─── Apply widget to almanac (历) ─────────────────────────────────────────
+// 历是一张扁平日期表（非 raw 文本）。一张卡一个日期，按 idx 取该条单独注入。
+// **纯追加**：只把这一条去重后加进去，绝不动任何已有项——尤其不能碰「生成节日」出的
+// 未锁 AI 节日（那是 source='ai' pin=false，用 mergeAlmanac 会被当未锁 AI 项清掉 → 原版节日全没）。
+// 间来的日期默认 pin，日后「生成节日」重算也保得住（与「间加线默认锁定」一致）。
+function applyAlmanacWidget(body, $btn, idx) {
+    const items = parseAlmanacWidget(body);
+    const it = items[Number(idx)] || (items.length === 1 ? items[0] : null);
+    if (!it) { showToast('卡片格式不完整，无法应用', null, true); return; }
+    if (!getAlmanacKey()) { showToast('当前 chat 没有可写入的历缓存', null, true); return; }
+    it.pin = true;
+    const existing = loadAlmanac();
+    const seen = new Set(existing.map(almDedupKey));
+    if (seen.has(almDedupKey(it))) {
+        $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 历里已有`);
+        showToast('这个日期历里已经有了', null, true);
+        return;
+    }
+    saveAlmanacItems([...existing, it]);   // 纯追加，不丢任何现有项
+    if (almanacMode) renderAlmanacPanel();
+    $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 已加到历`);
+    showToast(`已加到历：${it.name}`);
 }
 
 function appendChatMsg(role, content, historyIndex = null) {
@@ -3986,7 +4349,8 @@ function stripWidgetsForApi(history) {
         if (m.role !== 'assistant') return m;
         const cleaned = String(m.content || '')
             .replace(/<schedule_widget[^>]*>[\s\S]*?<\/schedule_widget\s*>/gi, '【已输出一张点卡片（内容以当前面板为准）】')
-            .replace(/<line_widget[^>]*>[\s\S]*?<\/line_widget\s*>/gi, '【已输出一张线卡片（内容以当前面板为准）】');
+            .replace(/<line_widget[^>]*>[\s\S]*?<\/line_widget\s*>/gi, '【已输出一张线卡片（内容以当前面板为准）】')
+            .replace(/<almanac_widget[^>]*>[\s\S]*?<\/almanac_widget\s*>/gi, '【已输出一张历卡片（内容以当前面板为准）】');
         return cleaned === m.content ? m : { ...m, content: cleaned };
     });
 }
@@ -4624,151 +4988,6 @@ function renderTagChips(tagIds, tagMap) {
     }).join('');
 }
 
-// 轻量标签选择器：收藏时 & 全文编辑共用。body 级 fixed 浮层。
-//   itemId  — 目标收藏 id；提交时 setItemTags 落库
-//   anchorEl— 锚点元素（有则贴其下方并夹进视口，无则居中）
-//   onDone  — 提交后回调（如全文视图重渲染）
-// 关闭即提交当前选择（无变化则跳过写库）；点浮层外 / Esc = 关闭。新建标签当场落注册表并自动选中。
-let _tagPickerCleanup = null;
-async function openTagPicker({ itemId, anchorEl = null, onDone = null } = {}) {
-    if (!itemId) return;
-    if (_tagPickerCleanup) _tagPickerCleanup();   // 同时只留一个
-
-    // 拉当前标签注册表 + 该条已选
-    let allTags = [];
-    let item = null;
-    try {
-        allTags = await anchor.getTags();
-        item = await anchor.getItem(itemId);
-    } catch (err) { showToast('读取标签失败：' + (err?.message || ''), null, true); return; }
-    if (!item) return;
-    const selected = new Set(Array.isArray(item.tags) ? item.tags : []);
-    const originalKey = [...selected].sort().join(',');   // 比对是否有变化，无变化不写库
-
-    const pop = document.createElement('div');
-    // 浮层挂 body、在 .sp-root 之外，拿不到 .sp-root 作用域里的 ST 变量映射；
-    // 用 sp-forced-{theme} 直接吃 legacy 完整调色板（含 --sp-sheet-bg 等），日夜自洽、不透明。
-    // 另加 sp-night/sp-day 供 chip 的 .sp-night .sp-anchor-tagchip 夜间色命中。
-    pop.className = `sp-tagpicker sp-forced-${currentTheme} sp-${currentTheme}`;
-    pop.setAttribute('role', 'dialog');
-
-    function paletteSwatches(activeColor) {
-        return ANCHOR_TAG_PALETTE.map(c =>
-            `<button type="button" class="sp-tagpicker-swatch${c === activeColor ? ' sp-tp-swatch-on' : ''}" data-color="${c}" title="${c}"><span class="sp-anchor-tagchip" data-color="${c}">A</span></button>`
-        ).join('');
-    }
-
-    function render() {
-        const chips = allTags.length
-            ? allTags.map(t => `<button type="button" class="sp-tagpicker-chip${selected.has(t.id) ? ' sp-tp-chip-on' : ''}" data-id="${escapeAttr(t.id)}"><span class="sp-anchor-tagchip" data-color="${escapeAttr(t.color || 'slate')}">${escapeHtml(t.name)}</span></button>`).join('')
-            : '<div class="sp-tagpicker-empty">还没有标签，在下方新建</div>';
-        pop.innerHTML = `
-            <div class="sp-tagpicker-title">标签</div>
-            <div class="sp-tagpicker-chips">${chips}</div>
-            <div class="sp-tagpicker-new">
-                <input type="text" class="sp-tagpicker-name sp-input" placeholder="新建标签名…" maxlength="20">
-                <div class="sp-tagpicker-swatches">${paletteSwatches(_tpNewColor)}</div>
-                <button type="button" class="sp-tagpicker-add sp-mini-btn"><i class="fa-solid fa-plus"></i></button>
-            </div>
-            <div class="sp-tagpicker-foot">
-                <button type="button" class="sp-tagpicker-done sp-btn sp-btn-primary">完成</button>
-            </div>`;
-    }
-    let _tpNewColor = ANCHOR_TAG_PALETTE[0];
-    render();
-    document.body.appendChild(pop);
-
-    // 定位：有锚点贴其下、夹进视口；否则居中
-    function place() {
-        const vw = window.innerWidth, vh = window.innerHeight;
-        const r = pop.getBoundingClientRect();
-        if (anchorEl && anchorEl.getBoundingClientRect) {
-            const a = anchorEl.getBoundingClientRect();
-            let top = a.bottom + 6, left = a.left;
-            if (left + r.width > vw - 8) left = vw - r.width - 8;
-            if (left < 8) left = 8;
-            if (top + r.height > vh - 8) top = Math.max(8, a.top - r.height - 6);  // 下方放不下→翻到上方
-            if (top < 8) top = 8;
-            pop.style.left = left + 'px';
-            pop.style.top  = top + 'px';
-        } else {
-            pop.style.left = Math.max(8, (vw - r.width) / 2) + 'px';
-            pop.style.top  = Math.max(8, (vh - r.height) / 2) + 'px';
-        }
-    }
-    place();
-
-    let closed = false;
-    async function commitAndClose() {
-        if (closed) return; closed = true;
-        cleanup();
-        const nextKey = [...selected].sort().join(',');
-        if (nextKey !== originalKey) {
-            try { await anchor.setItemTags(itemId, [...selected]); }
-            catch (err) { showToast('保存标签失败：' + (err?.message || ''), null, true); }
-        }
-        if (anchorMode) renderAnchorPanel();
-        if (typeof onDone === 'function') onDone();
-    }
-    function cleanup() {
-        document.removeEventListener('mousedown', onOutside, true);
-        document.removeEventListener('keydown', onKey, true);
-        window.removeEventListener('resize', place);
-        pop.remove();
-        _tagPickerCleanup = null;
-    }
-    function onOutside(ev) { if (!pop.contains(ev.target)) commitAndClose(); }
-    function onKey(ev) { if (ev.key === 'Escape') { ev.stopPropagation(); commitAndClose(); } }
-    _tagPickerCleanup = cleanup;   // 若被下一个 picker 顶掉，直接销毁不提交（避免重入）
-    // 延一帧再挂 outside，避免触发它的那次 click 立即关掉
-    setTimeout(() => {
-        document.addEventListener('mousedown', onOutside, true);
-        document.addEventListener('keydown', onKey, true);
-        window.addEventListener('resize', place);
-    }, 0);
-
-    // 事件委托
-    pop.addEventListener('click', async (ev) => {
-        const chip = ev.target.closest('.sp-tagpicker-chip');
-        if (chip) {
-            const id = chip.getAttribute('data-id');
-            if (selected.has(id)) selected.delete(id); else selected.add(id);
-            chip.classList.toggle('sp-tp-chip-on');
-            return;
-        }
-        const sw = ev.target.closest('.sp-tagpicker-swatch');
-        if (sw) {
-            _tpNewColor = sw.getAttribute('data-color');
-            pop.querySelectorAll('.sp-tagpicker-swatch').forEach(x => x.classList.toggle('sp-tp-swatch-on', x === sw));
-            return;
-        }
-        if (ev.target.closest('.sp-tagpicker-add')) {
-            const inp = pop.querySelector('.sp-tagpicker-name');
-            const nm = String(inp?.value || '').trim();
-            if (!nm) { inp?.focus(); return; }
-            try {
-                const tag = await anchor.addTag(nm, _tpNewColor);
-                if (tag) {
-                    if (!allTags.find(t => t.id === tag.id)) allTags.push(tag);
-                    selected.add(tag.id);      // 新建即选中
-                    render();
-                    place();
-                }
-            } catch (err) { showToast('新建标签失败：' + (err?.message || ''), null, true); }
-            return;
-        }
-        if (ev.target.closest('.sp-tagpicker-done')) { commitAndClose(); return; }
-    });
-    // 回车 = 加标签
-    pop.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter' && ev.target.classList.contains('sp-tagpicker-name')) {
-            ev.preventDefault();
-            pop.querySelector('.sp-tagpicker-add')?.click();
-        }
-    });
-    pop.querySelector('.sp-tagpicker-name')?.focus();
-}
-
 async function renderAnchorPanel() {
     if (!anchorMode) return;
     setAnchorBody('<div class="sp-anchor-loading"><div class="sp-spinner"></div></div>');
@@ -4995,8 +5214,8 @@ async function renderAnchorFull(itemId) {
             <button class="sp-anchor-back" data-to="items" data-chatid="${escapeAttr(it.chatId ?? '')}"><i class="fa-solid fa-chevron-left"></i></button>
             <span class="sp-anchor-head-title">${escapeHtml(it.charName || '')}<span class="sp-anchor-head-floor"> · #${it.floorIndex ?? '?'}</span></span>
             <span class="sp-anchor-head-actions">
-                <button class="sp-icon-btn sp-anchor-jump" title="跳到来源楼层"><i class="fa-solid fa-location-crosshairs"></i></button>
-                <button class="sp-icon-btn sp-anchor-del"  title="删除此收藏"><i class="fa-solid fa-trash"></i></button>
+                <button class="sp-icon-btn sp-anchor-fullscreen" title="全屏浏览（便于截图）"><i class="fa-solid fa-expand"></i></button>
+                <button class="sp-icon-btn sp-anchor-del"    title="删除此收藏"><i class="fa-solid fa-trash"></i></button>
             </span>
         </div>
         <div class="sp-anchor-scroll">
@@ -5022,7 +5241,7 @@ async function renderAnchorFull(itemId) {
         // UA 默认的 q 自动引号在 shadow 里复活；而 ST 格式化阶段已把字面引号写进文本，
         // 于是「字面引号 + UA 自动引号」= 双引号。这里补回同款压制。
         root.innerHTML = `<style>:host{all:initial;display:block;}
-            .sp-anchor-snap{display:block;color:${fg};background:${bg};padding:10px 12px;border-radius:8px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;word-break:break-word;}
+            .sp-anchor-snap{display:block;color:${fg};background:${bg};padding:16px 18px !important;margin:0 !important;border:none !important;border-radius:10px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;word-break:break-word;}
             .sp-anchor-snap img{max-width:100%;height:auto;}
             .sp-anchor-snap a{color:${link};}
             .sp-anchor-snap q:before,.sp-anchor-snap q:after{content:'';}
@@ -5030,20 +5249,27 @@ async function renderAnchorFull(itemId) {
     }
 }
 
-// 跳回来源楼层（跨 chat 先提示切换；原楼被删则告知）
-function anchorJumpToSource() {
-    const it = _anchorCurrentItem;
-    if (!it) return;
-    if (String(getContext().chatId) !== String(it.chatId)) {
-        showToast('该收藏来自其它聊天，请先切到对应聊天再跳转', null, true);
-        return;
+// ─── 坐标·导出图片 ─────────────────────────────────────────────────────────────
+// 坐标全屏浏览：纯 CSS 切 class 铺满视口 + 锁背景滚动 + Esc 退出（照搬小剧场全屏，稳且不依赖任何库）。
+// 目标是 .sp-anchor-scroll（普通 DOM 容器），不碰 shadow host——避开 :host{all:initial} 级联坑，标签区也一起可见。
+// 全屏后只剩内容卡片，用户直接用系统截图即可。
+let _anchorFsEsc = null;
+function toggleAnchorFullscreen(btnEl) {
+    const el = document.querySelector('#sp-anchor-body .sp-anchor-scroll');
+    if (!el) return;
+    const on = el.classList.toggle('sp-anchor-fullscreen');
+    const $i = $(btnEl).find('i');
+    $i.attr('class', on ? 'fa-solid fa-compress' : 'fa-solid fa-expand');
+    $(btnEl).attr('title', on ? '退出全屏' : '全屏浏览（便于截图）');
+    document.body.classList.toggle('sp-anchor-fs-lock', on);
+    if (on && !_anchorFsEsc) {
+        _anchorFsEsc = (ev) => {
+            if (ev.key !== 'Escape') return;
+            const r = document.querySelector('#sp-anchor-body .sp-anchor-scroll.sp-anchor-fullscreen');
+            if (r) $('.sp-anchor-fullscreen').trigger('click');
+        };
+        document.addEventListener('keydown', _anchorFsEsc);
     }
-    const mes = document.querySelector(`#chat .mes[mesid="${String(it.messageId).replace(/"/g, '')}"]`);
-    if (!mes) { showToast('未找到来源楼层（可能已删除或未加载）', null, true); return; }
-    closePanel();
-    mes.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    mes.classList.add('sp-anchor-flash');
-    setTimeout(() => mes.classList.remove('sp-anchor-flash'), 1600);
 }
 
 function setLinesBody(html) { $('#sp-lines-list').html(html); renderDashedSection(); }
@@ -5060,6 +5286,7 @@ const STORAGE_KIND_LABELS = {
     'creative-chat': '面讨论',
     'space-chat'   : '间（局外）',
     'dashed'       : '虚线·冷知识',
+    'almanac'      : '历（日历）',
 };
 const STORAGE_OWNKEY_LABELS = {
     'sp-memory' : '记忆',
@@ -5622,7 +5849,7 @@ ${previousRaw ? previousRaw : '（无，这是第一次生成。请从当前剧�
 <storylines_widget>
 Line: 名称|类型(冲突/推进)|阶段|等级(1-4)|时间锚点(如"今天上午"/"三天后"，禁用"第N轮")|agency(player/world)|stall(true/false)
 Desc: 描述当前状态、关键背景、涉及的人物势力及其立场（60-100字，写现在的样子，不要写"接下来会…"）
-Next: **必须输出，不得省略**。一句话给出前瞻信号（20-40字）。stall=true 时写"恢复条件"（什么触发能重新推进）；stall=false 时写"下一步"（最可能的下一动作、下一阶段的催化事件、或即将出现的关键分岔）。
+Next: **必须输出，不得省略**。一句话给出前瞻信号（20-40字），**直接写内容本身、不要加"下一步："/"恢复条件："之类的标签前缀（面板会自动加）**。stall=true 时写恢复推进的触发条件；stall=false 时写最可能的下一动作、下一阶段的催化事件、或即将出现的关键分岔。
 （每条事件线重复上面三行）
 </storylines_widget>`;
 }
@@ -5802,6 +6029,507 @@ Event: type|title|description|time|location|线头动态
 【Future 说明】
 Future 块收录剧情中出现的未来事项，时间不限。
 允许基于剧情走向合理推测，但不能凭空捏造剧情中从未提及的约定或承诺。`;
+}
+
+// ─── 历（日历 / 历法）─────────────────────────────────────────────────────────
+// 独立模块，与点/线/面共通但存储隔离：点是 AI 每轮重算的易失数据，历要稳，
+// 单独存 chat_metadata（kind='almanac'，不分我/TA，固定 user scope，抄 dashed）。
+// 历自己不注入主楼——只在 buildMessages 里作为「本世界观重要日期」喂点/线/大纲，
+// 跟随它们已有的注入进主楼。数据形状：{ items:[{id,name,type,month,day,displayDate,note,pin,source}], ts }
+const ALM_TYPES = ['festival', 'birthday', 'anniversary', 'custom'];
+
+function almId() { return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+function getAlmanacKey() { return keyDesc('almanac', 'user', ''); }  // 固定 user scope，与当前视角无关
+
+function almClampInt(v, lo, hi, dflt) {
+    const n = parseInt(v, 10);
+    if (!Number.isFinite(n)) return dflt;
+    return Math.min(hi, Math.max(lo, n));
+}
+
+function normalizeAlmItem(it) {
+    if (!it || typeof it !== 'object') return null;
+    const name = String(it.name || '').trim();
+    if (!name) return null;
+    return {
+        id: it.id || almId(),
+        name,
+        type: ALM_TYPES.includes(it.type) ? it.type : 'custom',
+        month: almClampInt(it.month, 1, 12, 1),
+        day: almClampInt(it.day, 1, 31, 1),
+        displayDate: String(it.displayDate || '').trim(),
+        note: String(it.note || '').trim(),
+        pin: !!it.pin,
+        source: it.source === 'user' ? 'user' : 'ai',
+    };
+}
+
+function loadAlmanac() {
+    const saved = readStore(getAlmanacKey());
+    const items = Array.isArray(saved?.items) ? saved.items : [];
+    return items.map(normalizeAlmItem).filter(Boolean);
+}
+function saveAlmanacItems(items) { writeStore(getAlmanacKey(), { items, ts: Date.now() }); }
+
+function almTypeMeta(type) {
+    switch (type) {
+        case 'festival':    return { label: '节日',   cls: 'festival',    icon: 'fa-champagne-glasses' };
+        case 'birthday':    return { label: '生日',   cls: 'birthday',    icon: 'fa-cake-candles' };
+        case 'anniversary': return { label: '纪念日', cls: 'anniversary', icon: 'fa-heart' };
+        default:            return { label: '自定义', cls: 'custom',      icon: 'fa-star' };
+    }
+}
+function almDateLabel(it) { return it.displayDate || `${it.month}月${it.day}日`; }
+
+// 历的「当前日期」锚点：年在扮演里极模糊，一律不用现实日期。按可靠性逐级取剧情内时间——
+// 柏宝书 → 记忆库 → 线 → 点 → 都拿不到才 fallback 1 月 1 日（默认从头开始）。
+// 只借月/日（年无意义）。所有「今天 / 即将到来 / 日历默认月 / 编辑器默认」都走这一个函数。
+// extractDayFromTime 已能解析「YYYY年M月D日 / YYYY-M-D / 元年正月初三」等，这里把它的
+// key 再抽成 {month,day}；相对天数（day-N）无月日，返回 null 让链继续往下走。
+function monthDayFromDayKey(key) {
+    if (!key) return null;
+    let m;
+    if ((m = String(key).match(/^(\d+)-(\d+)-(\d+)$/)) || (m = String(key).match(/^cn-(\d+)-(\d+)-(\d+)$/))) {
+        const mo = +m[2], da = +m[3];
+        if (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) return { month: mo, day: da };
+    }
+    return null;
+}
+function almTodayAnchor() {
+    // ① 柏宝书：权威游戏内时间（很多用户不装 → 拿不到就往下走）
+    try {
+        const api = globalThis.STBaiBaiBook;
+        if (api && typeof api.getSnapshot === 'function') {
+            const msgs = getContext().chat || [];
+            let last = -1;
+            for (let i = 0; i < msgs.length; i++) if (!msgs[i].is_user) last = i;
+            if (last >= 0) {
+                const snap = api.getSnapshot({ floor: last, at: 'after' });
+                const md = monthDayFromDayKey(extractDayFromTime(snap?.state?.time));
+                if (md) return md;
+            }
+        }
+    } catch { /* 往下走 */ }
+    // ② 记忆库：摘要里的「时间锚点」，取最后一段（最新剧情）的终点
+    try {
+        const memText = typeof memory.getMemoryContext === 'function' ? memory.getMemoryContext() : '';
+        const anchors = [...String(memText).matchAll(/时间锚点\s*[:：]\s*([^\n]+)/g)];
+        if (anchors.length) {
+            const line = anchors[anchors.length - 1][1];
+            const tail = line.split(/→|->/).pop();   // 优先终点，退回整行
+            const md = monthDayFromDayKey(extractDayFromTime(tail)) || monthDayFromDayKey(extractDayFromTime(line));
+            if (md) return md;
+        }
+    } catch { /* 往下走 */ }
+    // ③ 线：活跃线的 when / desc / next 里若带绝对日期
+    try {
+        const saved = readStore(getLinesCacheKey());
+        const lines = saved?.raw ? parseLines(saved.raw) : [];
+        for (const l of lines) {
+            if (!l.name || TERMINAL_STAGES.has(l.stage)) continue;
+            const md = monthDayFromDayKey(extractDayFromTime(l.when))
+                    || monthDayFromDayKey(extractDayFromTime(`${l.desc || ''} ${l.next || ''}`));
+            if (md) return md;
+        }
+    } catch { /* 往下走 */ }
+    // ④ 点：日程 AI 输出里的 StartDate（从剧情推断的当前日期）
+    try {
+        const saved = readStore(getCacheKey());
+        if (saved?.raw) {
+            const { startDate } = parseCalendar(saved.raw);
+            if (startDate instanceof Date && !isNaN(startDate)) {
+                return { month: startDate.getMonth() + 1, day: startDate.getDate() };
+            }
+        }
+    } catch { /* 往下走 */ }
+    // ⑤ 全拿不到 → 默认从头开始（1 月 1 日）
+    return { month: 1, day: 1 };
+}
+// 月/日 → 一年中的第几天（1..366，2 月按 29 天，与 ALM_DAYS_IN_MONTH 一致；纯按月日、不涉年）。
+function almDayOfYear(month, day) {
+    const m = almClampInt(month, 1, 12, 1);
+    let doy = almClampInt(day, 1, ALM_DAYS_IN_MONTH[m - 1], 1);
+    for (let i = 0; i < m - 1; i++) doy += ALM_DAYS_IN_MONTH[i];
+    return doy;
+}
+// 从锚点「今天」到下一次 (month, day) 还有几天（0..365，按 366 天环形，不涉年）。
+function almDaysUntil(month, day, anchor) {
+    const total = ALM_DAYS_IN_MONTH.reduce((a, b) => a + b, 0); // 366
+    const a = anchor || almTodayAnchor();
+    return (almDayOfYear(month, day) - almDayOfYear(a.month, a.day) + total) % total;
+}
+function sortAlmanacUpcoming(items) {
+    const anchor = almTodayAnchor();   // 链较重，每次排序只算一次，复用给全部条目
+    return items
+        .map(it => ({ it, d: almDaysUntil(it.month, it.day, anchor) }))
+        .sort((a, b) => a.d - b.d || a.it.month - b.it.month || a.it.day - b.it.day)
+        .map(x => x.it);
+}
+
+// 供 buildMessages 反哺点/线/大纲的文本（历自己不进主楼）。空则返回 ''。
+function getAlmanacInjectText() {
+    const items = loadAlmanac();
+    if (!items.length) return '';
+    return [...items]
+        .sort((a, b) => a.month - b.month || a.day - b.day)
+        .map(it => `- ${almDateLabel(it)}　${it.name}（${almTypeMeta(it.type).label}）${it.note ? '：' + it.note : ''}`)
+        .join('\n');
+}
+
+// AI 输出解析：<almanac_widget> 内 Item: name|type|month|day|displayDate|note
+function almMapType(t) {
+    const s = String(t || '').toLowerCase().trim();
+    if (['festival', '节日', '节庆', 'holiday', '节假日'].includes(s)) return 'festival';
+    if (['birthday', '生日', '诞辰'].includes(s)) return 'birthday';
+    if (['anniversary', '纪念日', '纪念'].includes(s)) return 'anniversary';
+    return 'custom';
+}
+function parseAlmanacWidget(raw) {
+    const s = String(raw || '');
+    const m = s.match(/<almanac_widget>([\s\S]*?)<\/almanac_widget>/i);
+    const body = m ? m[1] : s;
+    const out = [];
+    for (const line of body.split('\n')) {
+        const mm = line.match(/^\s*Item\s*:\s*(.+)$/i);
+        if (!mm) continue;
+        const parts = mm[1].split('|').map(x => x.trim());
+        const [name, type, month, day, displayDate, ...noteRest] = parts;
+        const it = normalizeAlmItem({
+            name, type: almMapType(type), month, day, displayDate,
+            note: noteRest.join('|').trim(), source: 'ai', pin: false,
+        });
+        if (it) out.push(it);
+    }
+    return out;
+}
+
+function almDedupKey(it) { return `${it.name.toLowerCase()}|${it.month}|${it.day}`; }
+// 重算合并：保留所有已锁 + 所有自填(user)，丢弃未锁 AI 项，再并入新 AI 项（按名+月日去重）。
+function mergeAlmanac(oldItems, aiItems) {
+    const kept = oldItems.filter(it => it.pin || it.source === 'user');
+    const seen = new Set(kept.map(almDedupKey));
+    const merged = [...kept];
+    for (const it of aiItems) {
+        const k = almDedupKey(it);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        merged.push(it);
+    }
+    return merged;
+}
+
+// ── 渲染 ──
+function almToolbarHtml() {
+    return `<div class="sp-alm-toolbar">
+        <div class="sp-alm-sheet-toggle">
+            <button class="sp-alm-sheet-btn${_almanacSheet === 'upcoming' ? ' sp-alm-sheet-active' : ''}" data-sheet="upcoming">即将到来</button>
+            <button class="sp-alm-sheet-btn${_almanacSheet === 'calendar' ? ' sp-alm-sheet-active' : ''}" data-sheet="calendar">日历</button>
+        </div>
+        <div class="sp-alm-tools">
+            <button class="sp-icon-btn sp-alm-add" title="手动添加日期"><i class="fa-solid fa-plus"></i></button>
+            <button class="sp-icon-btn sp-alm-gen" title="生成节日（AI 按世界观铺满一整年）"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+        </div>
+    </div>`;
+}
+function renderAlmanacPanel() {
+    if (!almanacMode) return;
+    const $wrap = $('#sp-almanac-wrap');
+    if (_almanacEditor) {
+        $wrap.html(renderAlmanacEditor());
+        setTimeout(() => $('#sp-alm-f-name').trigger('focus'), 30);
+        return;
+    }
+    if (isGeneratingAlmanac) {
+        $wrap.html(almToolbarHtml() + `<div class="sp-alm-body">${loadingHtml('正在编排历法', 'sp-abort-almanac')}</div>`);
+        return;
+    }
+    const bodyHtml = _almanacSheet === 'calendar' ? renderAlmanacCalendar() : renderAlmanacUpcoming();
+    $wrap.html(almToolbarHtml() + `<div class="sp-alm-body">${bodyHtml}</div>`);
+}
+
+function almRowHtml(it) {
+    const meta = almTypeMeta(it.type);
+    // 两行布局：第一行 = 日期 + 节日名 + 类型/自填标签 …… 右对齐三个操作按钮；第二行 = 备注（整行）。
+    // 避免旧三列布局里「日期列内容少、中间臃肿、长日期挤压节日名」的参差问题。
+    return `<div class="sp-alm-item sp-alm-type-${meta.cls}${it.pin ? ' sp-alm-pinned' : ''}" data-id="${it.id}">
+        <div class="sp-alm-top">
+            <i class="fa-solid ${meta.icon} sp-alm-date-icon"></i>
+            <span class="sp-alm-date-txt">${escapeHtml(almDateLabel(it))}</span>
+            <span class="sp-alm-name">${escapeHtml(it.name)}</span>
+            <span class="sp-alm-type-tag">${meta.label}</span>${it.source === 'user' ? '<span class="sp-alm-src-tag">自填</span>' : ''}
+            <span class="sp-alm-acts">
+                <button class="sp-icon-btn sp-alm-pin" data-id="${it.id}" title="${it.pin ? '已锁定 · 生成时保留（点击解锁）' : '锁定 · 生成时保留'}"><i class="fa-solid ${it.pin ? 'fa-lock' : 'fa-lock-open'}"></i></button>
+                <button class="sp-icon-btn sp-alm-edit" data-id="${it.id}" title="编辑"><i class="fa-solid fa-pen"></i></button>
+                <button class="sp-icon-btn sp-alm-del" data-id="${it.id}" title="删除"><i class="fa-solid fa-trash"></i></button>
+            </span>
+        </div>
+        ${it.note ? `<div class="sp-alm-note">${escapeHtml(it.note)}</div>` : ''}
+    </div>`;
+}
+
+function renderAlmanacEmpty() {
+    return `<div class="sp-empty sp-alm-empty">
+        <span class="sp-alm-empty-glyph"><i class="fa-regular fa-calendar"></i></span>
+        <p>还没有历法数据</p>
+        <p class="sp-alm-empty-hint">点「生成节日」让 AI 按当前世界观铺满一整年，或「添加」手动录入生日、纪念日等</p>
+        <div class="sp-alm-empty-actions">
+            <button class="sp-gen-btn sp-alm-gen">生成节日</button>
+            <button class="sp-alm-add-link sp-alm-add">手动添加</button>
+        </div>
+    </div>`;
+}
+
+function renderAlmanacUpcoming() {
+    const items = loadAlmanac();
+    if (!items.length) return renderAlmanacEmpty();
+    return `<div class="sp-alm-list">${sortAlmanacUpcoming(items).map(almRowHtml).join('')}</div>`;
+}
+
+// 历不挂年：年在实际游玩里是极模糊的概念（绝大多数卡都不是现实年份），只按月/日排。
+// 故月历不做「周几」对齐（那必须锚定某一年），2 月固定给到 29 天以容纳闰日生日/纪念日。
+const ALM_DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+function almCalMonth() {
+    if (Number.isFinite(_almanacCalMonth)) return _almanacCalMonth;
+    _almanacCalMonth = almTodayAnchor().month - 1;
+    return _almanacCalMonth;
+}
+
+function renderAlmanacCalendar() {
+    const m0 = almCalMonth();
+    const month1 = m0 + 1;
+    const items = loadAlmanac();
+    const byDay = {};
+    for (const it of items) {
+        if (it.month !== month1) continue;
+        (byDay[it.day] = byDay[it.day] || []).push(it);
+    }
+    const dim = ALM_DAYS_IN_MONTH[m0];
+    const anchor = almTodayAnchor();
+    const isThisMonth = (anchor.month - 1) === m0;   // 只比月/日，不比年
+    const todayD = anchor.day;
+    const selDay = _almanacCalDay;
+
+    const cells = [];
+    for (let dnum = 1; dnum <= dim; dnum++) {
+        const dayItems = byDay[dnum] || [];
+        const has = dayItems.length > 0;
+        const dots = has
+            ? `<span class="sp-alm-cell-dots">${dayItems.slice(0, 3).map(it => `<i class="sp-alm-dot sp-alm-type-${almTypeMeta(it.type).cls}"></i>`).join('')}</span>`
+            : '';
+        cells.push(`<div class="sp-alm-cell${has ? ' sp-alm-cell-has' : ''}${isThisMonth && dnum === todayD ? ' sp-alm-cell-today' : ''}${selDay === dnum ? ' sp-alm-cell-sel' : ''}" data-day="${dnum}">
+            <span class="sp-alm-cell-num">${dnum}</span>${dots}
+        </div>`);
+    }
+
+    const header = `<div class="sp-alm-cal-head">
+        <button class="sp-icon-btn sp-alm-cal-prev" title="上个月"><i class="fa-solid fa-chevron-left"></i></button>
+        <span class="sp-alm-cal-title">${month1} 月</span>
+        <button class="sp-icon-btn sp-alm-cal-next" title="下个月"><i class="fa-solid fa-chevron-right"></i></button>
+    </div>`;
+
+    let detailItems, detailHead;
+    if (selDay != null) {
+        detailItems = items.filter(it => it.month === month1 && it.day === selDay).sort((a, b) => a.day - b.day);
+        detailHead = `<div class="sp-alm-cal-detail-head">
+            <span>${month1}月${selDay}日</span>
+            <span class="sp-alm-cal-detail-tools">
+                <button class="sp-alm-add-day sp-mini-btn" data-day="${selDay}">＋加到这天</button>
+                <button class="sp-alm-cal-clearsel sp-mini-btn">看全月</button>
+            </span>
+        </div>`;
+    } else {
+        detailItems = items.filter(it => it.month === month1).sort((a, b) => a.day - b.day);
+        detailHead = `<div class="sp-alm-cal-detail-head"><span>本月日期</span></div>`;
+    }
+    const detailRows = detailItems.length
+        ? `<div class="sp-alm-list">${detailItems.map(almRowHtml).join('')}</div>`
+        : `<div class="sp-alm-cal-empty">${selDay != null ? '这天没有日期' : '本月暂无日期'}</div>`;
+
+    return `<div class="sp-alm-cal">
+        ${header}
+        <div class="sp-alm-grid">${cells.join('')}</div>
+        <div class="sp-alm-cal-detail">${detailHead}${detailRows}</div>
+    </div>`;
+}
+
+// ── 子视图 / 导航 ──
+function almSetSheet(sheet) {
+    if (_almanacSheet === sheet) return;
+    _almanacSheet = sheet;
+    _almanacCalDay = null;
+    renderAlmanacPanel();
+}
+function almNavMonth(delta) {
+    _almanacCalMonth = (almCalMonth() + delta + 12) % 12;   // 只在 1-12 月间循环，不涉及年
+    _almanacCalDay = null;
+    renderAlmanacPanel();
+}
+function almSelectDay(day) {
+    _almanacCalDay = (_almanacCalDay === day) ? null : day;
+    renderAlmanacPanel();
+}
+
+// ── 生成 ──
+async function triggerGenerateAlmanac() {
+    if (isGeneratingAlmanac) return;
+    const cfg = loadCfg();
+    if (!cfg.url || !cfg.key) { if (!settingsOpen) toggleSettings(); showToast('请先在设置中填写自定义 API', null, true); return; }
+    if (!getContext().chatId) { showToast('请先打开一个聊天', null, true); return; }
+    if (loadAlmanac().length) {
+        const ok = await spConfirm({
+            title: '重新生成节日',
+            body: '将按当前世界观重新铺一整年的既定日期。已锁定的条目和你手动添加的日期会保留，未锁定的 AI 条目会被替换。',
+            confirmText: '生成', cancelText: '取消',
+        });
+        if (!ok) return;
+    }
+    runGenerateAlmanac();
+}
+async function runGenerateAlmanac() {
+    const chatIdSnap = getContext().chatId;
+    const myCtrl = almanacAbortController = new AbortController();
+    isGeneratingAlmanac = true;
+    if (almanacMode) renderAlmanacPanel();
+    try {
+        const ctx = getContext();
+        const userName = ctx.name1 || '用户';
+        const charName = ctx.name2 || '角色';
+        const cfg = loadCfg();
+        const prompt = buildAlmanacPrompt(userName, charName);
+        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 4);
+        if (almanacAbortController !== myCtrl) return;
+        if (getContext().chatId !== chatIdSnap) { isGeneratingAlmanac = false; almanacAbortController = null; return; }
+        const aiItems = parseAlmanacWidget(raw);
+        if (!aiItems.length) throw new Error('没有解析到有效日期，请重试');
+        saveAlmanacItems(mergeAlmanac(loadAlmanac(), aiItems));
+        isGeneratingAlmanac = false;
+        almanacAbortController = null;
+        if (almanacMode) renderAlmanacPanel();
+        else showToast('历已生成，点击查看', () => { $('.sp-view-btn[data-view="almanac"]').trigger('click'); showPanel(); });
+    } catch (err) {
+        if (almanacAbortController !== myCtrl) return;
+        isGeneratingAlmanac = false;
+        almanacAbortController = null;
+        if (err.name === 'AbortError') { if (almanacMode) renderAlmanacPanel(); return; }
+        if (getContext().chatId === chatIdSnap) {
+            if (almanacMode) { renderAlmanacPanel(); showToast('生成失败：' + escapeHtml(err.message || '未知错误'), null, true); }
+            else showToast('历生成失败，请重试', null, true);
+        }
+    }
+}
+function buildAlmanacPrompt(userName, charName) {
+    return `请暂停角色扮演，以世界观设定分析者的身份，为当前故事所处的世界编排**完整一整年（1 月到 12 月，365 天全覆盖）**的「历法·重要日期」。
+【任务】依据以上角色卡设定、背景、世界书与人物设定，先判断这个世界的**时代与类型**，再据此列出该世界一年之内的既定重要日期：
+- 现代 / 近现代：直接采用现实世界对应文化的节假日
+- 古代 / 架空历史：采用该朝代或文化泛化的节庆与要事（元日、上元、寒食、端阳、七夕、中元、重阳，以及围猎、春闱、秋狝、祭天大典等）
+- 西幻 / 玄幻 / 赛博 / 科幻等特殊世界观：**允许合理编造**贴合设定的节日与纪念日（如某神祇的祭典、双月同辉之夜、建城纪念日、企业年庆等），但须与世界观自洽
+若设定中能明确推断出 ${userName} 或 ${charName} 的生日，一并列出（type 用 birthday）；不确定的生日不要瞎编，留给用户自填。
+
+【完整性要求 · 最重要】这是本任务的核心，务必做到：
+- **必须从 1 月一路排到 12 月，逐月检查，绝不能排到二三月就停下**。下半年（尤其 5 月、6 月、9 月、10 月、12 月）同样要有内容。
+- 现代华语背景请**至少覆盖这些常见节日、一个都别漏**：元旦(1/1)、春节(约1-2月)、元宵(约2月)、情人节(2/14)、清明(约4/4)、劳动节五一(5/1)、端午(约5-6月)、七夕(约8月)、中秋(约9月)、国庆十一(10/1)、圣诞(12/25)。其它文化背景按其真实节庆同样逐月铺满。
+- 数量不设上限，宁全勿缺；一整年 15 条以上是正常的。**不要因为"够了"就提前收尾**。
+- 输出前先自查一遍：1-12 月每个月是否都被考虑过？五一、十一、中秋、春节这类大节是否都在？漏了就补上再输出。
+
+【日期与网格】无论世界观如何，每条都必须给一个能排到普通日历上的 month(1-12) 与 day(1-31)：
+- 现实节日按其公历日期（农历节日就近折算到一个公历月日）
+- 架空/幻想历法：映射到 1-12 月、1-31 日的格子上，保持先后顺序合理
+- displayDate 填该世界观下的**风味日期名**（如"正月十五""星陨月第三日""霜降前夜"）；若与"M月D日"无异可留空
+
+【输出格式（严格遵守，只输出下面结构，不要任何多余解释）】
+<almanac_widget>
+Item: 名称|type|month|day|displayDate|一句话说明这个日子的意义或习俗
+Item: 名称|type|month|day|displayDate|说明
+</almanac_widget>
+按 month、day 从小到大排列。type 只能是 festival / birthday / anniversary / custom。所有文字用中文（专有名词可保留原文）。`;
+}
+
+// ── 手动新增 / 编辑（内联窗，不用弹窗）──
+// 用户明确怕浮层弹窗出问题（会盖住/卡住），故表单直接渲进 #sp-almanac-wrap 里，
+// 走 renderAlmanacPanel 的正常重渲，跟着 CHAT_CHANGED 一起被清，绝不残留浮层。
+function openAlmanacEditor(id, prefill) {
+    _almanacEditor = { id: id || null, prefill: prefill || null };
+    if (almanacMode) renderAlmanacPanel();
+}
+function closeAlmanacEditor() {
+    _almanacEditor = null;
+    if (almanacMode) renderAlmanacPanel();
+}
+function renderAlmanacEditor() {
+    const { id, prefill } = _almanacEditor;
+    const editing = id ? loadAlmanac().find(it => it.id === id) : null;
+    const it = editing || {
+        name: '', type: 'custom',
+        month: prefill?.month || (almCalMonth() + 1),
+        day: prefill?.day || (prefill ? 1 : almTodayAnchor().day),
+        displayDate: '', note: '', pin: true, source: 'user',
+    };
+    const typeOpts = ALM_TYPES.map(t => `<option value="${t}"${it.type === t ? ' selected' : ''}>${almTypeMeta(t).label}</option>`).join('');
+    return `<div class="sp-alm-editor-head">
+        <button class="sp-icon-btn sp-alm-editor-back" title="返回"><i class="fa-solid fa-arrow-left"></i></button>
+        <span class="sp-alm-editor-title">${editing ? '编辑日期' : '添加日期'}</span>
+    </div>
+    <div class="sp-alm-body">
+        <div class="sp-alm-editor-body">
+            <label class="sp-alm-field"><span>名称</span><input type="text" id="sp-alm-f-name" maxlength="40" placeholder="如 元宵节 / 阿露的生日" value="${escapeAttr(it.name)}"></label>
+            <label class="sp-alm-field"><span>类型</span><select id="sp-alm-f-type">${typeOpts}</select></label>
+            <div class="sp-alm-field-row">
+                <label class="sp-alm-field sp-alm-field-sm"><span>月</span><input type="number" id="sp-alm-f-month" min="1" max="12" value="${it.month}"></label>
+                <label class="sp-alm-field sp-alm-field-sm"><span>日</span><input type="number" id="sp-alm-f-day" min="1" max="31" value="${it.day}"></label>
+            </div>
+            <label class="sp-alm-field"><span>风味日期 <small>选填，如"正月十五"</small></span><input type="text" id="sp-alm-f-disp" maxlength="40" placeholder="留空则显示 M月D日" value="${escapeAttr(it.displayDate)}"></label>
+            <label class="sp-alm-field"><span>说明 <small>选填</small></span><textarea id="sp-alm-f-note" rows="2" maxlength="200" placeholder="这个日子的意义 / 习俗">${escapeHtml(it.note)}</textarea></label>
+        </div>
+        <div class="sp-alm-editor-actions">
+            <button class="sp-mini-btn sp-alm-editor-cancel">取消</button>
+            <button class="sp-gen-btn sp-alm-editor-save">保存</button>
+        </div>
+    </div>`;
+}
+function saveAlmanacEditor() {
+    if (!_almanacEditor) return;
+    const name = String($('#sp-alm-f-name').val() || '').trim();
+    if (!name) { showToast('请填写名称', null, true); $('#sp-alm-f-name').trigger('focus'); return; }
+    const editing = _almanacEditor.id ? loadAlmanac().find(x => x.id === _almanacEditor.id) : null;
+    const rec = normalizeAlmItem({
+        id: editing ? editing.id : almId(),
+        name,
+        type: $('#sp-alm-f-type').val(),
+        month: $('#sp-alm-f-month').val(),
+        day: $('#sp-alm-f-day').val(),
+        displayDate: $('#sp-alm-f-disp').val(),
+        note: $('#sp-alm-f-note').val(),
+        pin: editing ? editing.pin : true,       // 自填默认自动锁定（用户最看重，别被生成冲掉）
+        source: editing ? editing.source : 'user',
+    });
+    const list = loadAlmanac();
+    if (editing) {
+        const idx = list.findIndex(x => x.id === editing.id);
+        if (idx >= 0) list[idx] = rec; else list.push(rec);
+    } else {
+        list.push(rec);
+    }
+    saveAlmanacItems(list);
+    closeAlmanacEditor();
+}
+
+function toggleAlmanacPin(id) {
+    const list = loadAlmanac();
+    const it = list.find(x => x.id === id);
+    if (!it) return;
+    it.pin = !it.pin;
+    saveAlmanacItems(list);
+    if (almanacMode) renderAlmanacPanel();
+    showToast(it.pin ? '已锁定 · 生成时保留' : '已解锁');
+}
+async function deleteAlmanacItem(id) {
+    const list = loadAlmanac();
+    const it = list.find(x => x.id === id);
+    if (!it) return;
+    const ok = await spConfirm({ title: '删除日期', body: `确定删除「${it.name}」？`, confirmText: '删除', cancelText: '取消' });
+    if (!ok) return;
+    saveAlmanacItems(list.filter(x => x.id !== id));
+    if (almanacMode) renderAlmanacPanel();
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
@@ -6314,6 +7042,126 @@ function toggleKeyVisibility() {
         const r = $el.val(); $el.data('real', r).attr('type', 'password').val(maskKey(r));
         $icon.removeClass('fa-eye-slash').addClass('fa-eye');
     }
+}
+
+// ─── API 存储快切：UI 事件 + 下拉渲染 ────────────────────────────────────────
+// 从当前输入框读出这一套 API 配置（含未点保存的改动、Key 取 data('real') 真值）。
+function readApiInputs() {
+    const $k = $('#sp-cfg-key');
+    return {
+        url          : $('#sp-cfg-url').val().trim().replace(/\/$/, ''),
+        key          : ($k.data('real') || $k.val() || '').trim(),
+        model        : $('#sp-cfg-model').val().trim(),
+        excludeParams: parseExcludeParams($('#sp-cfg-exclude').val()),
+        timeoutSec   : parseInt($('#sp-cfg-timeout').val(), 10) || 180,
+        stream       : $('#sp-cfg-stream').is(':checked'),
+    };
+}
+
+// 把一套预设填回输入框（不生效，等用户点保存）。Key 走 maskKey 遮罩 + data('real') 存真值。
+function fillApiInputs(p) {
+    $('#sp-cfg-url').val(p.url || '');
+    const $k = $('#sp-cfg-key');
+    if (p.key) $k.data('real', p.key).val(maskKey(p.key)).attr('type', 'password');
+    else       $k.data('real', '').val('');
+    $('#sp-cfg-model').val(p.model || '');
+    $('#sp-cfg-exclude').val((Array.isArray(p.excludeParams) ? p.excludeParams : []).join('\n'));
+    $('#sp-cfg-timeout').val(p.timeoutSec || 180);
+    $('#sp-cfg-stream').prop('checked', p.stream === true);
+}
+
+// 渲染预设下拉：第一项是占位「预设 / 切换…」，其后每个已存预设一项，选中项高亮。
+function renderApiPresetSelect() {
+    const $sel = $('#sp-preset-select');
+    if (!$sel.length) return;
+    const list = loadApiPresets();
+    const activeId = getSettings().apiPresetActiveId || '';
+    let html = `<option value="">${list.length ? '选择预设…' : '暂无预设，点书签存一个'}</option>`;
+    for (const p of list) {
+        const sel = p.id === activeId ? ' selected' : '';
+        html += `<option value="${escapeAttr(p.id)}"${sel}>${escapeHtml(p.name)}</option>`;
+    }
+    $sel.html(html);
+    $('#sp-preset-del').prop('disabled', !activeId);
+    syncPresetLabel();
+}
+
+// 同步「假框」里显示的文字为原生 <select> 当前选中项（原生框已被 CSS 隐形，只借它的选择器）
+function syncPresetLabel() {
+    const $sel = $('#sp-preset-select'), $lb = $('#sp-preset-label');
+    if (!$sel.length || !$lb.length) return;
+    const txt = $sel.find('option:selected').text() || '选择预设…';
+    $lb.text(txt);
+}
+
+function showPresetHint(msg) {
+    const $h = $('#sp-preset-hint');
+    if (!$h.length) return;
+    $h.text(msg).show();
+    clearTimeout(showPresetHint._t);
+    showPresetHint._t = setTimeout(() => $h.fadeOut(200), 2600);
+}
+
+function bindApiPresetEvents() {
+    // 切换预设 → 填入输入框（提示用户仍需点保存）
+    $('#sp-preset-select').on('change', function () {
+        const id = this.value;
+        getSettings().apiPresetActiveId = id;
+        $('#sp-preset-del').prop('disabled', !id);
+        syncPresetLabel();
+        if (!id) return;
+        const p = loadApiPresets().find(x => x.id === id);
+        if (!p) { renderApiPresetSelect(); return; }
+        fillApiInputs(p);
+        showPresetHint(`已填入「${p.name}」，点下方「保存」生效`);
+    });
+
+    // ＋新增 → 把当前输入框这套存成新预设，名字按 URL 域名自动生成（同名自动加序号）。零弹窗。
+    // 不做「改名/覆盖」：想改就删掉重存（用户明确要的心智模型）。
+    $('#sp-preset-save').on('click', function () {
+        const cur = readApiInputs();
+        if (!cur.url && !cur.key) { showPresetHint('先填 API 再点新增'); return; }
+        const name = autoPresetName(cur.url);
+        const id = upsertApiPreset(name, cur, null);
+        renderApiPresetSelect();
+        $('#sp-preset-select').val(id);
+        showPresetHint(`已存为预设「${name}」`);
+    });
+
+    // 删除当前选中预设 —— 内联二次确认（图标变红勾，再点才删；3 秒无操作复原），零弹窗
+    let delArmed = false, delTimer = null;
+    $('#sp-preset-del').on('click', function () {
+        const id = getSettings().apiPresetActiveId;
+        if (!id) return;
+        const $btn = $(this), $i = $btn.find('i');
+        if (!delArmed) {
+            delArmed = true;
+            $i.attr('class', 'fa-solid fa-check');
+            $btn.css('color', '#e06c6c').attr('title', '再点一次确认删除');
+            showPresetHint('再点一次垃圾桶确认删除');
+            delTimer = setTimeout(() => {
+                delArmed = false; $i.attr('class', 'fa-solid fa-trash');
+                $btn.css('color', '').attr('title', '删除当前选中的预设');
+            }, 3000);
+            return;
+        }
+        clearTimeout(delTimer); delArmed = false;
+        $i.attr('class', 'fa-solid fa-trash'); $btn.css('color', '').attr('title', '删除当前选中的预设');
+        const p = loadApiPresets().find(x => x.id === id);
+        deleteApiPreset(id);
+        renderApiPresetSelect();
+        showPresetHint(p ? `已删除「${p.name}」` : '已删除');
+    });
+}
+
+// 按 URL 域名生成预设名；无 URL 用「预设」。撞已有名自动加 -2/-3…
+function autoPresetName(url) {
+    let base = '';
+    try { base = url ? new URL(url).hostname.replace(/^www\./, '') : ''; } catch { base = ''; }
+    if (!base) base = '预设';
+    const names = new Set(loadApiPresets().map(p => p.name));
+    if (!names.has(base)) return base;
+    for (let i = 2; ; i++) { const n = `${base}-${i}`; if (!names.has(n)) return n; }
 }
 
 function saveSettings() {

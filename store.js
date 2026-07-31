@@ -32,10 +32,10 @@ const SCHEMA_VERSION = 1;
 // 构画自己拥有的 chat_metadata 顶层 key。面板据此区分"构画 vs 别的插件"，也是 clearOwnKey 的白名单。
 export const OWN_KEYS = ['sp-store', 'sp-memory', 'sp-theater'];
 
-// 收进 sp-store 的 6 类数据（theater-draft 是设备相关的草稿，留 localStorage，不在此列）。
-// dashed（虚线·冷知识）不分视角，运行时固定走 user scope（子键恒为 dashed-user）。
+// 收进 sp-store 的 7 类数据（theater-draft 是设备相关的草稿，留 localStorage，不在此列）。
+// dashed（虚线·冷知识）与 almanac（历）都不分视角，运行时固定走 user scope（子键恒为 dashed-user / almanac-user）。
 // 顺序无所谓，但注意没有任何一个是另一个的前缀——子键解析(usageByKind/clearKind)依赖这点。
-export const KINDS = ['schedule', 'outline', 'lines', 'creative-chat', 'space-chat', 'dashed'];
+export const KINDS = ['schedule', 'outline', 'lines', 'creative-chat', 'space-chat', 'dashed', 'almanac'];
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  scope / 子键

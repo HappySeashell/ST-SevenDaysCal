@@ -90,7 +90,7 @@ async function deleteFile(name) {
 }
 // ═══════════════════════════════════════════════════════════════════════════
 //  索引（sp-anchor-index.json）：{ version, items:[ meta... ], tags:[ {id,name,color}... ] }
-//  meta = { id, chatId, chatName, charName, messageId, floorIndex, textPreview, ts, bytes, tags }
+//  meta = { id, chatId, chatIdHash, chatName, charName, messageId, floorIndex, textPreview, ts, bytes, tags }
 //  —— 不含 html；html 在各自 sp-anchor-{id}.json 里。bytes = 该条完整快照的估算字节。
 //  tags = 该条打的标签 id 数组（注册表在 idx.tags，item 只存 id，解析时按 id 查注册表）。
 // ═══════════════════════════════════════════════════════════════════════════
@@ -134,6 +134,7 @@ function toMeta(item) {
     return {
         id        : item.id,
         chatId    : item.chatId ?? null,
+        chatIdHash: item.chatIdHash ?? null,
         chatName  : item.chatName || '',
         charName  : item.charName || '',
         messageId : item.messageId ?? null,
@@ -278,7 +279,7 @@ export async function findItemIdsByFloor(chatId, floorIndex) {
 // 迁到 newId，并把 chatName 同步成新名（酒馆聊天名即文件名）。由 index.js 挂 CHAT_RENAMED 调用。
 // 索引一次性改完存一次；单条文件逐个 getItem→改→addItem（改名不频繁，收藏量通常有限，可接受）。
 // newName 未给则用 newId 当显示名。返回迁移条数。
-export async function renameChatId(oldId, newId, newName = '') {
+export async function renameChatId(oldId, newId, newName = '', chatIdHash = null) {
     if (oldId == null || newId == null) return 0;
     const oId = String(oldId), nId = String(newId);
     if (oId === nId) return 0;
@@ -286,7 +287,10 @@ export async function renameChatId(oldId, newId, newName = '') {
     const hit = idx.items.filter(m => String(m.chatId) === oId);
     if (!hit.length) return 0;
     const nName = String(newName || nId);
-    for (const m of hit) { m.chatId = nId; m.chatName = nName; }
+    // chat_id_hash 改名不变：给了就顺手补到每条上（老数据没存过 hash 的借此回填），
+    // 分桶/自愈从此有稳定键，不再受 chatId 漂移影响。
+    const stampHash = (chatIdHash != null && chatIdHash !== '') ? chatIdHash : null;
+    for (const m of hit) { m.chatId = nId; m.chatName = nName; if (stampHash != null && m.chatIdHash == null) m.chatIdHash = stampHash; }
     await saveIndex();
     // 单条文件同步（跳转来源比对的是单条文件里的 chatId，必须一起改，否则跳转失效）
     for (const m of hit) {
@@ -295,6 +299,7 @@ export async function renameChatId(oldId, newId, newName = '') {
             if (!item) continue;
             item.chatId = nId;
             item.chatName = nName;
+            if (stampHash != null && item.chatIdHash == null) item.chatIdHash = stampHash;
             await uploadJson(fileNameOf(item.id), item);
         } catch (err) { console.warn('[SP anchor] 改名同步单条失败:', m.id, err); }
     }
@@ -329,24 +334,89 @@ function strHash(input) {
 }
 
 // currentChatId/currentChatName = 当前聊天；chatIdHash = chat_metadata.chat_id_hash。
-// 找出 chatId ≠ 当前、但 hash(chatId) === chatIdHash 的收藏（= 改名前的自己），逐个迁到当前。
-// renameChatId 幂等（同步索引 + 单条文件），返回迁移总条数。
+// 找出"其实就是当前 chat 改名前的自己"的收藏、迁到当前 chatId，并顺手回填稳定 hash。
+// 判定属于当前 chat 的两条线索（满足其一即算）：
+//   (a) 已存 chatIdHash === 当前 hash —— 最可靠，改名多少次都认得（新数据走这条）；
+//   (b) 老数据没存 hash：退回 strHash(m.chatId) === 当前 hash（仅当 chatId 仍是原始名才命中，
+//       多级改名后可能漏，但有 (a) 兜底，新收藏一次即补齐）。
+// 命中但 chatId 已是当前值的，也要回填 hash（把改名分裂出的桶并回来）。返回实际迁移条数。
 export async function healChatByHash(currentChatId, currentChatName, chatIdHash) {
     const wantHash = Number(chatIdHash);
     if (!currentChatId || !Number.isFinite(wantHash)) return 0;
     const idx = await loadIndex();
+    const cur = String(currentChatId);
+
+    // 属于当前 chat 的所有 item（满足其一即算），无论 chatId 是否已对：
+    //   (a) 已存 hash 命中；(b) 老数据 hash 空、strHash(chatId) 命中；(c) chatId 就是当前 chat。
+    // (c) 兜住"metadata 里的 chat_id_hash 是改名途中某个名字算的、与原名 hash 对不上"——
+    //     此时当前 chat 自己的收藏靠 (a)(b) 可能不命中，但 chatId===当前值必属当前，直接认领并补 hash。
+    const mine = idx.items.filter(m =>
+        (m.chatIdHash != null && Number(m.chatIdHash) === wantHash) ||
+        ((m.chatIdHash == null || m.chatIdHash === '') && strHash(m.chatId) === wantHash) ||
+        String(m.chatId) === cur
+    );
+    if (!mine.length) return 0;
+
+    // ① 回填稳定 hash（含 chatId 已正确、只是缺 hash 的——正是它们导致分桶分裂）
+    let backfilled = 0;
+    for (const m of mine) {
+        if (m.chatIdHash == null || m.chatIdHash === '') { m.chatIdHash = wantHash; backfilled++; }
+    }
+
+    // ② chatId 漂了的旧收藏迁到当前值
+    const staleIds = [...new Set(mine.filter(m => String(m.chatId) !== cur).map(m => m.chatId))];
+    let migrated = 0;
+    if (staleIds.length) {
+        await saveIndex();   // 先把回填落盘，renameChatId 内部会重读索引
+        for (const oldId of staleIds) {
+            try { migrated += await renameChatId(oldId, currentChatId, currentChatName, wantHash); }
+            catch (err) { console.warn('[SP anchor] 自愈迁移失败:', oldId, err); }
+        }
+    } else if (backfilled) {
+        await saveIndex();
+        // 单条文件也补 hash（跟索引一致；量通常很小）
+        for (const m of mine) {
+            try {
+                const item = await getItem(m.id);
+                if (item && (item.chatIdHash == null || item.chatIdHash === '')) {
+                    item.chatIdHash = wantHash;
+                    await uploadJson(fileNameOf(item.id), item);
+                }
+            } catch (err) { console.warn('[SP anchor] 回填 hash 单条失败:', m.id, err); }
+        }
+    }
+    const total = migrated + (staleIds.length ? 0 : backfilled);
+    if (migrated || backfilled) console.info(`[SP anchor] 自愈：迁移 ${migrated} 条、回填 hash ${backfilled} 条 → ${currentChatId}`);
+    return total;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  收养孤儿：hash 链断掉的旧收藏，按"角色 + 旧名已不存在 + 该角色仅此一个聊天"认领
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// chat_id_hash 是**原始文件名**的哈希；收藏若发生在改名之后，存的 chatId 是中间名，
+// 按哈希永远追不回（hash(中间名) ≠ hash(原始名)）。这类孤儿唯一可靠的归属证据：
+//   ① charName 与当前角色一致；② 它挂的 chatId 已不存在于该角色现存聊天文件里（= 被改名改走了）；
+//   ③ 该角色现存聊天只有当前这一个（无歧义，不会并错）。
+// 三条全满足才认领迁入并补 hash；角色有多个聊天时宁可不动，避免误并。
+export async function adoptOrphans(charName, existingChatIds, currentChatId, currentChatName, chatIdHash = null) {
+    if (!charName || !currentChatId) return 0;
+    const cur = String(currentChatId);
+    const idx = await loadIndex();
     const stale = [...new Set(
         idx.items
-            .filter(m => String(m.chatId) !== String(currentChatId) && strHash(m.chatId) === wantHash)
+            .filter(m => (m.charName || '') === charName
+                && String(m.chatId) !== cur
+                && !existingChatIds.has(String(m.chatId)))
             .map(m => m.chatId)
     )];
     if (!stale.length) return 0;
     let total = 0;
     for (const oldId of stale) {
-        try { total += await renameChatId(oldId, currentChatId, currentChatName); }
-        catch (err) { console.warn('[SP anchor] 自愈迁移失败:', oldId, err); }
+        try { total += await renameChatId(oldId, currentChatId, currentChatName, chatIdHash); }
+        catch (err) { console.warn('[SP anchor] 收养孤儿失败:', oldId, err); }
     }
-    if (total) console.info(`[SP anchor] 按 chat_id_hash 自愈 ${total} 条收藏 → ${currentChatId}`);
+    if (total) console.info(`[SP anchor] 按角色收养 ${total} 条孤儿收藏 → ${currentChatId}`);
     return total;
 }
 
@@ -360,10 +430,16 @@ export async function listByChat() {
     const items = await getAllItems();
     const buckets = new Map();
     for (const it of items) {
-        const key = it.chatId || '(unknown)';
+        // 分桶键优先用 chat_id_hash（改名不变的稳定键）——同一个聊天哪怕 chatId 因改名/漏同步
+        // 漂成好几个值，只要 hash 一致就并进同一个桶，避免"改名后分裂出多个收藏分组"。
+        // 老数据没存 hash → 退回按 chatId 分桶（保持旧行为）。
+        const key = (it.chatIdHash != null && it.chatIdHash !== '')
+            ? `h:${it.chatIdHash}`
+            : `c:${it.chatId || '(unknown)'}`;
         if (!buckets.has(key)) {
             buckets.set(key, {
                 chatId  : it.chatId,
+                chatIdHash: it.chatIdHash ?? null,
                 chatName: it.chatName || '(未命名聊天)',
                 charName: it.charName || '',
                 items   : [],
@@ -373,8 +449,12 @@ export async function listByChat() {
         const b = buckets.get(key);
         b.items.push(it);
         if (it.ts > b.latestTs) b.latestTs = it.ts;
-        // 桶名跟最新一条的聊天名走（聊天可能被改名）
-        if (it.ts === b.latestTs) { b.chatName = it.chatName || b.chatName; b.charName = it.charName || b.charName; }
+        // 桶的展示名 & 代表 chatId 跟最新一条走（聊天可能被改名，最新那条的名字/ id 最准）
+        if (it.ts === b.latestTs) {
+            b.chatName = it.chatName || b.chatName;
+            b.charName = it.charName || b.charName;
+            b.chatId   = it.chatId ?? b.chatId;
+        }
     }
     const out = [...buckets.values()];
     for (const b of out) {
@@ -458,7 +538,7 @@ export async function checkSize() {
 //  收藏一条楼层：由 index.js 抓好 rawInnerHtml + 元数据传进来，这里净化+组装+落库
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// meta: { chatId, chatName, charName, messageId, floorIndex }
+// meta: { chatId, chatIdHash, chatName, charName, messageId, floorIndex }
 // rawInnerHtml: 楼层 .mes_text 的 live innerHTML（渲染后，含脚本生成的状态栏）
 
 export async function saveSnapshot(meta, rawInnerHtml) {
@@ -466,6 +546,7 @@ export async function saveSnapshot(meta, rawInnerHtml) {
     const item = {
         id        : (crypto?.randomUUID?.() || `a-${Date.now()}-${Math.floor(performance.now())}`),
         chatId    : meta?.chatId ?? getContext().chatId ?? null,
+        chatIdHash: meta?.chatIdHash ?? getContext()?.chatMetadata?.chat_id_hash ?? null,
         chatName  : meta?.chatName || '',
         charName  : meta?.charName || '',
         messageId : meta?.messageId ?? null,
