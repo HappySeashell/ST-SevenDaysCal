@@ -4123,6 +4123,7 @@ async function buildOutlineChatMessages(userMsg) {
         outlineRaw: outlineCtx,
         wiContext,
         recentCtx,
+        almanacText: getAlmanacInjectText(),
     });
     return [{ role: 'system', content: sys }, ...outlineChatHistory, { role: 'user', content: userMsg }];
 }
@@ -4381,6 +4382,7 @@ async function buildSpaceChatMessages(userMsg) {
         recentCtx,
         pointList,
         lineList,
+        almanacText: getAlmanacInjectText(),
     });
     return [{ role: 'system', content: sys }, ...stripWidgetsForApi(spaceChatHistory), { role: 'user', content: userMsg }];
 }

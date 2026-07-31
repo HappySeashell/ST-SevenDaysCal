@@ -62,7 +62,7 @@ const ADVISOR_TONE_GUIDE = [
     `这是默认基调；当用户明确要求某种风格、或剧情设定确有需要时，以用户与设定为准。`,
 ].join('\n');
 
-export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', recentCtx = '' }) {
+export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', recentCtx = '', almanacText = '' }) {
     const outlineSection = outlineRaw
         ? `\n当前大纲：\n${outlineRaw}\n`
         : '\n当前还没有既定大纲，可先从灵感、剧情走向、角色关系、人物设定或世界观想法开始讨论。\n';
@@ -77,6 +77,7 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
         personaDesc ? `【${userName} 的人物设定】\n${personaDesc}` : '',
         authorNote  ? `【作者注释（当前聊天）】\n${authorNote}` : '',
         wiContext,
+        almanacText ? `【本世界观·重要日期（历）】一年之中的既定节日、生日、纪念日（按月日排序）：\n${almanacText}\n讨论剧情走向或排布大纲时间线时，若临近或涉及这些日子，应自然纳入考量，使故事与该世界的历法自洽。` : '',
         recentCtx,
         `请以创作顾问身份回答，不要扮演任何角色。默认优先围绕剧情发展、设定补完、角色关系与灵感发散来回应。只有当用户明确要求你"写大纲"或明确要求输出大纲时，才输出完整大纲，并使用 <outline_widget>...</outline_widget> 包裹；其他时间不要输出 <outline_widget> 标签。`,
         `【一旦决定输出大纲，必须一次性写完整份 <outline_widget>】所有节点（6-8 个）的 Beat/Scene/Subtext/Think 四行都要**逐行写满真实内容**，严禁只写字段名后停在冒号处、严禁"（略）/后续同理/……"之类省略或占位，严禁中途截断。哪怕篇幅长也要完整给出，否则大纲窗口无法解析、这次输出作废。`,
@@ -101,7 +102,7 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
     ].filter(Boolean).join('\n');
 }
 
-export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', memText = '', recentCtx = '', pointList = '', lineList = '' }) {
+export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', memText = '', recentCtx = '', pointList = '', lineList = '', almanacText = '' }) {
     const parts = [
         `你是 ${userName} 与 ${charName} 故事外的创作顾问。不推进剧情、不扮演角色，直接答问。`,
         personaDesc ? `\n【${userName} 的人物设定】\n${personaDesc}` : '',
@@ -112,6 +113,7 @@ export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '
         recentCtx,
         pointList ? `\n【当前的点·按序号（可改）】\n${pointList}` : '',
         lineList  ? `\n【当前的线·按序号（可改）】\n${lineList}` : '',
+        almanacText ? `\n【本世界观·重要日期（历）】一年之中的既定节日、生日、纪念日（按月日排序）：\n${almanacText}\n涉及日期、节日、生日、纪念日的问题以此为准。用户要记录的日期若已在其中，直接指出即可，不要重复出历卡片。` : '',
         `\n回答风格：`,
         `- 尽可能用更少的文字阐述更多的内容，确保信息密度`,
         `- 长度由问题决定：一句能说清的绝不写两句；确实需要展开的（如剧情推演、设定考据），才分点铺陈`,
