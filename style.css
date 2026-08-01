@@ -112,6 +112,7 @@
    box-shadow（卡片/FAB 自己的投影）不受影响。 */
 .sp-root, .sp-root *,
 .sp-lines-inline, .sp-lines-inline *,
+.sp-almanac-inline, .sp-almanac-inline *,
 .sp-anchor-btn, .sp-anchor-btn *,
 .sp-tagpicker, .sp-tagpicker *,
 .sp-toast, .sp-toast * {
@@ -176,8 +177,18 @@
 }
 
 .sp-sidebar-tabs   { display: flex; flex-direction: column; }
+/* 主视图标签区：短屏（矮窗/横屏手机/小窗）里 7 个标签超高时，让这段内部滚动，
+   别把底部「设置」按钮挤出可视区（论坛反馈：窄屏只能看到到「坐标」，设置丢了）。
+   :not(.sp-sidebar-util) 只作用于上半主标签，不动底部工具区；min-height:0 才能让 flex 子项缩到内容高度以下并触发滚动。*/
+.sp-sidebar-tabs:not(.sp-sidebar-util) {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: none;          /* Firefox：藏滚动条，44px 窄栏保持干净，触摸/滚轮仍可滚 */
+}
+.sp-sidebar-tabs:not(.sp-sidebar-util)::-webkit-scrollbar { width: 0; height: 0; }  /* WebKit：同上 */
 .sp-sidebar-spacer { flex: 1 1 auto; }
-.sp-sidebar-util   { border-top: 1px solid var(--sp-divider); padding-top: 4px; }
+.sp-sidebar-util   { flex: 0 0 auto; border-top: 1px solid var(--sp-divider); padding-top: 4px; }  /* 设置常驻底部，永不被压缩挤丢 */
 
 .sp-side-tab {
     position: relative;
@@ -271,6 +282,7 @@
     cursor: grab;
     user-select: none;
     touch-action: none;
+    position: relative;
 }
 .sp-content-head:active { cursor: grabbing; }
 @media (max-width: 640px) {
@@ -278,7 +290,7 @@
     .sp-content-head:active { cursor: default; }
 }
 .sp-content-title {
-    flex: 1;
+    flex: 0 1 auto;
     font-size: 1.05rem;
     font-weight: 500;
     color: var(--sp-on-surface);
@@ -291,6 +303,57 @@
     white-space: nowrap;
 }
 .sp-head-tools { display: flex; gap: 2px; flex-shrink: 0; }
+
+/* 模块介绍气泡：标题旁的 ? 按钮 + 展开的简介卡片 */
+.sp-module-intro-btn {
+    flex-shrink: 0;
+    margin-right: auto;   /* ? 紧贴标题，把右侧工具/子切换推到最右 */
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--sp-subtle);
+    cursor: pointer;
+    font-size: 0.82rem;
+    opacity: 0.6;
+    transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.sp-module-intro-btn:hover {
+    opacity: 1;
+    color: var(--sp-primary);
+    background: var(--sp-hover-bg);
+}
+.sp-module-intro-pop {
+    position: absolute;
+    top: calc(100% - 2px);
+    left: 12px;
+    right: 12px;
+    z-index: 40;
+    margin: 0;
+    padding: 12px 14px;
+    /* 不透明化：--sp-surface-high 会落到 ST 的半透明 BlurTintColor，字会透出下层。
+       先铺一层不透明的 legacy 底色，再把想要的高光 tint 用 linear-gradient 叠上去 → 既保留「浮起」的色调、又保证挡住下层。 */
+    background-color: var(--sp-sheet-bg-legacy);
+    background-image: linear-gradient(var(--sp-surface-high, var(--sp-sheet-bg-legacy)), var(--sp-surface-high, var(--sp-sheet-bg-legacy)));
+    border: 1px solid var(--sp-divider);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    color: var(--sp-on-surface);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    letter-spacing: 0.01em;
+    white-space: normal;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+@media (min-width: 641px) {
+    .sp-module-intro-pop { right: auto; max-width: 380px; }
+}
 
 /* Sub-toggle (我/TA) sits in content head next to title */
 .sp-sub-toggle {
@@ -361,11 +424,9 @@
 /* API 预设行：下拉 flex:1 + 右侧两个方形图标钮，与模型行/Key 行视觉统一 */
 .sp-preset-row    { display: flex; gap: 6px; margin-bottom: 6px; }
 .sp-preset-hint   { margin-top: 2px; color: var(--sp-primary); }
-/* 酒馆内置浏览器里原生 <select> 无视 appearance:none，自绘椭圆药丸，CSS 压不住（模型选择器同因弃用原生，
-   index.js:4158）。方案：真正的矩形是 .sp-preset-box 这个 div，我们全权控形；原生 <select> 铺满其上、透明，
-   只借它弹系统选择轮（用户已确认这交互好用）。假框文字由 syncPresetLabel() 跟原生选中项同步。 */
+/* 预设「假框」现为 <button>：点它就地展开下方内联列表（非原生 <select> 弹窗——酒馆内置浏览器里
+   原生 select 自绘药丸且弹层常被插件盖住，模型选择器同因弃用原生）。选中项名由 syncPresetLabel() 回显。 */
 .sp-preset-box {
-    position     : relative;
     flex         : 1;
     min-width    : 0;
     display      : flex;
@@ -377,9 +438,11 @@
     border-radius: 8px;
     box-sizing   : border-box;
     cursor       : pointer;
+    text-align   : left;
+    font-family  : var(--sp-font);
     transition   : border-color 0.15s;
 }
-.sp-preset-box:focus-within { border-color: var(--sp-primary); }
+.sp-preset-box:hover { border-color: var(--sp-primary); }
 .sp-preset-label {
     flex         : 1;
     min-width    : 0;
@@ -390,21 +453,75 @@
     font-size    : 0.85rem;
     font-family  : var(--sp-font);
 }
-.sp-preset-caret { flex: none; color: var(--sp-muted, var(--sp-on-surface)); font-size: 0.7rem; opacity: 0.7; }
-/* 原生 select 透明铺满假框，接管点击唤起系统选择轮 */
-.sp-preset-native {
-    position: absolute;
-    inset   : 0;
-    width   : 100%;
-    height  : 100%;
-    margin  : 0;
-    padding : 0;
-    border  : 0;
-    opacity : 0;
-    cursor  : pointer;
-    -webkit-appearance: none;
-    appearance        : none;
+.sp-preset-caret { flex: none; color: var(--sp-muted, var(--sp-on-surface)); font-size: 0.7rem; opacity: 0.7; transition: transform 0.15s; }
+.sp-preset-box-open .sp-preset-caret { transform: rotate(180deg); }
+/* 内联预设列表：在流内展开（非原生弹层），几何与「模型列表」一致 */
+.sp-preset-list {
+    display       : flex;
+    flex-direction: column;
+    gap           : 3px;
+    max-height    : 240px;
+    overflow-y    : auto;
+    overflow-x    : hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior       : contain;
+    margin-bottom : 6px;
+    padding       : 4px;
+    background    : var(--sp-sheet-bg);
+    border        : 1px solid var(--sp-divider);
+    border-radius : 8px;
+    box-sizing    : border-box;
 }
+.sp-preset-list::-webkit-scrollbar       { width: 4px; }
+.sp-preset-list::-webkit-scrollbar-thumb { background: var(--sp-divider); border-radius: 2px; }
+.sp-preset-item {
+    display      : block;
+    width        : 100%;
+    text-align   : left;
+    padding      : 8px 10px;
+    background   : transparent;
+    border       : 1px solid transparent;
+    border-radius: 6px;
+    color        : var(--sp-on-surface);
+    font-size    : 0.84rem;
+    font-family  : var(--sp-font);
+    cursor       : pointer;
+    word-break   : break-all;
+    transition   : background 0.12s, border-color 0.12s, color 0.12s;
+}
+.sp-preset-item:hover  { background: var(--sp-hover-bg); }
+.sp-preset-item:active { background: var(--sp-surface-high); }
+.sp-preset-item-active {
+    background  : var(--sp-hover-bg);
+    border-color: var(--sp-primary);
+    color       : var(--sp-primary);
+}
+.sp-preset-empty { padding: 10px; color: var(--sp-subtle); font-size: 0.8rem; text-align: center; }
+
+/* 预设列表项：可选名字 + 右侧改名笔（内联改名，无弹窗） */
+.sp-preset-item-row { display: flex; align-items: center; gap: 4px; }
+.sp-preset-item-row .sp-preset-item { flex: 1; width: auto; min-width: 0; }
+.sp-preset-rename {
+    flex-shrink   : 0;
+    width         : 28px; height: 28px;
+    display       : flex; align-items: center; justify-content: center;
+    border        : 1px solid transparent; border-radius: 6px;
+    background    : transparent; color: var(--sp-subtle);
+    cursor        : pointer; font-size: 0.72rem;
+    opacity       : 0.55;
+    transition    : opacity 0.12s, color 0.12s, background 0.12s;
+}
+.sp-preset-rename:hover { opacity: 1; color: var(--sp-primary); background: var(--sp-hover-bg); }
+.sp-preset-rename-input { flex: 1; width: auto; min-width: 0; margin: 0; padding: 7px 9px; font-size: 0.84rem; }
+.sp-preset-rename-ok {
+    flex-shrink   : 0;
+    width         : 28px; height: 28px;
+    display       : flex; align-items: center; justify-content: center;
+    border        : 1px solid var(--sp-primary); border-radius: 6px;
+    background    : var(--sp-primary); color: #fff;
+    cursor        : pointer; font-size: 0.72rem;
+}
+.sp-preset-rename-ok:hover { filter: brightness(1.08); }
 
 .sp-fetch-btn {
     width        : 34px;
@@ -1592,6 +1709,26 @@ select.sp-input { appearance: none; cursor: pointer; }
     flex-shrink: 0;
     margin-left: auto;
 }
+/* 手选当前剧情点：仿 .sp-inject-btn，hover 卡片才显形；当前节点(.sp-beat-setcur-on)常亮 */
+.sp-beat-setcur {
+    width          : 22px;
+    height         : 22px;
+    border         : none;
+    background     : transparent;
+    color          : var(--sp-subtle);
+    cursor         : pointer;
+    border-radius  : 4px;
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : 0.68rem;
+    flex-shrink    : 0;
+    opacity        : 0;
+    transition     : opacity 0.15s, color 0.15s, background 0.15s;
+}
+.sp-beat:hover .sp-beat-setcur   { opacity: 1; }
+.sp-beat-setcur:hover            { color: var(--sp-primary); background: var(--sp-surface-high); }
+.sp-beat-setcur-on               { opacity: 1; color: var(--sp-primary); }
 .sp-beat-index {
     width          : 20px;
     height         : 20px;
@@ -2633,6 +2770,35 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-line-card.sp-line-pinned {
     border-left-color: var(--sp-primary) !important;
     background       : rgba(125, 125, 235, 0.05);
+}
+
+/* 点·锁定切换按钮 —— 仿 .sp-line-pin-toggle / .sp-inject-btn：hover 点卡片才浮现，已锁常驻亮出 */
+.sp-point-pin-toggle {
+    width          : 22px;
+    height         : 22px;
+    padding        : 0;
+    border         : none;
+    background     : transparent;
+    color          : var(--sp-subtle);
+    cursor         : pointer;
+    border-radius  : 4px;
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : 0.68rem;
+    flex-shrink    : 0;
+    opacity        : 0;
+    transition     : opacity 0.15s, color 0.15s, background 0.15s;
+}
+.sp-event:hover .sp-point-pin-toggle { opacity: 1; }
+.sp-point-pin-toggle:hover { color: var(--sp-primary); background: rgba(125, 125, 235, 0.12); }
+/* 已锁定：不必 hover 也常驻亮出，一眼看清锁没锁 */
+.sp-event.sp-event-pinned .sp-point-pin-toggle { opacity: 0.85; color: var(--sp-primary); }
+
+/* 锁定态点卡片：左内边框主色 + 轻微底色，一眼看出"保留项" */
+.sp-event.sp-event-pinned {
+    background : rgba(125, 125, 235, 0.06);
+    box-shadow: inset 3px 0 0 var(--sp-primary);
 }
 /* Only the FIRST .sp-panel-refresh should absorb margin-left:auto —
    the header already sets that. Sibling refresh buttons stack next to it. */
@@ -3676,7 +3842,7 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 }
 .sp-alm-item:hover { background: var(--sp-hover-bg); }
 .sp-alm-pinned     { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--sp-primary) 30%, transparent); }
-/* 第一行：日期 + 节日名 + 标签 …… 右对齐操作按钮 */
+/* 第一行：日期 + 周几 + 持续天数「共N天」 …… 右对齐操作按钮（都是短、定宽内容，按钮不会被挤） */
 .sp-alm-top {
     display    : flex;
     align-items: center;
@@ -3685,12 +3851,23 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 }
 .sp-alm-date-icon { color: var(--alm-c, var(--sp-primary)); font-size: 0.8rem; width: 14px; text-align: center; flex-shrink: 0; }
 .sp-alm-date-txt  { font-size: 0.78rem; color: var(--sp-on-surface); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+/* 第二行：节日名 + 类型/自填/进行中标签（可换行，长名字在此独占、溢出省略号，不再顶按钮） */
+.sp-alm-meta {
+    display     : flex;
+    align-items : center;
+    flex-wrap   : wrap;
+    gap         : 6px;
+    padding-left: 20px;   /* 与图标对齐：图标 14px + gap 6px，名字/备注挂在同一条左缩进线上 */
+    min-width   : 0;
+}
 .sp-alm-name {
     font-size  : 0.86rem;
     color      : var(--sp-on-surface);
     font-weight: 500;
     line-height: 1.35;
+    flex       : 0 1 auto;
     min-width  : 0;
+    max-width  : 100%;
     overflow   : hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3715,10 +3892,34 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     line-height  : 1.5;
     flex-shrink  : 0;
 }
+/* 周几小标（跟在日期后，年-free 推算） */
+.sp-alm-wd { font-size: 0.7rem; color: var(--sp-subtle); font-weight: 500; flex-shrink: 0; }
+/* 多日节假日「共N天」 */
+.sp-alm-span-tag {
+    font-size    : 0.63rem;
+    font-weight  : 600;
+    color        : var(--sp-subtle);
+    background    : color-mix(in oklab, var(--sp-subtle) 14%, transparent);
+    border-radius: 99px;
+    padding      : 0 7px;
+    line-height  : 1.5;
+    flex-shrink  : 0;
+}
+/* 多日节假日今天正在进行中 */
+.sp-alm-active-tag {
+    font-size    : 0.63rem;
+    font-weight  : 700;
+    color        : var(--sp-on-primary);
+    background    : var(--sp-primary);
+    border-radius: 99px;
+    padding      : 0 7px;
+    line-height  : 1.5;
+    flex-shrink  : 0;
+}
 /* 操作按钮组：推到第一行末尾右对齐 */
 .sp-alm-acts { display: flex; align-items: center; gap: 0; flex-shrink: 0; margin-left: auto; }
 .sp-alm-acts .sp-icon-btn { width: 23px; height: 23px; font-size: 0.7rem; }
-/* 第二行：备注整行铺开 */
+/* 第三行：备注整行铺开 */
 .sp-alm-note { font-size: 0.76rem; color: var(--sp-subtle); line-height: 1.5; overflow-wrap: anywhere; padding-left: 20px; }
 .sp-alm-pinned .sp-alm-pin { color: var(--sp-primary); }
 
@@ -3746,6 +3947,22 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     margin-bottom : 8px;
 }
 .sp-alm-cal-title { flex: 1; text-align: center; font-size: 0.9rem; font-weight: 600; color: var(--sp-on-surface); }
+/* 周几表头（周一起）：与下方 .sp-alm-grid 同为 7 列，列宽/间距对齐 */
+.sp-alm-weekhead {
+    display              : grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap                  : 3px;
+    margin-bottom        : 3px;
+}
+.sp-alm-weekhead-cell {
+    text-align : center;
+    font-size  : 0.66rem;
+    font-weight: 600;
+    color      : var(--sp-subtle);
+    padding    : 2px 0;
+}
+/* 首日前留白（无内容、不可点、无 hover），只占位保证周几对齐 */
+.sp-alm-cell-empty { min-height: 40px; }
 .sp-alm-grid {
     display              : grid;
     grid-template-columns: repeat(7, 1fr);
@@ -3802,6 +4019,19 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 }
 .sp-alm-cal-detail-tools { display: inline-flex; gap: 6px; }
 .sp-alm-cal-detail .sp-alm-list { gap: 6px; }
+/* 详情行可点（联动到上方网格），给个可点手势 */
+.sp-alm-cal-detail .sp-alm-item { cursor: pointer; }
+/* 被联动选中的详情行 */
+.sp-alm-item-linked {
+    background   : var(--sp-hover-bg);
+    box-shadow   : inset 0 0 0 1.5px color-mix(in oklab, var(--sp-primary) 55%, transparent);
+}
+/* 网格里被联动高亮的日子（多日节假日会连成一条带） */
+.sp-alm-cell-linked {
+    background : color-mix(in oklab, var(--sp-primary) 26%, transparent);
+    box-shadow : inset 0 0 0 1.5px var(--sp-primary);
+}
+.sp-alm-cell-linked .sp-alm-cell-num { font-weight: 700; color: var(--sp-on-surface); }
 .sp-alm-cal-empty { font-size: 0.76rem; color: var(--sp-subtle); font-style: italic; padding: 6px 2px; }
 
 /* ── 添加 / 编辑（内联窗，非弹窗；head 在滚动区外，body 复用 .sp-alm-body）── */
@@ -3840,10 +4070,101 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-alm-field textarea:focus { border-color: var(--sp-primary); }
 .sp-alm-field-row    { display: flex; gap: 10px; }
 .sp-alm-field-sm     { flex: 1; }
+/* 编辑器只读周几提示（随月/日/天数实时刷新，纯提示不入库） */
+.sp-alm-wd-hint {
+    font-size  : 0.72rem;
+    color      : var(--sp-subtle);
+    margin     : -2px 2px 2px;
+    min-height : 1em;
+}
 .sp-alm-editor-actions {
     display        : flex;
     justify-content: flex-end;
     gap            : 10px;
     margin-top     : 16px;
 }
+
+/* ── 历·楼内七天条（注入聊天流，只读；扁扁一条，与线块共存于最新 AI 楼）──
+   注意：注入到 #chat（在 .sp-root 之外），--sp-primary/--sp-subtle 等作用域变量取不到，
+   故这里像线块一样只靠：全局 --sp-font、ST 主题 --SmartThemeQuoteColor、rgba 字面量、
+   以及历自带的 --alm-c（由 .sp-alm-type-* 就地设在元素上）。 */
+.sp-almanac-inline {
+    --alm-primary : var(--SmartThemeQuoteColor, #6bb6d6);
+    margin-top    : 12px;
+    border-radius : 8px;
+    overflow      : hidden;
+    font-family   : var(--sp-font);
+    font-size     : 0.78rem;
+    color         : inherit;
+    background    : rgba(128,128,128,0.07);
+    border        : 1px solid rgba(128,128,128,0.15);
+}
+/* 历·日程块的内容：标题条（.sp-inline-summary）走线的类；展开后是历自己的「未来七天」条。
+   .sp-inline-body 无横内边距（线的行自带），这里给七天条补横内边距。 */
+.sp-alm-inline-body { padding: 4px 8px 8px; }
+.sp-alm-strip-live .sp-alm-scell { cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
+.sp-alm-strip-live .sp-alm-scell:hover { background: color-mix(in oklab, var(--alm-primary) 12%, rgba(128,128,128,0.06)); }
+.sp-alm-strip {
+    display              : grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap                  : 3px;
+    min-width            : 0;
+}
+.sp-alm-scell {
+    display       : flex;
+    flex-direction: column;
+    align-items   : center;
+    gap           : 1px;
+    padding       : 4px 1px 5px;
+    border-radius : 6px;
+    min-width     : 0;
+    background    : rgba(128,128,128,0.06);
+}
+.sp-alm-scell-wd { font-size: 0.6rem;  opacity: 0.6; white-space: nowrap; }
+.sp-alm-scell-md { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+.sp-alm-scell-today {
+    background: color-mix(in oklab, var(--alm-primary) 15%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--alm-primary) 40%, transparent);
+}
+.sp-alm-scell-today .sp-alm-scell-wd { opacity: 0.95; font-weight: 700; color: var(--alm-primary); }
+.sp-alm-scell-has  { background: color-mix(in oklab, var(--alm-primary) 8%, rgba(128,128,128,0.06)); }
+.sp-alm-scell .sp-alm-dot { margin-top: 1px; }
+.sp-alm-scell-open {
+    background: color-mix(in oklab, var(--alm-primary) 16%, transparent) !important;
+    box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--alm-primary) 55%, transparent);
+}
+.sp-alm-sday {
+    border-top    : 1px solid rgba(128,128,128,0.15);
+    margin-top    : 7px;
+    padding       : 7px 1px 1px;
+    display       : flex;
+    flex-direction: column;
+    gap           : 5px;
+}
+.sp-alm-sday[hidden] { display: none; }
+.sp-alm-sday-head  { font-size: 0.72rem; font-weight: 700; opacity: 0.8; }
+.sp-alm-sday-empty { font-size: 0.74rem; opacity: 0.55; padding: 2px 1px; }
+.sp-alm-sday-list  { display: flex; flex-direction: column; gap: 5px; }
+.sp-alm-drawer-item {
+    display      : flex;
+    align-items  : center;
+    gap          : 7px;
+    flex-wrap    : wrap;
+    padding      : 5px 7px;
+    border-radius: 6px;
+    background   : rgba(128,128,128,0.06);
+}
+.sp-alm-drawer-icon { color: var(--alm-c, inherit); font-size: 0.82rem; flex-shrink: 0; }
+.sp-alm-drawer-type {
+    font-size    : 0.62rem;
+    font-weight  : 700;
+    padding      : 1px 6px;
+    border-radius: 99px;
+    background    : color-mix(in oklab, var(--alm-primary) 18%, transparent);
+    color         : var(--alm-primary);
+    flex-shrink   : 0;
+}
+.sp-alm-drawer-span { font-size: 0.66rem; font-weight: 600; opacity: 0.7; flex-shrink: 0; white-space: nowrap; }
+.sp-alm-drawer-name { font-size: 0.78rem; font-weight: 600; }
+.sp-alm-drawer-note { font-size: 0.72rem; opacity: 0.7; flex-basis: 100%; line-height: 1.45; }
 
