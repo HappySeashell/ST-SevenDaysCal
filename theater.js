@@ -347,8 +347,8 @@ export async function generate(userInput, { signal, onStage } = {}) {
     if (!_callWriteApi || !_callBeautifyApi) throw new Error('棱未正确初始化');
 
     _generating = true;
-    // 字数交给需求/模板提示词约束；这里给足生成预算（8192），推理模型也不易被思维链挤空
-    const writeMaxTokens = 8192;
+    // 字数交给需求/模板提示词约束；这里给足生成预算（30000），推理模型也不易被思维链挤空
+    const writeMaxTokens = 30000;
 
     try {
         // ── Agent 1：写作（棱=折射）──

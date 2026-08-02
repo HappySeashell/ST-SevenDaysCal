@@ -3607,10 +3607,10 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
 
 async function callCustomApi(ctx, prompt, cfg, userName, charName, signal = null, historyLimit = 10, opts = {}) {
     const messages = await buildMessages(ctx, prompt, userName, charName, historyLimit, opts);
-    // 8192 而非 4096：推理模型（GLM 等）会先耗一大段思维链预算，
-    // 4096 常在长提示词（尤其「面」）下把正文挤空 → 代理回 <none>。留足空间。
+    // 30000：推理模型（GLM 等）会先耗一大段思维链预算，长提示词（尤其「面」）下要留足空间，
+    // 否则正文被挤空 → 代理回 <none>。
     // opts.temperature：可选，机械/创作按需覆盖（历生成抬温让次要节日与风味更发散）；未给则跟随预设。
-    return postChatCompletion({ cfg, messages, maxTokens: 8192, temperature: opts.temperature, signal });
+    return postChatCompletion({ cfg, messages, maxTokens: 30000, temperature: opts.temperature, signal });
 }
 
 // Called by memory.js — minimal wrapper around user's configured API.
@@ -3619,7 +3619,7 @@ async function callMemoryApi(messages, signal = null) {
     return postChatCompletion({
         cfg: loadUtilityCfg(),   // 机械任务：可分流到轻量预设（省钱/降配），未设则=主 API
         messages,
-        maxTokens: 800,     // summaries are short
+        maxTokens: 30000,   // 上限放宽（与其它调用统一为 30000）；摘要实际长度仍由提示词约束
         temperature: 0.3,   // low temp for factual extraction
         signal,
     });
@@ -3628,7 +3628,7 @@ async function callMemoryApi(messages, signal = null) {
 // Called by theater.js — bare API caller (world info/persona already baked into
 // the messages by theater.js via getTheaterStoryContext). Bare like callMemoryApi;
 // world info is NOT auto-injected here so the beautify pass stays clean.
-async function callTheaterApi(messages, { maxTokens = 4096, signal = null } = {}) {
+async function callTheaterApi(messages, { maxTokens = 30000, signal = null } = {}) {
     const cfg = loadCfg();
     if (!cfg.url || !cfg.key) throw new Error('请先在设置中填写自定义 API 的 URL 和 Key');
     return postChatCompletion({ cfg, messages, maxTokens, signal });
@@ -4523,7 +4523,7 @@ async function sendOutlineChat(userMsg) {
         const reply = await postChatCompletion({
             cfg,
             messages: await buildOutlineChatMessages(userMsg),
-            maxTokens: 4096,
+            maxTokens: 30000,
             signal: outlineChatAbortController.signal,
         });
         if (getContext().chatId !== chatIdSnap) { $dots.remove(); return; }
@@ -4779,7 +4779,7 @@ async function sendSpaceChat(userMsg) {
         const reply = await postChatCompletion({
             cfg,
             messages: await buildSpaceChatMessages(userMsg),
-            maxTokens: 4096,
+            maxTokens: 30000,
             signal: spaceChatAbortController.signal,
         });
         if (getContext().chatId !== chatIdSnap) { $dots.remove(); return; }
