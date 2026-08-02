@@ -57,6 +57,7 @@ const DEFAULT_SETTINGS = {
     memoryL1Group  : 10,   // L0 entries per L1 chapter
     memorySkipShort: 50,   // skip AI floors shorter than N chars
     useBaiBaiBook  : false, // if true, pull history from 柏宝书 getInjectedHistory() and skip built-in memory entirely
+    useAnima       : false, // if true, read summaries from Anima's chat-bound worldbook (anima_summary entries) and skip built-in memory
     // Tag sanitizer (used by memory.js:stripTags AND anywhere else that reads
     // AI floor content). Both are comma-separated bare tag names (no <>).
     keepTags       : 'content',  // protect list — contents inside these tags survive stripping
@@ -234,7 +235,7 @@ jQuery(async () => {
         getSettings: () => {
             const s = getSettings();
             return {
-                useBaiBaiBook  : !!s.useBaiBaiBook,
+                useBaiBaiBook  : !!s.useBaiBaiBook || !!s.useAnima,   // Anima 用户同样跳过内置采集/注入（memory.js 只认这一个旗标）
                 memoryEnabled  : s.memoryEnabled !== false,
                 memoryL0Group  : Number.isFinite(+s.memoryL0Group) ? +s.memoryL0Group : 5,
                 memoryL1Group  : Number.isFinite(+s.memoryL1Group) ? +s.memoryL1Group : 10,
@@ -1957,6 +1958,12 @@ function injectModal() {
                                     </label>
                                     <div id="sp-mem-bbb-status" class="sp-cfg-hint" style="display:none"></div>
 
+                                    <label class="sp-mode-opt sp-mem-source-toggle">
+                                        <input type="checkbox" id="sp-mem-source-anima">
+                                        <span>使用 Anima 作为记忆源</span>
+                                    </label>
+                                    <div id="sp-mem-anima-status" class="sp-cfg-hint" style="display:none"></div>
+
                                     <div id="sp-mem-internal">
                                     <p class="sp-cfg-hint">
                                         对话时自动为每层楼生成客观摘要，供点 / 线 / 面 / 间生成时参考。
@@ -3287,7 +3294,8 @@ function setBody(html) { $('#sp-body').html(html); }
 // Called from CHAT_CHANGED and openSchedule so users see it on the next chat
 // switch OR the first time they open the panel post-upgrade.
 function checkMemoryMigrationNotice() {
-    if (getSettings().useBaiBaiBook) return;      // 柏宝书用户不受影响
+    const _ms = getSettings();
+    if (_ms.useBaiBaiBook || _ms.useAnima) return;      // 柏宝书 / Anima 用户不受内置记忆迁移影响
     const notice = memory.consumeMigrationNotice?.();
     if (!notice) return;
     const { l0Count, l1Count } = notice;
@@ -3303,6 +3311,32 @@ function checkMemoryMigrationNotice() {
 // Called by the three generation triggers (schedule/outline/lines).
 // Returns a Promise<boolean>: true if user wants to continue, false if canceled.
 async function memoryPreCheckConfirm() {
+    // Anima mode: warn only if TavernHelper is missing or the chat-bound
+    // worldbook has no anima_summary slices (built-in report is meaningless here).
+    if (getSettings().useAnima) {
+        const th = globalThis.TavernHelper;
+        if (!th || typeof th.getChatWorldbookName !== 'function' || typeof th.getWorldbook !== 'function') {
+            return spConfirm({
+                title  : 'Anima 记忆源未就绪',
+                body   : '当前选的是 Anima 记忆源，但检测不到酒馆助手(TavernHelper)接口。\n继续生成会没有历史记忆注入。',
+                note   : '请确认已安装并启用「酒馆助手」与「Anima 记忆系统」，或临时关掉本插件的"使用 Anima 作为记忆源"。',
+                confirmText: '继续生成',
+                cancelText : '取消',
+            });
+        }
+        let hasSummary = false;
+        try { hasSummary = !!(await getAnimaMemText()).trim(); } catch {}
+        if (!hasSummary) {
+            return spConfirm({
+                title  : 'Anima 记忆为空',
+                body   : '当前聊天绑定的世界书里没读到 Anima 摘要（anima_summary）。',
+                note   : '继续生成会没有历史记忆注入。请先让 Anima 跑出摘要，或确认世界书绑定正确。',
+                confirmText: '继续生成',
+                cancelText : '取消',
+            });
+        }
+        return true;
+    }
     // 柏宝书 mode: skip built-in report (its "pending" is meaningless here).
     // Instead, warn only if 柏宝书 itself says coverage is incomplete.
     if (getSettings().useBaiBaiBook) {
@@ -3448,8 +3482,9 @@ function reloadAfterConflict() {
 
 // Dynamic loading text: reflect whether memory is currently being built
 function loadingHtml(baseText, abortId) {
-    // 柏宝书 mode has no built-in background queue — never show "补全记忆" text.
-    const busy = !getSettings().useBaiBaiBook && memory.isMemoryBusy();
+    // 柏宝书 / Anima mode has no built-in background queue — never show "补全记忆" text.
+    const _ms = getSettings();
+    const busy = !_ms.useBaiBaiBook && !_ms.useAnima && memory.isMemoryBusy();
     const text = busy
         ? `正在补全记忆并${baseText}…`
         : `${baseText}中…`;
@@ -3833,7 +3868,7 @@ async function refreshTheaterStoryContext() {
     let wiContext = '';
     try { wiContext = await buildWorldInfoContext(ctx); } catch { wiContext = ''; }
     const { personaDesc, authorNote } = readCardExtras(ctx);
-    const memText = getMemText();
+    const memText = await getMemText();
     const sysBlocks = [
         personaDesc      ? `【${userName} 的人物设定】\n${personaDesc}` : '',
         char.description ? `【${charName} 的背景资料】\n${char.description}` : '',
@@ -4115,12 +4150,80 @@ async function buildWorldInfoContext(ctx) {
     return `【世界书】\n${kept.join('\n\n')}`;
 }
 
-// Memory-source dispatcher. When useBaiBaiBook is on, read the same history text
-// 柏宝书 injects into its own prompt; otherwise fall through to the built-in
-// L0/L1 store. No fallback between the two — 柏宝书 mode either returns its
-// history or nothing (empty prompt block).
-function getMemText(opts = {}) {
+// Read Anima's summary layer from the chat-bound worldbook. Anima persists each
+// summary slice as <batchId_sliceId>…</batchId_sliceId> inside worldbook entries
+// tagged extra.createdBy==="anima_summary", with extra.history[] carrying the
+// {unique_id,batch_id,slice_id,narrative_time} index (see Anima worldbook_api.js
+// saveSummaryBatchToWorldbook / getLatestRecentSummaries). Chapters/分卷 each get
+// their own entry, so we merge across all of them and stitch slices back in
+// chronological order. Goes through window.TavernHelper (Anima users always have
+// 酒馆助手 installed); returns '' if that runtime or the worldbook isn't there.
+// opts.full is intentionally NOT differentiated: Anima's summary layer IS the
+// compressed timeline (there's no RAG recall on 构画's side), so we always return
+// the full chronological set — mirroring the built-in branch, which also ignores
+// opts.full.
+async function getAnimaMemText() {
+    const th = globalThis.TavernHelper;
+    if (!th || typeof th.getChatWorldbookName !== 'function' || typeof th.getWorldbook !== 'function') {
+        if (!getMemText._animaWarned) {
+            getMemText._animaWarned = true;
+            console.info('[7dayscal] 选了 Anima 记忆源但酒馆助手(TavernHelper)接口未就绪，本次生成无历史注入');
+        }
+        return '';
+    }
+    let wbName = null;
+    try { wbName = await th.getChatWorldbookName('current'); } catch {}
+    if (!wbName) return '';
+    let entries = null;
+    try { entries = await th.getWorldbook(wbName); } catch { return ''; }
+    if (!Array.isArray(entries)) return '';
+
+    const all = [];
+    for (const entry of entries) {
+        const ex = entry?.extra;
+        if (ex?.createdBy !== 'anima_summary' || !Array.isArray(ex.history)) continue;
+        const content = String(entry.content || '');
+        for (const h of ex.history) {
+            const uid = h.unique_id !== undefined ? h.unique_id : h.index;
+            if (uid === undefined || uid === null) continue;
+            all.push({
+                unique_id     : String(uid),
+                batch_id      : Number(h.batch_id !== undefined ? h.batch_id : h.index) || 0,
+                slice_id      : Number(h.slice_id !== undefined ? h.slice_id : 0) || 0,
+                narrative_time: h.narrative_time,
+                parentContent : content,
+            });
+        }
+    }
+    if (!all.length) return '';
+
+    // 正序拼接：narrative_time → batch_id → slice_id（与 Anima 写入时的排序同口径）
+    all.sort((a, b) => {
+        if (a.narrative_time && b.narrative_time && a.narrative_time !== b.narrative_time) {
+            return new Date(a.narrative_time).getTime() - new Date(b.narrative_time).getTime();
+        }
+        if (a.batch_id !== b.batch_id) return a.batch_id - b.batch_id;
+        return a.slice_id - b.slice_id;
+    });
+
+    const parts = [];
+    for (const item of all) {
+        const tag = item.unique_id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const m = item.parentContent.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+        if (m) { const t = m[1].trim(); if (t) parts.push(t); }
+    }
+    return parts.join('\n\n');
+}
+
+// Memory-source dispatcher. Priority: Anima → 柏宝书 → built-in L0/L1 store. The
+// alternate sources are mutually exclusive (enforced in bindMemoryHandlers); each
+// returns its own history or nothing (empty prompt block) — no fallback between them.
+async function getMemText(opts = {}) {
     const s = getSettings();
+    if (s.useAnima) {
+        try { return await getAnimaMemText(); }
+        catch (err) { console.warn('[7dayscal] Anima 取摘要出错:', err); return ''; }
+    }
     if (s.useBaiBaiBook) {
         const api = globalThis.STBaiBaiBook;
         if (!api || typeof api.getInjectedHistory !== 'function') {
@@ -4167,7 +4270,7 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10,
     const { personaDesc, authorNote } = readCardExtras(ctx);
 
     // Story memory (Plan C: objective memory + view tag)
-    const memText = getMemText({ full: opts.fullMemory });
+    const memText = await getMemText({ full: opts.fullMemory });
     const memBlock = memText
         ? `【故事记忆库】以下由本插件在对话过程中自动生成的客观摘要，反映从最早到近期的关键事件与伏笔。请**优先信任记忆库描述**，即使它与角色卡/世界书中较早的描述冲突（因为记忆库记录了事件后的最新状态）。以 ${currentView === 'char' ? charName : userName} 的视角优先关注对其有意义的信息。\n\n${memText}`
         : '';
@@ -4921,7 +5024,7 @@ async function buildSpaceChatMessages(userMsg) {
     const pointList = EDIT_POINT_KEYWORDS.some(w => msg.includes(w)) ? numberedPointList(readCacheRaw(getCacheKey())) : '';
     const lineList  = EDIT_LINE_KEYWORDS.some(w => msg.includes(w))  ? numberedLineList(readCacheRaw(getLinesCacheKey())) : '';
     const wiContext = await buildWorldInfoContext(ctx);
-    const memText   = getMemText();
+    const memText   = await getMemText();
     const recentCtx = await buildRecentChatContext(ctx);
     const { personaDesc, authorNote } = readCardExtras(ctx);
     const sys = buildSpaceChatSystemPrompt({
@@ -7408,10 +7511,13 @@ function toggleSettings() {
 // ─── Memory section renderer + handlers ─────────────────────────────────────
 function renderMemorySection() {
     const s = getSettings();
-    const useBbb = !!s.useBaiBaiBook;
+    const useBbb   = !!s.useBaiBaiBook;
+    const useAnima = !!s.useAnima;
     $('#sp-mem-source-bbb').prop('checked', useBbb);
+    $('#sp-mem-source-anima').prop('checked', useAnima);
     if (useBbb) {
         $('#sp-mem-internal').hide();
+        $('#sp-mem-anima-status').hide();
         $('#sp-mem-bbb-status').show();
         const api = globalThis.STBaiBaiBook;
         if (api && typeof api.getInjectedHistory === 'function') {
@@ -7427,8 +7533,16 @@ function renderMemorySection() {
         }
         return;
     }
+    if (useAnima) {
+        $('#sp-mem-internal').hide();
+        $('#sp-mem-bbb-status').hide();
+        $('#sp-mem-anima-status').show();
+        renderAnimaStatus();
+        return;
+    }
     $('#sp-mem-internal').show();
     $('#sp-mem-bbb-status').hide();
+    $('#sp-mem-anima-status').hide();
     $('#sp-mem-enabled').prop('checked', s.memoryEnabled !== false);
     $('#sp-mem-l0').val(Number.isFinite(+s.memoryL0Group) ? +s.memoryL0Group : 5);
     $('#sp-mem-l1').val(Number.isFinite(+s.memoryL1Group) ? +s.memoryL1Group : 10);
@@ -7438,6 +7552,42 @@ function renderMemorySection() {
     $('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
     refreshMemoryStatus();
 }
+
+// Async status line for the Anima source: resolves the chat-bound worldbook via
+// 酒馆助手 and counts anima_summary slices. Guarded against the user flipping the
+// source mid-await (re-checks useAnima before writing).
+async function renderAnimaStatus() {
+    const $st = $('#sp-mem-anima-status');
+    const th = globalThis.TavernHelper;
+    if (!th || typeof th.getChatWorldbookName !== 'function' || typeof th.getWorldbook !== 'function') {
+        $st.html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 检测不到酒馆助手(TavernHelper)：请确认已安装并启用「酒馆助手」与「Anima 记忆系统」；点 / 线 / 面 / 间 生成时不会注入历史记忆');
+        return;
+    }
+    $st.html('<i class="fa-solid fa-spinner fa-spin"></i> 正在读取 Anima 摘要…');
+    let wbName = null;
+    try { wbName = await th.getChatWorldbookName('current'); } catch {}
+    if (!getSettings().useAnima) return;   // await 期间用户切走了源
+    if (!wbName) {
+        $st.html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 当前聊天没有绑定世界书，读不到 Anima 摘要');
+        return;
+    }
+    let count = 0;
+    try {
+        const entries = await th.getWorldbook(wbName);
+        if (Array.isArray(entries)) {
+            for (const e of entries) {
+                if (e?.extra?.createdBy === 'anima_summary' && Array.isArray(e.extra.history)) count += e.extra.history.length;
+            }
+        }
+    } catch {}
+    if (!getSettings().useAnima) return;
+    if (count > 0) {
+        $st.html(`<i class="fa-solid fa-circle-check" style="color:var(--cardhub-accent,#7c9)"></i> Anima 已就绪（世界书「${escapeHtml(wbName)}」读到 ${count} 段摘要）`);
+    } else {
+        $st.html(`<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 世界书「${escapeHtml(wbName)}」里没有 Anima 摘要（anima_summary）——请先让 Anima 跑出摘要`);
+    }
+}
+
 
 function refreshMemoryStatus() {
     const r = memory.getHealthReport();
@@ -7506,7 +7656,17 @@ function bindTheaterHandlers() {
 
 function bindMemoryHandlers() {
     $('#sp-mem-source-bbb').on('change', function () {
-        getSettings().useBaiBaiBook = this.checked;
+        const s = getSettings();
+        s.useBaiBaiBook = this.checked;
+        if (this.checked) s.useAnima = false;   // 记忆源互斥：柏宝书 / Anima / 内置三选一
+        saveSettingsDebounced();
+        if (this.checked) memory.abortRebuild();
+        renderMemorySection();
+    });
+    $('#sp-mem-source-anima').on('change', function () {
+        const s = getSettings();
+        s.useAnima = this.checked;
+        if (this.checked) s.useBaiBaiBook = false;   // 记忆源互斥
         saveSettingsDebounced();
         if (this.checked) memory.abortRebuild();
         renderMemorySection();
