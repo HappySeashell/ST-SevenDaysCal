@@ -50,6 +50,7 @@ const DEFAULT_SETTINGS = {
     outlineJudgeInterval: 3,    // 大纲推进判定节奏：每几条 AI 回复跑一次推进判定（独立于线的 linesInterval，不耦合）
     almanacInlineEnabled: true, // 历·日程块：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是未来七天（周X+日期，有节日可点开看当天安排）；只读，独立于线主开关；默认开，关掉即不注入聊天
     linesInlineEnabled  : true, // 线·楼内块：最新 AI 楼底部展示活跃线块（只读展示，独立于线主开关 linesEnabled）；默认开，关掉只隐藏楼内块、不影响线的推进与隐形注入
+    scheduleInlineEnabled: true, // 点·楼内日程条：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是每天一格（周X+日期+天气+待办数，可点开看当天事件）；只读，反映当前视角的点，默认开
     // Memory system
     memoryEnabled  : true,
     memoryL0Group  : 5,    // AI floors per L0 entry
@@ -97,6 +98,9 @@ const MODULE_INTROS = {
 };
 
 let lastDebugPayload = null;
+
+// 创作类生成的默认温度：鼓励模型发散/"合理瞎编"。记忆摘要等事实抽取仍走低温（见 callMemoryApi）。
+const GEN_TEMPERATURE = 1.0;
 
 // 存储描述符 {kind, view, charName}：5 个 getXxxKey() 都返回它，喂给 store.readData/writeData/removeData。
 // 无 chat 时返回 null（保留旧 getter「无 chat → null」语义，各处 if(!key) 守卫照旧生效）。
@@ -271,7 +275,9 @@ jQuery(async () => {
     // Back-fill inline blocks for any messages already rendered at startup
     setTimeout(backfillLinesInlineBlocks, 800);
     setTimeout(() => syncLatestAlmanacBlock(), 850);   // 历·日程块：首屏补挂最新楼
+    setTimeout(() => syncLatestScheduleBlock(), 860);  // 点·日程条：首屏补挂最新楼
     initAlmanacStripDelegation();   // 历·七天条格子点击委托（一次性注册到 document）
+    initScheduleStripDelegation();  // 点·日程条格子点击委托（一次性注册到 document）
     // Reset view state and reload cache on chat switch
     if (_stListeners.chat) eventSource.removeListener?.(event_types.CHAT_CHANGED, _stListeners.chat);
     _stListeners.chat = () => {
@@ -345,6 +351,7 @@ jQuery(async () => {
         // Back-fill inline blocks for newly loaded chat
         setTimeout(backfillLinesInlineBlocks, 300);
         setTimeout(() => syncLatestAlmanacBlock(), 350);   // 历·七天条：切聊天后按新锚点重挂
+        setTimeout(() => syncLatestScheduleBlock(), 360);  // 点·日程条：切聊天后按新视角(user)点重挂
         // 锚：换 chat → 重载已收藏键（按钮态跟着新 chat 走）+ 补齐每楼收藏入口
         refreshAnchorSavedKeys();
         setTimeout(scanAnchorButtons, 300);
@@ -385,6 +392,7 @@ jQuery(async () => {
         setTimeout(scanAnchorButtons, 150);
         // 历·七天条：独立于线主开关，每次楼层渲染都把七天条补挂到最新 AI 楼（只读，无生成）
         syncLatestAlmanacBlock();
+        syncLatestScheduleBlock();   // 点·日程条：同上，随新楼补挂（只读）
         // Master switch: linesEnabled=false disables auto-advance + inline block
         if (getSettings().linesEnabled === false) return;
         const mid = Number(messageId);
@@ -425,6 +433,7 @@ jQuery(async () => {
     _stListeners.swiped = async (mesId, info) => {
         // 历·七天条：swipe 可能改动剧情内时间锚点 → 按现锚点重建（只读，无生成，独立于线主开关）
         syncLatestAlmanacBlock();
+        syncLatestScheduleBlock();   // 点·日程条：swipe 后一并重挂（点本身不随 swipe 变，纯补块）
         if (getSettings().linesEnabled === false) return;
         const mid = Number(mesId);
         if (info?.pendingGeneration) { _pendingSwipeGen = { mesId: mid }; return; }
@@ -459,7 +468,7 @@ jQuery(async () => {
     }
     _stListeners.genEnd = () => {
         _stStreamUntil = 0;   // 立即开闸（有 ENDED 就即时恢复；没有也无妨，时间戳会自愈）
-        setTimeout(() => { ensureLatestLineBlock(); ensureLatestAlmanacBlock(); }, 60);
+        setTimeout(() => { ensureLatestLineBlock(); ensureLatestAlmanacBlock(); ensureLatestScheduleBlock(); }, 60);
     };
     eventSource.on(event_types.GENERATION_ENDED, _stListeners.genEnd);
     eventSource.on(event_types.GENERATION_STOPPED, _stListeners.genEnd);
@@ -1057,6 +1066,159 @@ function ensureLatestAlmanacBlock() {
     msgEl.appendChild(block);
 }
 
+// ─── 点·楼内日程条（只读，反映当前视角的点，无生成）──────────────────────────────
+// 与线块/历条平行、共存于最新 AI 楼。收起态是扁扁的「点 · N件待办」条，点整条展开是「日程条」：
+// 每个 Day 一格（周X + 日期 + 天气图标 + 待办数），Future 另起一格；点某格就地展开当天事件（标题+时间）。
+// 纯读当前视角存的点 raw（getCacheKey），不请求 API、不受 linesEnabled 影响，只受 scheduleInlineEnabled 控制。
+// 外壳/标题条走线的 .sp-inline-* 类，与线块/历条一致；只有条内格子用独立的 .sp-sch-* 类。
+function _buildScheduleBlockHtml() {
+    if (getSettings().scheduleInlineEnabled === false) return '';
+    const raw = readCacheRaw(getCacheKey());
+    if (!raw) return '';   // 当前视角还没生成点 → 不打扰聊天
+    const { days, future, startDate } = parseCalendar(raw);
+    const hasFuture = future && future.events.length > 0;
+    if (!days.length && !hasFuture) return '';   // 解析失败/全空 → 不显示
+    let total = 0;
+    // 两行格：第一行相对日（今天/明天/后天/未来），第二行 日期+天气+待办数 挤一行省空间。
+    const REL = ['今天', '明天', '后天'];
+    const cellHtml = (relLabel, mdLabel, wx, n, cls, dayKey) =>
+        `<div class="sp-sch-scell${cls}" data-day="${escapeAttr(String(dayKey))}">
+            <span class="sp-sch-scell-rel">${escapeHtml(relLabel)}</span>
+            <span class="sp-sch-scell-line">${mdLabel ? `<span class="sp-sch-scell-md">${escapeHtml(mdLabel)}</span>` : ''}${wx ? `<span class="sp-sch-scell-wx">${wx}</span>` : ''}<span class="sp-sch-scell-n">${n}</span></span>
+        </div>`;
+    const cells = days.map((day, i) => {
+        const n = day.events.length; total += n;
+        let mdLabel = `第${i + 1}天`;
+        if (startDate) {
+            const d = new Date(startDate); d.setDate(d.getDate() + i);
+            mdLabel = `${d.getMonth() + 1}/${d.getDate()}`;
+        }
+        const cls = (i === 0 ? ' sp-sch-scell-today' : '') + (n ? ' sp-sch-scell-has' : '');
+        return cellHtml(REL[i] || `第${i + 1}天`, mdLabel, weatherGlyph(day.weather), n, cls, i);
+    });
+    if (hasFuture) {
+        const n = future.events.length;
+        cells.push(cellHtml('未来', '', '', n, ' sp-sch-scell-future' + (n ? ' sp-sch-scell-has' : ''), 'future'));
+    }
+    const summary = `<summary class="sp-inline-summary"><span class="sp-inline-title">点</span><span class="sp-inline-count">${total}件待办</span></summary>`;
+    const strip   = `<div class="sp-sch-strip">${cells.join('')}</div>`;
+    return `${summary}<div class="sp-inline-body sp-sch-inline-body"><div class="sp-sch-strip-wrap sp-sch-strip-live">${strip}<div class="sp-sch-sday" hidden></div></div></div>`;
+}
+
+// 日程条：某一天(dayKey='0'|'1'|…|'future') 的就地详情 HTML（点某格时填进 .sp-sch-sday）。
+// 每次都重读 raw（点 raw 会被重算/锁定改写），按天筛事件；空 → 「这天没有安排」。
+function _scheduleStripDayHtml(dayKey) {
+    const { days, future, startDate } = parseCalendar(readCacheRaw(getCacheKey()));
+    let evs = [], headLabel = '', wx = '', tp = '';
+    if (dayKey === 'future') {
+        evs = future?.events || [];
+        headLabel = '未来';
+    } else {
+        const di  = Number(dayKey);
+        const day = days[di];
+        evs = day?.events || [];
+        wx = String(day?.weather || '').trim();
+        tp = String(day?.temp || '').trim();
+        if (startDate) {
+            const d = new Date(startDate); d.setDate(d.getDate() + di);
+            headLabel = `${d.getMonth() + 1}月${d.getDate()}日 · ${ALM_WEEKDAYS[d.getDay()]}`;
+        } else {
+            headLabel = `第${di + 1}天`;
+        }
+        if (wx || tp) headLabel += ` · ${weatherGlyph(wx)}${wx}${tp ? ' ' + tp : ''}`;
+    }
+    const head = `<div class="sp-sch-sday-head">${escapeHtml(headLabel)}</div>`;
+    if (!evs.length) return `${head}<div class="sp-sch-sday-empty">这天没有安排</div>`;
+    // 完整事项 + 逐条注入/删除（对齐线：注入用共享 builder 带上当天天气，删除走 .sp-sch-del-one）。
+    const rows = evs.map((ev, ei) => {
+        const meta = TYPE_META[ev.type] || TYPE_META.main;
+        const injectBtn = makeInjectBtn(buildPointInjectText(ev, wx, tp));
+        return `<div class="sp-sch-drawer-item${ev.pin ? ' sp-sch-drawer-pinned' : ''}">
+            <div class="sp-sch-drawer-head">
+                <span class="sp-sch-drawer-badge"><i class="fa-solid ${meta.icon}"></i>${escapeHtml(meta.label)}</span>
+                <span class="sp-sch-drawer-title">${escapeHtml(ev.title || '')}</span>
+                ${ev.time ? `<span class="sp-sch-drawer-time"><i class="fa-regular fa-clock"></i> ${escapeHtml(ev.time)}</span>` : ''}
+                ${ev.pin ? `<i class="fa-solid fa-lock sp-sch-drawer-lock" title="已锁定"></i>` : ''}
+                <span class="sp-sch-drawer-actions">
+                    ${injectBtn}
+                    <button class="sp-sch-del-one" data-day="${escapeAttr(String(dayKey))}" data-ev="${ei}" title="删除这个点"><i class="fa-solid fa-xmark"></i></button>
+                </span>
+            </div>
+            ${ev.desc ? `<div class="sp-sch-drawer-desc">${escapeHtml(cleanText(ev.desc))}</div>` : ''}
+            ${(ev.location || ev.npcAction) ? `<div class="sp-sch-drawer-meta">
+                ${ev.location  ? `<span class="sp-sch-drawer-loc"><i class="fa-solid fa-location-dot"></i>${escapeHtml(ev.location)}</span>` : ''}
+                ${ev.npcAction ? `<span class="sp-sch-drawer-npc"><i class="fa-solid fa-link"></i>${escapeHtml(ev.npcAction)}</span>` : ''}
+            </div>` : ''}
+        </div>`;
+    }).join('');
+    return `${head}<div class="sp-sch-sday-list">${rows}</div>`;
+}
+
+// 日程条 per-day tap：点某格 → 下方就地展开当天事件（再点同格收起、点别格切换）。委托到 document、
+// 只注册一次——块会被 #chat observer 反复重建，不能绑在块自身上；只对 .sp-sch-strip-live 生效。
+function initScheduleStripDelegation() {
+    $(document).on('click.spschstrip', '.sp-schedule-inline .sp-sch-strip-live .sp-sch-scell', function (e) {
+        e.preventDefault();
+        e.stopPropagation();   // 别冒泡到 ST 的楼层点击
+        const wrap = this.closest('.sp-sch-strip-live');
+        if (!wrap) return;
+        const sday = wrap.querySelector('.sp-sch-sday');
+        if (!sday) return;
+        if (this.classList.contains('sp-sch-scell-open')) {
+            this.classList.remove('sp-sch-scell-open');
+            sday.hidden = true; sday.innerHTML = '';
+            return;
+        }
+        wrap.querySelectorAll('.sp-sch-scell-open').forEach(c => c.classList.remove('sp-sch-scell-open'));
+        this.classList.add('sp-sch-scell-open');
+        sday.innerHTML = _scheduleStripDayHtml(this.dataset.day);
+        sday.hidden = false;
+    });
+}
+
+function _removeAllScheduleBlocks() {
+    document.querySelectorAll('#chat .sp-schedule-inline').forEach(el => el.remove());
+}
+
+// 强制在最新 AI 楼重建点日程条（点生成 / 锁定 / 新楼 / swipe / 切聊天 都汇流到这）。
+function syncLatestScheduleBlock(expectedChatId = null) {
+    if (expectedChatId != null && getContext().chatId !== expectedChatId) return;
+    _removeAllScheduleBlocks();
+    const html = _buildScheduleBlockHtml();
+    if (!html) return;
+    const lastMesEl = [...document.querySelectorAll('#chat .mes:not([is_user="true"])')].at(-1);
+    if (!lastMesEl) return;
+    const msgEl = lastMesEl.querySelector('.mes_text');
+    if (!msgEl) return;
+    const block = document.createElement('details');
+    block.className = 'sp-schedule-inline';
+    block.innerHTML = html;
+    msgEl.appendChild(block);
+}
+
+// 掉块兜底：搭 #chat MutationObserver 的车。幂等——最新楼已有块就只清残留、不重建（保住展开态）。
+function ensureLatestScheduleBlock() {
+    if (getSettings().scheduleInlineEnabled === false) { _removeAllScheduleBlocks(); return; }
+    const aiMes = document.querySelectorAll('#chat .mes:not([is_user="true"])');
+    const lastMesEl = aiMes.length ? aiMes[aiMes.length - 1] : null;
+    if (!lastMesEl) return;
+    const html = _buildScheduleBlockHtml();
+    if (!html) { _removeAllScheduleBlocks(); return; }
+    if (lastMesEl.querySelector('.sp-schedule-inline')) {
+        document.querySelectorAll('#chat .mes:not([is_user="true"]) .sp-schedule-inline').forEach(el => {
+            if (!lastMesEl.contains(el)) el.remove();
+        });
+        return;
+    }
+    const msgEl = lastMesEl.querySelector('.mes_text');
+    if (!msgEl) return;
+    _removeAllScheduleBlocks();
+    const block = document.createElement('details');
+    block.className = 'sp-schedule-inline';
+    block.innerHTML = html;
+    msgEl.appendChild(block);
+}
+
 // ─── 线·伏笔潜伏注入（隐形注入主楼 AI）────────────────────────────────────────
 // 把当前视角的活跃线（跳过终态 stage）以 SYSTEM 角色注入聊天上下文（IN_CHAT + depth），
 // 让主楼 AI「心里有数」、把伏笔当暗流自然缓慢推进；聊天记录里不显示。默认关（opt-in）——
@@ -1476,6 +1638,7 @@ function initAnchorObserver() {
             if (Date.now() < _stStreamUntil) return;
             ensureLatestLineBlock();
             ensureLatestAlmanacBlock();
+            ensureLatestScheduleBlock();
         }, 400);
     });
     _anchorObserver.observe(chat, { childList: true, subtree: true });
@@ -1898,6 +2061,12 @@ function injectModal() {
                                         <span>在最新 AI 楼底部显示「历·日程」</span>
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">收起是扁扁的「历·日程」条，点整条展开看未来七天（周X + 日期，第一格标今天）；有节日的日子会高亮、可点开看当天安排。只读、只挂最新楼，标题条样式与「线」一致。关掉即不再出现（历本身不受影响）。</p>
+
+                                    <label class="sp-mode-opt" style="margin-top:10px">
+                                        <input type="checkbox" id="sp-schedule-inline-enabled" ${getSettings().scheduleInlineEnabled !== false ? 'checked' : ''}>
+                                        <span>在最新 AI 楼底部显示「点·日程条」</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">收起是扁扁的「点 · N件待办」条，点整条展开看每天一格（周X + 日期 + 天气 + 待办数，第一格标今天）；点某格看当天事件。只读、只挂最新楼，反映当前视角的点。关掉即不再出现（点本身不受影响）。</p>
                                 </div>
                             </details>
 
@@ -2252,6 +2421,14 @@ function injectModal() {
         const idx = Number($(this).attr('data-ev'));
         if (!Number.isInteger(idx)) return;
         triggerTogglePointPin(day === 'future' ? 'future' : Number(day), idx);
+    });
+    // Per-point delete (× on each drawer item, 楼内块专用；对齐线的 .sp-line-del-one)。
+    $('#chat').on('click', '.sp-sch-del-one', function (e) {
+        e.stopPropagation();
+        const day = $(this).attr('data-day');
+        const idx = Number($(this).attr('data-ev'));
+        if (!Number.isInteger(idx)) return;
+        triggerDeletePointEvent(day === 'future' ? 'future' : Number(day), idx);
     });
 
     // Inject buttons (event delegation)
@@ -2800,6 +2977,13 @@ function injectModal() {
         if (this.checked) syncLatestAlmanacBlock();
         else _removeAllAlmanacBlocks();
     });
+    // 点·日程条开关：立刻生效——on → 按当前视角的点补挂最新楼；off → 清掉所有日程条
+    $('#sp-schedule-inline-enabled').on('change', function () {
+        getSettings().scheduleInlineEnabled = this.checked;
+        saveSettingsDebounced();
+        if (this.checked) syncLatestScheduleBlock();
+        else _removeAllScheduleBlocks();
+    });
     // 潜伏注入开关：立刻生效——on → 注入当前活跃线；off → 清空扩展 prompt
     $('#sp-lines-inject').on('change', function () {
         getSettings().linesInject = this.checked;
@@ -3317,6 +3501,7 @@ async function runGenerate() {
         const html   = renderSchedule(merged, subject, viewSnap);
 
         writeStore(cacheKey, { raw: merged, userName: subject, ts: Date.now() });
+        syncLatestScheduleBlock();   // 点生成 → 楼内日程条即时刷
         isGenerating = false;
         scheduleAbortController = null;
         setExtBtnState('done');
@@ -3610,7 +3795,7 @@ async function callCustomApi(ctx, prompt, cfg, userName, charName, signal = null
     // 30000：推理模型（GLM 等）会先耗一大段思维链预算，长提示词（尤其「面」）下要留足空间，
     // 否则正文被挤空 → 代理回 <none>。
     // opts.temperature：可选，机械/创作按需覆盖（历生成抬温让次要节日与风味更发散）；未给则跟随预设。
-    return postChatCompletion({ cfg, messages, maxTokens: 30000, temperature: opts.temperature, signal });
+    return postChatCompletion({ cfg, messages, maxTokens: 30000, temperature: Number.isFinite(opts.temperature) ? opts.temperature : GEN_TEMPERATURE, signal });
 }
 
 // Called by memory.js — minimal wrapper around user's configured API.
@@ -3631,7 +3816,7 @@ async function callMemoryApi(messages, signal = null) {
 async function callTheaterApi(messages, { maxTokens = 30000, signal = null } = {}) {
     const cfg = loadCfg();
     if (!cfg.url || !cfg.key) throw new Error('请先在设置中填写自定义 API 的 URL 和 Key');
-    return postChatCompletion({ cfg, messages, maxTokens, signal });
+    return postChatCompletion({ cfg, messages, maxTokens, temperature: GEN_TEMPERATURE, signal });
 }
 
 // Story context for theater's writing agent: world info + persona + character card.
@@ -4524,6 +4709,7 @@ async function sendOutlineChat(userMsg) {
             cfg,
             messages: await buildOutlineChatMessages(userMsg),
             maxTokens: 30000,
+            temperature: GEN_TEMPERATURE,
             signal: outlineChatAbortController.signal,
         });
         if (getContext().chatId !== chatIdSnap) { $dots.remove(); return; }
@@ -4780,6 +4966,7 @@ async function sendSpaceChat(userMsg) {
             cfg,
             messages: await buildSpaceChatMessages(userMsg),
             maxTokens: 30000,
+            temperature: GEN_TEMPERATURE,
             signal: spaceChatAbortController.signal,
         });
         if (getContext().chatId !== chatIdSnap) { $dots.remove(); return; }
@@ -6374,6 +6561,11 @@ ${subject} 和 ${companion} 都有各自独立的生活，事件可以涉及任�
 
 Day 1-3 每天生成 1 到 3 个事件；Future 块生成 5 到 10 个事件，时间跨度不限。
 
+【天气说明】
+每个 Day 的日头请附带当天天气与温度，格式 Day: N|天气|温度（如 Day: 1|晴|3℃）。
+天气是氛围点缀，请结合剧情季节/地域/时间合理"推测"，无需真实准确——晴/多云/阴/小雨/雷阵雨/小雪/大雪/雾 等皆可，温度给摄氏度区间或单值（如 -2℃ / 12~18℃）。
+若剧情完全无从判断季节地域，可给一个自洽的温和天气。Future 块不需要天气。
+
 【字段说明】
 格式：Event: type|title|description|time|location|线头动态
 - type 只能是 main / hidden / bond
@@ -6387,13 +6579,13 @@ ${pinnedBlock}
 <!-- 日程思考：（结合剧情推演安排，100字以上） -->
 <calendar_widget>
 StartDate: YYYY-MM-DD（可从剧情推断则填写，否则省略此行）
-Day: 1
+Day: 1|天气|温度
 Event: type|title|description|time|location|线头动态
 Event: type|title|description|time|location|线头动态
-Day: 2
+Day: 2|天气|温度
 Event: type|title|description|time|location|线头动态
 Event: type|title|description|time|location|线头动态
-Day: 3
+Day: 3|天气|温度
 Event: type|title|description|time|location|线头动态
 Event: type|title|description|time|location|线头动态
 Future:
@@ -6462,7 +6654,7 @@ function almDateLabel(it) {
 }
 
 // 历的「当前日期」锚点：年在扮演里极模糊，一律不用现实日期。按可靠性逐级取剧情内时间——
-// 柏宝书 → 记忆库 → 线 → 点 → 都拿不到才 fallback 1 月 1 日（默认从头开始）。
+// 柏宝书 → 记忆库 → 线 → 点 → 聊天正文 → 都拿不到才 fallback 1 月 1 日（默认从头开始）。
 // 只借月/日（年无意义）。所有「今天 / 即将到来 / 日历默认月 / 编辑器默认」都走这一个函数。
 // extractDayFromTime 已能解析「YYYY年M月D日 / YYYY-M-D / 元年正月初三」等，这里把它的
 // key 再抽成 {month,day}；相对天数（day-N）无月日，返回 null 让链继续往下走。
@@ -6472,6 +6664,29 @@ function monthDayFromDayKey(key) {
     if ((m = String(key).match(/^(\d+)-(\d+)-(\d+)$/)) || (m = String(key).match(/^cn-(\d+)-(\d+)-(\d+)$/))) {
         const mo = +m[2], da = +m[3];
         if (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) return { month: mo, day: da };
+    }
+    return null;
+}
+// 扫最近若干 AI 楼取剧情正文里写明的绝对日期。返回 { month, day, date }：
+//   date 只在阿拉伯「YYYY-M-D」（带真实年份）时构造成 JS Date（用于取现实周几）；古代历(cn-)/相对天数无现实年，date=null。
+// 存在意义：很多用户没装柏宝书、也没生成记忆摘要/点，但正文（场景头/状态栏）其实明写了日期——
+// 这正是喂进生成提示的同一份内容。不扫它就只能白白 fallback 到 1 月 1 日（论坛用户实测到的正是这条）。
+// 从最新楼往回扫、命中即返回 → 取到的是「最近一处」写明的日期，贴合「现在」；扫描上限兜住超长聊天。
+const ALM_CHAT_SCAN_LIMIT = 40;
+function almDateFromChat() {
+    const msgs = getContext().chat || [];
+    let scanned = 0;
+    for (let i = msgs.length - 1; i >= 0 && scanned < ALM_CHAT_SCAN_LIMIT; i--) {
+        const msg = msgs[i];
+        if (!msg || msg.is_user || !msg.mes) continue;
+        scanned++;
+        const key = extractDayFromTime(String(msg.mes));
+        const md  = monthDayFromDayKey(key);
+        if (!md) continue;
+        let date = null;
+        const ymd = /^(\d+)-(\d+)-(\d+)$/.exec(String(key));  // 纯阿拉伯 → 带真实年，可取现实周几；排除 cn-
+        if (ymd) { const d = new Date(+ymd[1], +ymd[2] - 1, +ymd[3]); if (!isNaN(d)) date = d; }
+        return { month: md.month, day: md.day, date };
     }
     return null;
 }
@@ -6522,7 +6737,13 @@ function almTodayAnchor() {
             }
         }
     } catch { /* 往下走 */ }
-    // ⑤ 全拿不到 → 默认从头开始（1 月 1 日）
+    // ⑤ 聊天正文：剧情里写明的绝对日期（场景头 / 状态栏），扫最近 AI 楼取最新一处。
+    //    柏宝书/记忆库/线/点全空但正文有日期的用户（论坛反馈）走这条，免得白白 fallback。
+    try {
+        const hit = almDateFromChat();
+        if (hit) return { month: hit.month, day: hit.day };
+    } catch { /* 往下走 */ }
+    // ⑥ 全拿不到 → 默认从头开始（1 月 1 日）
     return { month: 1, day: 1 };
 }
 // 月/日 → 一年中的第几天（1..366，2 月按 29 天，与 ALM_DAYS_IN_MONTH 一致；纯按月日、不涉年）。
@@ -6585,7 +6806,14 @@ function almWeekdayRef() {
             }
         }
     } catch { /* 往下走 */ }
-    // ④ 默认：无年份 → 1 月 1 日定为周一（任意但稳定）
+    // ④ 聊天正文里的真实年份日期 → 现实周几（与点 StartDate 同源逻辑；仅阿拉伯 YYYY-M-D 带年）
+    try {
+        const hit = almDateFromChat();
+        if (hit?.date instanceof Date && !isNaN(hit.date)) {
+            return { refDoy: almDayOfYear(hit.month, hit.day), refWd: hit.date.getDay() };
+        }
+    } catch { /* 往下走 */ }
+    // ⑤ 默认：无年份 → 1 月 1 日定为周一（任意但稳定）
     return { refDoy: 1, refWd: 1 };
 }
 // 某月日的周几（0..6），纯日序偏移，不涉年。ref 可复用（较重，整轮渲染算一次传进来）。
@@ -6895,7 +7123,7 @@ async function runGenerateAlmanac() {
         const cfg = loadCfg();
         const prompt = buildAlmanacPrompt(userName, charName);
         // 抬温 1.05：锚定周年靠记忆撑着不会跑，受益的是次要节日/风味文案更发散、每次不雷同
-        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 4, { fullMemory: true, temperature: 1.05 });
+        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 4, { fullMemory: true });
         if (almanacAbortController !== myCtrl) return;
         if (getContext().chatId !== chatIdSnap) { isGeneratingAlmanac = false; almanacAbortController = null; return; }
         const aiItems = parseAlmanacWidget(raw);
@@ -7362,7 +7590,7 @@ function bindMemoryHandlers() {
         const ok = await spConfirm({
             title  : '推翻重构',
             body   : `将清空全部摘要并按当前分组重新生成，约需 ${cost} 次 L0 API 调用 + 若干次 L1 压缩。`,
-            note   : '重构期间可以中止。已有的点 / 线 / 面 不受影响。',
+            note   : '重构期间可随时中止；中止会还原到重构前的记忆、不会清空。已有的点 / 线 / 面 不受影响。',
             confirmText: '开始重构',
             cancelText : '取消',
         });
@@ -7370,12 +7598,14 @@ function bindMemoryHandlers() {
         if ($(this).prop('disabled')) return;
         setMemoryProgressVisible(true);
         $(this).prop('disabled', true);
+        let wasAborted = false;
         try {
             await memory.rebuildAll(({ current, total, done, aborted }) => {
+                if (aborted) wasAborted = true;
                 updateMemoryProgress(current, total, aborted);
                 if (current % 3 === 0 || done || aborted) refreshMemoryStatus();
             });
-            showToast('重构完成');
+            showToast(wasAborted ? '已中止，已还原到重构前的记忆' : '重构完成');
         } catch (err) {
             showToast('重构失败：' + err.message, null, true);
         } finally {
@@ -8138,6 +8368,35 @@ const TYPE_META = {
     bond  : { icon: 'fa-heart',     label: '红线', cls: 'sp-type-character' },
 };
 
+// 天气图标：按天气文案关键字挑一个 emoji（AI 瞎编的中文天气 → 视觉点缀）。顺序有讲究，
+// 先判复合词（雨夹雪/阵雨）再判单字，避免"雨夹雪"被"雪"先截胡。
+function weatherGlyph(weather) {
+    const w = String(weather || '');
+    if (!w) return '';
+    if (/雷/.test(w))                       return '⛈️';
+    if (/雨夹雪/.test(w))                    return '🌨️';
+    if (/雪/.test(w))                        return '❄️';
+    if (/雨/.test(w))                        return '🌧️';
+    if (/雾|霾|沙尘/.test(w))                return '🌫️';
+    if (/阴/.test(w))                        return '☁️';
+    if (/多云|少云/.test(w))                 return '⛅';
+    if (/晴/.test(w))                        return '☀️';
+    if (/风/.test(w))                        return '💨';
+    return '🌤️';
+}
+
+// 单日天气小条：天气或温度任一有值才渲染，两者皆空 → 返回空串（退化为无天气的旧面板）。
+function weatherChipHtml(weather, temp) {
+    const w  = String(weather || '').trim();
+    const tp = String(temp || '').trim();
+    if (!w && !tp) return '';
+    return `<div class="sp-day-weather">`
+        + `<span class="sp-day-weather-icon">${weatherGlyph(w) || '🌤️'}</span>`
+        + (w  ? `<span class="sp-day-weather-txt">${escapeHtml(w)}</span>`   : '')
+        + (tp ? `<span class="sp-day-weather-temp">${escapeHtml(tp)}</span>` : '')
+        + `</div>`;
+}
+
 function renderSchedule(raw, userName, perspective = 'user') {
     const { days, future, startDate } = parseCalendar(raw);
     const hasFuture = future && future.events.length > 0;
@@ -8178,10 +8437,10 @@ function renderSchedule(raw, userName, perspective = 'user') {
     </button>`);
 
     const panels = days.map((day, di) =>
-        `<div class="sp-day-panel" style="width:calc(100%/${totalTabs})">${day.events.map((ev, ei) => renderEvent(ev, di, ei)).join('')}</div>`
+        `<div class="sp-day-panel" style="width:calc(100%/${totalTabs})">${weatherChipHtml(day.weather, day.temp)}${day.events.map((ev, ei) => renderEvent(ev, di, ei, day.weather, day.temp)).join('')}</div>`
     );
     if (hasFuture) panels.push(
-        `<div class="sp-day-panel sp-future-panel" style="width:calc(100%/${totalTabs})">${future.events.map((ev, ei) => renderEvent(ev, 'future', ei)).join('')}</div>`
+        `<div class="sp-day-panel sp-future-panel" style="width:calc(100%/${totalTabs})">${future.events.map((ev, ei) => renderEvent(ev, 'future', ei, '', '')).join('')}</div>`
     );
 
     const debug = days.length < 3 ? `
@@ -8212,7 +8471,10 @@ function parseCalendar(raw) {
         if (!t) continue;
         if (/^Day\s*:?\s*\d+/i.test(t) || /^第[一二三四五六七\d]+天/.test(t)) {
             if (cur && !inFuture) days.push(cur);
-            cur = { events: [] }; inFuture = false; continue;
+            // 日头可带天气：Day: N|天气|温度（旧数据无管道段 → 天气/温度为空，退化为旧行为）
+            const dayParts = t.split('|').slice(1).map(s => s.trim());
+            cur = { events: [], weather: dayParts[0] || '', temp: dayParts[1] || '' };
+            inFuture = false; continue;
         }
         if (/^Future\s*:/i.test(t) || /^未来\s*:/i.test(t)) {
             if (cur && !inFuture) days.push(cur);
@@ -8261,7 +8523,10 @@ function serializeCalendar(days, future, startDate) {
         out.push(`StartDate: ${y}-${mo}-${da}`);
     }
     (days || []).forEach((d, i) => {
-        out.push(`Day: ${i + 1}`);
+        // 天气随日头走回 raw：Day: N|天气|温度。缺则退回纯 Day: N（旧行为），mergePinnedPoints 才不会丢天气。
+        const w  = String(d.weather || '').trim();
+        const tp = String(d.temp || '').trim();
+        out.push((w || tp) ? `Day: ${i + 1}|${w}|${tp}` : `Day: ${i + 1}`);
         for (const ev of (d.events || [])) out.push(pointEventToRawLine(ev));
     });
     if (future && Array.isArray(future.events) && future.events.length) {
@@ -8324,18 +8589,58 @@ function triggerTogglePointPin(dayKey, evIdx) {
     const html = renderSchedule(newRaw, saved.userName || '用户', currentView);
     cachedSchedule = html;
     setBody(html);
+    syncLatestScheduleBlock();   // 锁/解点 → 楼内日程条锁标即时刷
     showToast(ev.pin ? '已锁定这个点' : '已解锁这个点');
 }
 
-function renderEvent(ev, dayKey = null, evIdx = null) {
+// 删除单个点（楼内抽屉专用，对齐线的 triggerDeleteOneLine）：确认 → 从解析结果里 splice
+// 掉该事件 → 重序列化写回 raw → 原地重渲染 + 刷楼内条。pin 活在 raw 里，删除即连带清掉。
+async function triggerDeletePointEvent(dayKey, evIdx) {
+    const key = getCacheKey();
+    const saved = readStore(key);
+    const raw = saved?.raw || '';
+    if (!raw) { showToast('待办已失效，请刷新面板', null, true); return; }
+    const parsed = parseCalendar(raw);
+    const arr = dayKey === 'future'
+        ? (parsed.future?.events || null)
+        : (parsed.days?.[Number(dayKey)]?.events || null);
+    const ev = arr?.[evIdx] || null;
+    if (!ev) { showToast('这个点已不存在，请刷新面板', null, true); return; }
+    const ok = await spConfirm({
+        title: '删除这个点',
+        body : `将删除「${ev.title || '未命名'}」这一条，其它安排保留。此操作不可撤销。`,
+        confirmText: '删除',
+        cancelText : '取消',
+    });
+    if (!ok) return;
+    arr.splice(evIdx, 1);
+    const newRaw = serializeCalendar(parsed.days, parsed.future, parsed.startDate);
+    writeStore(key, { raw: newRaw, userName: saved.userName || '用户', ts: Date.now() });
+    const html = renderSchedule(newRaw, saved.userName || '用户', currentView);
+    cachedSchedule = html;
+    setBody(html);
+    syncLatestScheduleBlock();
+    showToast('已删除这个点');
+}
+
+// 点注入文案（面板卡片 + 楼内抽屉共用同一个 builder，保证两处注入内容一致）。
+// 按用户决定：每条注入带上当天天气（天气/温度任一有值即前置一行「天气：…」）。
+function buildPointInjectText(ev, weather = '', temp = '') {
+    const w  = String(weather || '').trim();
+    const tp = String(temp || '').trim();
+    const parts = ['【点参考】'];
+    if (w || tp)      parts.push(`天气：${w}${tp ? ' ' + tp : ''}`);
+    if (ev.time)      parts.push(`时间：${ev.time}`);
+    parts.push(ev.title);
+    if (ev.desc)      parts.push(ev.desc);
+    if (ev.location)  parts.push(`地点：${ev.location}`);
+    if (ev.npcAction) parts.push(`线头：${ev.npcAction}`);
+    return parts.join('\n');
+}
+
+function renderEvent(ev, dayKey = null, evIdx = null, weather = '', temp = '') {
     const meta = TYPE_META[ev.type] || TYPE_META.main;
-    const injectParts = ['【点参考】'];
-    if (ev.time) injectParts.push(`时间：${ev.time}`);
-    injectParts.push(ev.title);
-    if (ev.desc)      injectParts.push(ev.desc);
-    if (ev.location)  injectParts.push(`地点：${ev.location}`);
-    if (ev.npcAction) injectParts.push(`线头：${ev.npcAction}`);
-    const injectBtn = makeInjectBtn(injectParts.join('\n'));
+    const injectBtn = makeInjectBtn(buildPointInjectText(ev, weather, temp));
     // F5 锁点：仅面板内渲染（有定位 dayKey）且事件有标题时给锁钮；注入卡/无定位场景不显示
     const pinBtn = (dayKey !== null && ev.title && ev.title.trim())
         ? `<button class="sp-point-pin-toggle" data-day="${escapeAttr(String(dayKey))}" data-ev="${evIdx}" title="${ev.pin ? '解锁' : '锁定'}"><i class="fa-solid fa-${ev.pin ? 'lock' : 'lock-open'}"></i></button>`

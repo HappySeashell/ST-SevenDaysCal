@@ -113,6 +113,7 @@
 .sp-root, .sp-root *,
 .sp-lines-inline, .sp-lines-inline *,
 .sp-almanac-inline, .sp-almanac-inline *,
+.sp-schedule-inline, .sp-schedule-inline *,
 .sp-anchor-btn, .sp-anchor-btn *,
 .sp-tagpicker, .sp-tagpicker *,
 .sp-toast, .sp-toast * {
@@ -1246,6 +1247,23 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-day-panel::-webkit-scrollbar       { width: 4px; }
 .sp-day-panel::-webkit-scrollbar-thumb { background: var(--sp-divider); border-radius: 2px; }
+
+/* 单日天气小条：贴在当日面板顶部，事件之上。淡雅、不抢戏 */
+.sp-day-weather {
+    display     : flex;
+    align-items : center;
+    gap         : 6px;
+    margin      : 0 16px 8px;
+    padding     : 5px 10px;
+    border-radius: 8px;
+    background  : var(--sp-hover-bg);
+    font-size   : 0.76rem;
+    color       : var(--sp-subtle);
+    min-width   : 0;
+}
+.sp-day-weather-icon { font-size: 0.95rem; line-height: 1; flex-shrink: 0; }
+.sp-day-weather-txt  { color: var(--sp-on-surface); overflow-wrap: anywhere; min-width: 0; }
+.sp-day-weather-temp { margin-left: auto; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 
 /* ─── Events ─────────────────────────────────────────────────────────────────── */
 .sp-event {
@@ -2614,6 +2632,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     flex-direction: column;
     gap          : 6px;
     color        : var(--sp-on-surface);
+    min-width    : 0;
+    overflow     : hidden;   /* 兜底：任何子元素都别想越出卡片边界 */
 }
 .sp-space-widget-head {
     display    : flex;
@@ -2643,18 +2663,21 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-space-widget-almrow {
     display    : flex;
     align-items: baseline;
+    flex-wrap  : wrap;         /* 安全网：塞不下就换行，绝不撑破卡片 */
     gap        : 8px;
     font-size  : 0.8rem;
     line-height: 1.5;
     padding    : 2px 0;
+    min-width  : 0;
 }
 .sp-space-widget-almrow + .sp-space-widget-almrow {
     border-top: 1px solid rgba(127, 127, 127, 0.14);
 }
-.sp-space-widget-almdate { font-weight: 600; color: var(--sp-on-surface); white-space: nowrap; }
-.sp-space-widget-almname { flex: 1; color: var(--sp-on-surface); word-break: break-word; }
-.sp-space-widget-almtype { font-size: 0.7rem; color: var(--sp-subtle); white-space: nowrap; }
-.sp-space-widget-body { display: flex; flex-direction: column; gap: 4px; }
+/* date/name 是 AI 自由文本，可能超长 → 一律允许折行，min-width:0 让 flex 能收缩 */
+.sp-space-widget-almdate { font-weight: 600; color: var(--sp-on-surface); overflow-wrap: anywhere; min-width: 0; }
+.sp-space-widget-almname { flex: 1 1 auto; color: var(--sp-on-surface); word-break: break-word; overflow-wrap: anywhere; min-width: 0; }
+.sp-space-widget-almtype { font-size: 0.7rem; color: var(--sp-subtle); white-space: nowrap; flex-shrink: 0; }
+.sp-space-widget-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .sp-space-widget-title {
     font-size  : 0.88rem;
     font-weight: 600;
@@ -4167,4 +4190,131 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-alm-drawer-span { font-size: 0.66rem; font-weight: 600; opacity: 0.7; flex-shrink: 0; white-space: nowrap; }
 .sp-alm-drawer-name { font-size: 0.78rem; font-weight: 600; }
 .sp-alm-drawer-note { font-size: 0.72rem; opacity: 0.7; flex-basis: 100%; line-height: 1.45; }
+
+/* ── 点·楼内日程条（只读，反映当前视角的点，无生成）───────────────────────────
+   外壳/标题条与线块、历条一致（.sp-inline-*）；条内格子用独立 .sp-sch-* 类。
+   与历七天条不同：点只有 3 天 + 未来（~4 格），用 flex 均分而非 7 列网格。 */
+.sp-schedule-inline {
+    --sch-primary : var(--SmartThemeQuoteColor, #6bb6d6);
+    margin-top    : 12px;
+    border-radius : 8px;
+    overflow      : hidden;
+    font-family   : var(--sp-font);
+    font-size     : 0.78rem;
+    color         : inherit;
+    background    : rgba(128,128,128,0.07);
+    border        : 1px solid rgba(128,128,128,0.15);
+}
+.sp-sch-inline-body { padding: 4px 8px 8px; }
+.sp-sch-strip-live .sp-sch-scell { cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
+.sp-sch-strip-live .sp-sch-scell:hover { background: color-mix(in oklab, var(--sch-primary) 12%, rgba(128,128,128,0.06)); }
+.sp-sch-strip {
+    display   : flex;
+    gap       : 4px;
+    min-width : 0;
+}
+.sp-sch-scell {
+    flex          : 1 1 0;
+    display       : flex;
+    flex-direction: column;
+    align-items   : center;
+    gap           : 2px;
+    padding       : 5px 2px 6px;
+    border-radius : 6px;
+    min-width     : 0;
+    background    : rgba(128,128,128,0.06);
+}
+.sp-sch-scell-rel  { font-size: 0.7rem;  font-weight: 700; white-space: nowrap; line-height: 1.1; }
+.sp-sch-scell-line { display: flex; align-items: center; gap: 3px; }
+.sp-sch-scell-md   { font-size: 0.64rem; opacity: 0.62; white-space: nowrap; }
+.sp-sch-scell-wx   { font-size: 0.78rem; line-height: 1; }
+.sp-sch-scell-n {
+    min-width      : 1.15em;
+    height         : 1.35em;
+    padding        : 0 4px;
+    display        : inline-flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : 0.62rem;
+    font-weight    : 700;
+    border-radius  : 99px;
+    background      : color-mix(in oklab, var(--sch-primary) 16%, transparent);
+    color          : var(--sch-primary);
+}
+.sp-sch-scell-today {
+    background: color-mix(in oklab, var(--sch-primary) 15%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--sch-primary) 40%, transparent);
+}
+.sp-sch-scell-today .sp-sch-scell-rel { opacity: 0.95; font-weight: 700; color: var(--sch-primary); }
+.sp-sch-scell-has    { background: color-mix(in oklab, var(--sch-primary) 8%, rgba(128,128,128,0.06)); }
+.sp-sch-scell-future .sp-sch-scell-rel { color: var(--sch-primary); opacity: 0.8; }
+.sp-sch-scell-open {
+    background: color-mix(in oklab, var(--sch-primary) 16%, transparent) !important;
+    box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--sch-primary) 55%, transparent);
+}
+.sp-sch-sday {
+    border-top    : 1px solid rgba(128,128,128,0.15);
+    margin-top    : 7px;
+    padding       : 7px 1px 1px;
+    display       : flex;
+    flex-direction: column;
+    gap           : 5px;
+}
+.sp-sch-sday[hidden] { display: none; }
+.sp-sch-sday-head  { font-size: 0.72rem; font-weight: 700; opacity: 0.8; }
+.sp-sch-sday-empty { font-size: 0.74rem; opacity: 0.55; padding: 2px 1px; }
+.sp-sch-sday-list  { display: flex; flex-direction: column; gap: 5px; }
+.sp-sch-drawer-item {
+    display       : flex;
+    flex-direction: column;
+    gap           : 4px;
+    padding       : 6px 8px;
+    border-radius : 6px;
+    background    : rgba(128,128,128,0.06);
+}
+.sp-sch-drawer-pinned { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--sch-primary) 40%, transparent); }
+.sp-sch-drawer-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sp-sch-drawer-badge {
+    display      : inline-flex;
+    align-items  : center;
+    gap          : 3px;
+    font-size    : 0.62rem;
+    font-weight  : 700;
+    padding      : 1px 6px;
+    border-radius: 99px;
+    background    : color-mix(in oklab, var(--sch-primary) 18%, transparent);
+    color         : var(--sch-primary);
+    flex-shrink   : 0;
+}
+.sp-sch-drawer-title { flex: 1 1 auto; min-width: 0; font-size: 0.78rem; font-weight: 600; overflow-wrap: anywhere; }
+.sp-sch-drawer-time { font-size: 0.66rem; font-weight: 600; opacity: 0.7; flex-shrink: 0; white-space: nowrap; }
+.sp-sch-drawer-lock { font-size: 0.7rem; color: var(--sch-primary); flex-shrink: 0; }
+.sp-sch-drawer-actions { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; margin-left: auto; }
+.sp-sch-drawer-desc { font-size: 0.72rem; opacity: 0.82; line-height: 1.5; overflow-wrap: anywhere; }
+.sp-sch-drawer-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 0.66rem; opacity: 0.7; }
+.sp-sch-drawer-loc, .sp-sch-drawer-npc { display: inline-flex; align-items: center; gap: 3px; overflow-wrap: anywhere; }
+.sp-sch-drawer-loc i, .sp-sch-drawer-npc i { opacity: 0.7; }
+/* 楼内注入/删除按钮：移动端无 hover，默认淡显（对齐线块 0.55 逻辑）；删除 hover 转红 */
+.sp-sch-drawer-item .sp-inject-btn { opacity: 0.55; color: inherit; margin-left: 0; }
+.sp-sch-drawer-item:hover .sp-inject-btn,
+.sp-sch-drawer-item .sp-inject-btn:hover { opacity: 1; }
+.sp-sch-del-one {
+    width          : 22px;
+    height         : 22px;
+    padding        : 0;
+    border         : none;
+    background     : transparent;
+    color          : inherit;
+    cursor         : pointer;
+    border-radius  : 4px;
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : 0.68rem;
+    flex-shrink    : 0;
+    opacity        : 0.55;
+    transition     : opacity 0.15s, color 0.15s, background 0.15s;
+}
+.sp-sch-drawer-item:hover .sp-sch-del-one { opacity: 1; }
+.sp-sch-del-one:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); opacity: 1; }
 

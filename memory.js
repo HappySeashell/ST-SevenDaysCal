@@ -42,6 +42,24 @@ let _currentJob = null;           // job currently in handleJob (must be declare
 let _abortController = null;      // reserved for rebuild flow (see abortRebuild)
 let _jobAbortController = null;   // shared signal for per-job fetches; aborted on CHAT_CHANGED
 
+// 把两路中止信号合成一个交给 fetch：_jobAbortController（切聊天时掐，防结果串写别的聊天）
+// 与 _abortController（用户点「中止」时掐，重构/补漏用）。历史 bug：fetch 只绑了前者，
+// 用户点中止只能在「两组之间」生效，当前那次 LLM 调用掐不断 → 感觉「点了没反应」。
+// 不依赖 AbortSignal.any（老移动端浏览器未必有），手动串一个组合 controller，任一 abort 即 abort。
+function jobSignal() {
+    const a = _jobAbortController?.signal;
+    const b = _abortController?.signal;
+    if (!a && !b) return undefined;
+    if (a && !b) return a;
+    if (b && !a) return b;
+    if (a.aborted || b.aborted) return a.aborted ? a : b;
+    const combined = new AbortController();
+    const relay = () => combined.abort();
+    a.addEventListener('abort', relay, { once: true });
+    b.addEventListener('abort', relay, { once: true });
+    return combined.signal;
+}
+
 // ─── Utility: fast non-crypto hash ───────────────────────────────────────────
 function hashStr(s) {
     let h = 5381;
@@ -363,7 +381,7 @@ async function runL0(groupKey) {
     const messages = buildL0Prompt(prevSummary, group.floors);
     let response = '';
     try {
-        response = await _callApi(messages, _jobAbortController?.signal);
+        response = await _callApi(messages, jobSignal());
     } catch (err) {
         if (err?.name === 'AbortError') return;          // chat switched; drop silently
         recordFailure(groupKey, err);
@@ -448,7 +466,7 @@ async function runL1(range) {
     const messages = buildL1Prompt(entries);
     let response = '';
     try {
-        response = await _callApi(messages, _jobAbortController?.signal);
+        response = await _callApi(messages, jobSignal());
     } catch (err) {
         if (err?.name === 'AbortError') return;
         m.system.lastError = 'L1 压缩失败：' + String(err?.message || err);
@@ -537,6 +555,9 @@ export function getMemoryContext() {
 
 // ─── Fill missing ────────────────────────────────────────────────────────────
 export async function fillMissing(onProgress) {
+    // 捕获本地引用：切聊天时 onChatChanged 会把模块级 _abortController 置空，
+    // 若循环里还读模块级会 null 解引用崩掉；读本地 ctrl（同一对象、被 abort 过）稳。
+    const ctrl = _abortController = new AbortController();   // 之前漏建 → 中止按钮对补漏完全无效；补上让 abortRebuild 能掐到
     const m = meta();
     m.system.paused = false;
     m.system.consecutiveFails = 0;
@@ -552,48 +573,78 @@ export async function fillMissing(onProgress) {
 
     if (!targets.length) {
         onProgress?.({ current: 0, total: 0, done: true });
+        if (_abortController === ctrl) _abortController = null;
         return;
     }
-    for (let i = 0; i < targets.length; i++) {
-        if (_abortController?.signal.aborted) break;
-        await runL0(targets[i]);
-        onProgress?.({ current: i + 1, total: targets.length, done: false });
-        persist();
+    try {
+        for (let i = 0; i < targets.length; i++) {
+            if (ctrl.signal.aborted) {
+                onProgress?.({ current: i, total: targets.length, aborted: true });
+                break;
+            }
+            await runL0(targets[i]);
+            if (ctrl.signal.aborted) {   // 中止发生在这次 fetch 期间 → 立刻收尾，不再报进度/落盘
+                onProgress?.({ current: i, total: targets.length, aborted: true });
+                break;
+            }
+            onProgress?.({ current: i + 1, total: targets.length, done: false });
+            persist();
+        }
+        maybeQueueL1();
+        if (!ctrl.signal.aborted) {
+            onProgress?.({ current: targets.length, total: targets.length, done: true });
+        }
+    } finally {
+        if (_abortController === ctrl) _abortController = null;
     }
-    maybeQueueL1();
-    onProgress?.({ current: targets.length, total: targets.length, done: true });
 }
 
 // ─── Rebuild all ─────────────────────────────────────────────────────────────
 export async function rebuildAll(onProgress) {
-    _abortController = new AbortController();
+    const ctrl = _abortController = new AbortController();   // 本地引用，防切聊天置空后 null 解引用（同 fillMissing）
     const m = meta();
+    // 关键：先把旧记忆整体备份，再在**内存里**换成空壳开始重构，此刻**绝不落盘**。
+    // 只有完整跑完才让新记忆算数（committed=true）；中途中止 / 异常 → finally 里整体还原旧记忆。
+    // 这样"点了推翻重构、立刻中止"绝不会把之前的记忆清空。旧对象在重构期间从不被改动
+    //（下面全是把 m.L0/L1/... 重新赋值成新对象），所以 backup 里的引用始终指向完好的旧数据。
+    const backup = { L0: m.L0, L1: m.L1, failed: m.failed, system: m.system };
+    let committed = false;
     m.L0 = {}; m.L1 = []; m.failed = {};
     m.system = { paused: false, consecutiveFails: 0, lastError: null };
-    persist();
 
-    const groups = getStableGroups();
-    for (let i = 0; i < groups.length; i++) {
-        if (_abortController.signal.aborted) {
-            onProgress?.({ current: i, total: groups.length, aborted: true });
-            break;
+    try {
+        const groups = getStableGroups();
+        for (let i = 0; i < groups.length; i++) {
+            if (ctrl.signal.aborted) { onProgress?.({ current: i, total: groups.length, aborted: true }); return; }
+            await runL0(groups[i].key);
+            if (ctrl.signal.aborted) {   // 中止发生在这次 fetch 期间 → 立刻收尾，交给 finally 还原
+                onProgress?.({ current: i, total: groups.length, aborted: true });
+                return;
+            }
+            onProgress?.({ current: i + 1, total: groups.length });
+            persist();
         }
-        await runL0(groups[i].key);
-        onProgress?.({ current: i + 1, total: groups.length });
+        // L1
+        const l0Keys = getStableGroups().map(g => g.key).filter(k => m.L0[k]);
+        const M = Math.max(2, +_getSettings().memoryL1Group || 10);
+        for (let s = 0; s + M <= l0Keys.length; s += M) {
+            if (ctrl.signal.aborted) return;
+            const chunk = l0Keys.slice(s, s + M);
+            const range = [m.L0[chunk[0]].range[0], m.L0[chunk[chunk.length - 1]].range[1]];
+            await runL1(range);
+            persist();
+        }
+        committed = true;   // 全流程走完，新记忆算数
         persist();
+        onProgress?.({ current: groups.length, total: groups.length, done: true });
+    } finally {
+        if (!committed) {
+            // 中止或异常：整体还原到重构前，绝不留下"清空但没重建"的空记忆
+            m.L0 = backup.L0; m.L1 = backup.L1; m.failed = backup.failed; m.system = backup.system;
+            persist();
+        }
+        if (_abortController === ctrl) _abortController = null;
     }
-    // L1
-    const l0Keys = getStableGroups().map(g => g.key).filter(k => m.L0[k]);
-    const M = Math.max(2, +_getSettings().memoryL1Group || 10);
-    for (let s = 0; s + M <= l0Keys.length; s += M) {
-        if (_abortController.signal.aborted) break;
-        const chunk = l0Keys.slice(s, s + M);
-        const range = [m.L0[chunk[0]].range[0], m.L0[chunk[chunk.length - 1]].range[1]];
-        await runL1(range);
-        persist();
-    }
-    onProgress?.({ current: groups.length, total: groups.length, done: true });
-    _abortController = null;
 }
 
 export function abortRebuild() { _abortController?.abort(); }
