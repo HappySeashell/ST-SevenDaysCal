@@ -1200,6 +1200,12 @@ select.sp-input { appearance: none; cursor: pointer; }
     transition     : background 0.15s, color 0.15s;
 }
 .sp-panel-refresh:hover { background: var(--sp-surface-high); color: var(--sp-on-surface); }
+/* 历「同步到点」在飞时，把点刷新圆圈置灰并禁点：反馈 toast 会被大面板挡住，用视觉置灰天然引导别去点 */
+.sp-panel-refresh.sp-refresh-busy {
+    opacity       : 0.4;
+    pointer-events: none;
+    cursor        : default;
+}
 
 /* ─── Tab bar ────────────────────────────────────────────────────────────────── */
 .sp-tab-bar {
@@ -3858,6 +3864,50 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     color     : var(--sp-on-surface);
 }
 .sp-alm-tools { display: inline-flex; gap: 2px; }
+
+/* 历面板「今天」栏：工具条下方一条紧凑的今天显示 + ±1天/改/自动 控制 */
+.sp-alm-today {
+    display      : flex;
+    align-items  : center;
+    gap          : 6px;
+    padding      : 6px 12px;
+    border-bottom: 1px solid var(--sp-divider);
+    flex-shrink  : 0;
+    font-size    : 0.8rem;
+}
+.sp-alm-today-lbl  { color: var(--sp-subtle); font-size: 0.78rem; }
+.sp-alm-today-date { color: var(--sp-on-surface); font-weight: 600; }
+.sp-alm-today-pin  { color: var(--sp-primary); font-size: 0.72rem; }
+.sp-alm-today-hint { color: var(--sp-subtle); font-size: 0.72rem; margin-left: 4px; }
+.sp-alm-today-acts { display: inline-flex; gap: 2px; margin-left: auto; }
+.sp-alm-today-acts .sp-icon-btn { width: 26px; height: 26px; font-size: 0.72rem; }
+.sp-alm-today-input { width: 44px !important; text-align: center; }
+/* 「同步到点」CTA：改了今天后点落后时在今天条冒出的醒目胶囊；点一下后台把点重生成到今天。busy 态换成静默灰胶囊 */
+.sp-alm-today-sync {
+    display      : inline-flex;
+    align-items  : center;
+    gap          : 4px;
+    height       : 24px;
+    padding      : 0 10px;
+    border-radius: 12px;
+    font-size    : 0.72rem;
+    font-weight  : 600;
+    line-height  : 1;
+    white-space  : nowrap;
+}
+.sp-alm-today-sync-btn {
+    border    : none;
+    cursor    : pointer;
+    background : var(--sp-primary);
+    color     : var(--sp-on-primary);
+    transition: filter 0.15s ease;
+}
+.sp-alm-today-sync-btn:hover { filter: brightness(1.08); }
+.sp-alm-today-sync-busy {
+    background: color-mix(in oklab, var(--sp-primary) 18%, transparent);
+    color     : var(--sp-subtle);
+    cursor    : default;
+}
 
 .sp-alm-body {
     flex       : 1;

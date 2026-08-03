@@ -51,6 +51,13 @@ const DEFAULT_SETTINGS = {
     almanacInlineEnabled: true, // 历·日程块：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是未来七天（周X+日期，有节日可点开看当天安排）；只读，独立于线主开关；默认开，关掉即不注入聊天
     linesInlineEnabled  : true, // 线·楼内块：最新 AI 楼底部展示活跃线块（只读展示，独立于线主开关 linesEnabled）；默认开，关掉只隐藏楼内块、不影响线的推进与隐形注入
     scheduleInlineEnabled: true, // 点·楼内日程条：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是每天一格（周X+日期+天气+待办数，可点开看当天事件）；只读，反映当前视角的点，默认开
+    // 历/点·自动确认当前剧情日期（写共享 dateAnchor[charKey]，见 getDateAnchor）。每 N 楼独立判定一次
+    // 「现在剧情演到几月几日」→ 钉成「今天」，让历的七天条/点的日程条跟着剧情走；识别不到留上次值。
+    // 历、点共用同一个今天：只开历即可两者都跟进；各自开关+各自间隔，关掉即该模块不触发 API。
+    almanacAutoDetect    : true,  // 历：默认开（历是全年日历，尤其需要强时间推进）
+    almanacJudgeInterval : 3,     // 历确认节奏：每几条 AI 回复确认一次当前日期
+    scheduleAutoDetect   : false, // 点：默认关（点默认相对日即可；开了才额外调 API）
+    scheduleJudgeInterval: 3,     // 点确认节奏：每几条 AI 回复确认一次当前日期
     // Memory system
     memoryEnabled  : true,
     memoryL0Group  : 5,    // AI floors per L0 entry
@@ -207,6 +214,8 @@ let _almanacSheet        = 'upcoming';   // 历子视图：'upcoming'（即将�
 let _almanacCalMonth     = null;   // 月历当前月份（0-11）；null → 首次渲染取真实今天所在月。历不挂年，只按月/日
 let _almanacCalDay       = null;   // 月历里选中的某天（1-31）；null → 详情区显示整月
 let _almanacEditor       = null;   // 内联添加/编辑态：{ id, prefill } 或 null（历的表单走内联窗，不用弹窗）
+let _almTodayEditing     = false;  // 历面板「今天」栏的内联改日期态：true → 显示月/日输入框 + ✓/✗（同样不弹窗）
+let _almSyncingPoint     = false;  // 历面板「同步到点」进行态：true → 今天条按钮显示「同步中…」并禁用（后台正把点重生成到今天）
 const _injectTexts      = {};
 let   _injectIdSeq      = 0;
 let viewportSyncBound   = false;
@@ -307,6 +316,13 @@ jQuery(async () => {
         outlineJudgeAbort?.abort();
         outlineJudgeAbort = null;
         isJudgingOutline = false;
+        // 历/点·自动确认日期：同理切 chat 复位单调闸到末楼、清计数、中断进行中的判定。
+        almanacLastJudgedMsgId = scheduleLastJudgedMsgId = (getContext().chat?.length ?? 0) - 1;
+        almanacJudgeCounter = scheduleJudgeCounter = 0;
+        almanacJudgeAbort?.abort();  almanacJudgeAbort = null;
+        scheduleJudgeAbort?.abort(); scheduleJudgeAbort = null;
+        isJudgingDate = false;
+        _autoRegenSchedAbort?.abort(); _autoRegenSchedAbort = null;   // 中断进行中的「同步到点」后台生成
         _lastDetectedDay  = null;   // days-mode: reset day tracker on chat switch
         spaceMode = false;
         spaceChatHistory = [];
@@ -327,6 +343,8 @@ jQuery(async () => {
         _almanacCalMonth = null;
         _almanacCalDay = null;
         _almanacEditor = null;
+        _almTodayEditing = false;
+        _almSyncingPoint = false;
         $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
         $(`.sp-side-tab.sp-view-btn[data-view="schedule"]`).addClass('sp-view-active');
         $('.sp-sub-btn').removeClass('sp-view-active');
@@ -490,6 +508,35 @@ jQuery(async () => {
         runJudgeOutlineStep();   // fire-and-forget，自带守卫
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.outlineJudge);
+    // 历·自动确认当前剧情日期：独立监听，同 outlineJudge 三闸（末楼 + 单调 + 攒够计数）。
+    // 每 N 楼跑一次轻量日期判定 → 写共享 dateAnchor。关开关即 early-return（不判、不调 API）。
+    if (_stListeners.almanacJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.almanacJudge);
+    _stListeners.almanacJudge = async (messageId) => {
+        if (getSettings().almanacAutoDetect === false) return;
+        const chat = getContext().chat;
+        if (!Array.isArray(chat)) return;
+        if (messageId !== chat.length - 1) return;
+        if (messageId <= almanacLastJudgedMsgId) return;
+        almanacLastJudgedMsgId = messageId;
+        if (++almanacJudgeCounter < getAlmanacJudgeInterval()) return;
+        almanacJudgeCounter = 0;
+        runJudgeDateStep('almanac');   // fire-and-forget，自带守卫
+    };
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.almanacJudge);
+    // 点·自动确认当前剧情日期：同上，独立开关/间隔/单调闸；默认关。历、点共写同一个锚点。
+    if (_stListeners.scheduleJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.scheduleJudge);
+    _stListeners.scheduleJudge = async (messageId) => {
+        if (getSettings().scheduleAutoDetect !== true) return;
+        const chat = getContext().chat;
+        if (!Array.isArray(chat)) return;
+        if (messageId !== chat.length - 1) return;
+        if (messageId <= scheduleLastJudgedMsgId) return;
+        scheduleLastJudgedMsgId = messageId;
+        if (++scheduleJudgeCounter < getScheduleJudgeInterval()) return;
+        scheduleJudgeCounter = 0;
+        runJudgeDateStep('schedule');
+    };
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.scheduleJudge);
     // 聊天改名（酒馆改 chat 文件名 = chatId 变）→ 把坐标收藏里旧 chatId 的记录迁到新名，
     // 否则收藏夹里那个聊天桶名不跟新、且跳转来源失效。newFileName/oldFileName 均不带后缀，
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
@@ -1274,9 +1321,29 @@ let   outlineJudgeAbort      = null;
 let   outlineLastJudgedMsgId = -1;   // 防重放：只判「比上次判过的更新的末楼」，切 chat 时设成末楼
 let   outlineJudgeMsgCounter = 0;    // 攒够 interval 条真·新回复才跑一次判定（照 linesAiMsgCounter 套路）
 
+// 历/点·自动确认日期的判定状态（各自一套，抄 outline 那套三闸：防重入 + 单调 msgId + 攒够计数）。
+// 历/点共用同一个 dateAnchor，但触发/间隔独立，故计数/单调闸各自分开。
+let   isJudgingDate          = false; // 历、点共用一把重入锁（都写同一个锚点，不必并发）
+let   almanacJudgeAbort      = null;
+let   almanacLastJudgedMsgId = -1;
+let   almanacJudgeCounter    = 0;
+let   scheduleJudgeAbort     = null;
+let   scheduleLastJudgedMsgId = -1;
+let   scheduleJudgeCounter   = 0;
+
 // 判定间隔（缺省/非法 → 3；≥1）。独立于线的 getLinesInterval。
 function getOutlineJudgeInterval() {
     const n = Number(getSettings().outlineJudgeInterval);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+}
+
+// 历/点·自动确认日期的间隔（各自独立；缺省/非法 → 3；≥1）。抄 getOutlineJudgeInterval。
+function getAlmanacJudgeInterval() {
+    const n = Number(getSettings().almanacJudgeInterval);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+}
+function getScheduleJudgeInterval() {
+    const n = Number(getSettings().scheduleJudgeInterval);
     return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
 }
 
@@ -1376,6 +1443,142 @@ async function runJudgeOutlineStep() {
         if (outlineJudgeAbort !== myCtrl) return;
         isJudgingOutline = false; outlineJudgeAbort = null;
         // 判定失败静默（不弹错、不动游标）——纯增强功能，不该打断主聊天
+    }
+}
+
+const DATE_JUDGE_PROMPT =
+`请暂停角色扮演，作为剧情分析助手，只做一件事：判断以上最近的对话里，故事此刻发生在哪一天。
+只回答「当前剧情日期」，格式为 M月D日（例如 3月15日）；年份不重要、无需回答。
+若最近对话中并无明确日期线索、无法确定具体月日，就只回答「未知」。
+不要解释，不要输出任何多余文字。`;
+
+// 从 judge 回答里抠出 {month, day}。先认「M月D日」，再兜底走 extractDayFromTime（认 3/15、
+// 2024-3-15、三月十五 等格式）。认不出 / 明确「未知」→ 返回 null（＝保持上次锚点不动）。
+function parseJudgedDate(ans) {
+    const s = String(ans || '').trim();
+    if (!s || /未知|无法|不确定|不清楚|没有|无明确/.test(s)) return null;
+    const m = s.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日?/);
+    if (m) {
+        const mo = +m[1], da = +m[2];
+        if (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) return { month: mo, day: da };
+    }
+    return monthDayFromDayKey(extractDayFromTime(s));
+}
+
+// 历/点·自动确认当前剧情日期：抄 runJudgeOutlineStep 的 abort/chatId/重入守卫。mode='almanac'|'schedule'
+// 只决定用哪个 abort 控制器（触发/间隔各自独立），判定逻辑与写入的锚点完全一致——历、点共用一个「今天」。
+// fire-and-forget，失败静默。识别不到日期 → 不动锚点（保留上次值），符合「无信号不动」的兜底。
+async function runJudgeDateStep(mode) {
+    if (isJudgingDate) return;                       // 历、点共一把锁：都写同一个锚点，不必并发
+    const ctx = getContext();
+    const charKey = charStableKey(ctx);
+    if (!charKey) return;                            // 无卡（群聊/无角色）→ 锚点无处落键，跳过
+    const chatIdSnap = ctx.chatId;
+    const cfg = loadUtilityCfg();                    // 机械任务：可分流到轻量预设，未设则=主 API
+    if (!cfg.url || !cfg.key) return;
+    const setAbort = c => { if (mode === 'schedule') scheduleJudgeAbort = c; else almanacJudgeAbort = c; };
+    const getAbort = ()  =>   mode === 'schedule' ? scheduleJudgeAbort : almanacJudgeAbort;
+    const myCtrl = new AbortController(); setAbort(myCtrl);
+    isJudgingDate = true;
+    const done = () => { isJudgingDate = false; setAbort(null); };
+    try {
+        const userName = ctx.name1 || '用户', charName = ctx.name2 || '角色';
+        // historyLimit=4：只需最近几楼就能读出剧情内日期，省 token（与历生成同量级）。
+        const raw = await callCustomApi(ctx, DATE_JUDGE_PROMPT, cfg, userName, charName, myCtrl.signal, 4);
+        if (getAbort() !== myCtrl) return;                                  // 被更新的判定取代
+        if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃结果
+        done();
+        const md = parseJudgedDate(raw);
+        if (!md) return;                                                    // 识别不到 → 保持上次不动
+        const prev = getDateAnchor(charKey);
+        if (prev && prev.month === md.month && prev.day === md.day) return; // 日期没变 → 免重渲染
+        setDateAnchor(charKey, md.month, md.day);
+        runAnchorAftermath();   // 共享善后：刷历条/点条/历面板；点不自动跟，落后时今天条冒「同步到点」键待手动触发
+    } catch {
+        if (getAbort() !== myCtrl) return;
+        done();
+        // 判定失败静默（不弹错、不动锚点）——纯增强，不该打断主聊天
+    }
+}
+
+// ─── 共享锚点善后 ───────────────────────────────────────────────────────────
+// 任何一处改「今天」锚点（自动判定 / 历面板 ±1天·改·恢复自动）后都走这里，
+// 统一刷新：楼内历条 / 点条、历面板。历面板重渲时若「点」已落后今天，会在今天条上冒出「同步到点」键（方案 B）。
+// 注意：改今天只更新历，绝不自动重生成点——点要不要跟随，由用户在历面板点「同步到点」显式触发。
+function runAnchorAftermath() {
+    syncLatestAlmanacBlock();
+    syncLatestScheduleBlock();
+    if (almanacMode) renderAlmanacPanel();
+}
+
+// 方案 B·点随「今天」按钮同步（历面板「同步到点」键触发，非自动）：
+// schedulePointNeedsSync() —— 判定当前视角的点是否落后于共享「今天」，历面板据此决定要不要在今天条冒出「同步到点」键。
+//   条件：点·自动检测开 + 当前视角已生成过点 + 点的 StartDate 月/日 ≠ 今天。refresh-only：空白页不算「需同步」。
+function schedulePointNeedsSync() {
+    if (getSettings().scheduleAutoDetect !== true) return false;   // 点自动检测关（默认）→ 点原地冻结，不催同步
+    const cacheKey = getCacheKey(currentView, charViewName);
+    if (!cacheKey) return false;
+    const raw = readStore(cacheKey)?.raw || '';
+    if (!raw) return false;                                        // 没生成过点 → 不凭空催
+    // 文本直接比 StartDate 月/日 vs 今天，不经 new Date（避开 UTC 时区漂移）。
+    const sdMatch = raw.match(/StartDate:\s*\d{4}-(\d{2})-(\d{2})/);
+    if (!sdMatch) return false;                                    // 无绝对起始日 → 无从对齐今天
+    const today = almTodayAnchor();
+    return !(parseInt(sdMatch[1], 10) === today.month && parseInt(sdMatch[2], 10) === today.day);
+}
+
+// syncPointToToday() —— 用户在历面板点「同步到点」触发：后台把当前视角的点重生成，StartDate 强钉到「今天」，
+// 让「点」从今天起排 7 天、与「历」同一天。反馈全在历（按钮态「同步中…」+ toast），结果落在点。
+// 绝不占用 isGenerating（前台 UI 锁，sidebar 切换靠它挡）——后台占了会把整个面板卡死；防 race 靠自带 abort + 落地前重查。
+let _autoRegenSchedAbort = null;
+async function syncPointToToday() {
+    if (_almSyncingPoint) return;                            // 已在同步 → 别重入
+    if (isGenerating) { showToast('点正在生成，稍候再同步', null, true); return; }
+    if (getSettings().scheduleAutoDetect !== true) return;   // 自动检测关 → 本不该出现此按钮，保守 no-op
+    const view = currentView, charName = charViewName;
+    const cacheKey = getCacheKey(view, charName);
+    if (!cacheKey) return;
+    const raw = readStore(cacheKey)?.raw || '';
+    if (!raw) return;                                        // refresh-only：没生成过 → 不凭空建
+    const today = almTodayAnchor();
+    _autoRegenSchedAbort?.abort();
+    const myCtrl = _autoRegenSchedAbort = new AbortController();
+    const chatIdSnap = getContext().chatId;
+    _almSyncingPoint = true;
+    if (almanacMode) renderAlmanacPanel();                   // 今天条：「同步到点」→「同步中…」
+    $('#sp-body .sp-refresh-schedule').addClass('sp-refresh-busy');   // 点面板此刻正开着也即时置灰，不等重渲染
+    try {
+        const ctx = getContext();
+        const cfg = loadCfg();
+        if (!cfg.url || !cfg.key) { showToast('未配置主 API，无法同步点', null, true); return; }
+        const userName = ctx.name1 || '用户';
+        const cName = view === 'char' ? (charName || ctx.name2 || '角色') : (ctx.name2 || '角色');
+        const subject = view === 'char' ? cName : userName;
+        const pinnedEvents = [];
+        const pc = parseCalendar(raw);
+        for (const d of pc.days) for (const ev of d.events) if (ev.pin) pinnedEvents.push(ev);
+        if (pc.future) for (const ev of pc.future.events) if (ev.pin) pinnedEvents.push(ev);
+        const fresh = await generate(ctx, userName, cName, view, myCtrl.signal, pinnedEvents);
+        if (_autoRegenSchedAbort !== myCtrl) return;         // 被更新的同步取代（或被手动生成掐断）
+        if (isGenerating) return;                            // 期间前台手动生成插了队 → 让前台赢
+        if (getContext().chatId !== chatIdSnap) return;      // 已切 chat → 丢弃
+        const merged = forceStartDate(mergePinnedPoints(raw, fresh), today.month, today.day);   // C：钉到今天
+        writeStore(cacheKey, { raw: merged, userName: subject, ts: Date.now() });
+        syncLatestScheduleBlock();                           // 楼内点条即时刷到新日期
+        // 修 cachedSchedule 陈旧：只要同步的视角 == 当前视角就刷缓存——哪怕此刻停在历面板，
+        // 回头切到点也拿到新版（不再限「点面板正开着」才更新，否则切过去会看到旧点）。
+        if (currentView === view && (view !== 'char' || charViewName === charName)) {
+            cachedSchedule = renderSchedule(merged, subject, view);
+            const onPointPanel = !almanacMode && !outlineMode && !linesMode && !spaceMode && !theaterMode && !anchorMode;
+            if (onPointPanel && $(`#${MODAL_ID}`).is(':visible')) setBody(cachedSchedule);
+        }
+        showToast(`点已同步到 ${today.month}月${today.day}日`);
+    } catch { /* 静默：同步失败不打断主聊天 */ }
+    finally {
+        if (_autoRegenSchedAbort === myCtrl) _autoRegenSchedAbort = null;
+        _almSyncingPoint = false;
+        if (almanacMode) renderAlmanacPanel();               // 恢复今天条（同步键消失，或仍需同步则复现）
+        $('#sp-body .sp-refresh-schedule').removeClass('sp-refresh-busy');   // 同步结束：解除刷新圆圈置灰
     }
 }
 
@@ -1676,7 +1879,9 @@ function setExtBtnState(state) {
     const $fab = $(`#${FAB_ID} .sp-fab-btn`);
     $fab.removeClass('sp-btn-generating sp-btn-done');
     if (state) $fab.addClass(`sp-btn-${state}`);
-    $('.sp-sub-toggle, .sp-sidebar-tabs').toggleClass('sp-locked', state === 'generating');
+    // 点生成中只锁「我/TA」子切换（本次生成绑定当前视角，中途换视角无意义，另有 .sp-view-btn 里 3207 JS 守卫兜底）；
+    // 侧栏模块 tab(历/线/面/棱/锚) 绝不锁——切模块随时可用（点正文按状态重建，见 .sp-view-btn 处理器 schedule 分支）。
+    $('.sp-sub-toggle').toggleClass('sp-locked', state === 'generating');
 }
 
 // ─── FAB ─────────────────────────────────────────────────────────────────────
@@ -2037,11 +2242,11 @@ function injectModal() {
 
                                     <hr class="sp-mem-divider">
 
-                                    <label class="sp-cfg-label">自定义提示词</label>
+                                    <label class="sp-cfg-label">自定义提示词 / 全局写作规范</label>
                                     <p class="sp-cfg-hint">
-                                        这段会拼在<strong>全部生成链路</strong>（点 / 线 / 面 / 记忆 / 棱 / 间 · 面讨论）系统提示词的<strong>最前面</strong>，与内置指令一同注入，主要用于破限。<strong>已内置一版默认破限词</strong>（不显示在此）：留空即用默认，在此填入内容则<strong>整体替换</strong>默认版。支持 <code>{{char}}</code> / <code>{{user}}</code> 占位符。
+                                        <strong>已内置一版默认破限词</strong>（不显示在此，恒定生效）。在此填写的内容会<strong>追加在默认破限词之后</strong>——破限永远兜底，你写的内容叠加其上，一同拼到<strong>全部生成链路</strong>（点 / 线 / 面 / 记忆 / 棱 / 间 · 面讨论）系统提示词的<strong>最前端</strong>。适合放<strong>全局写作规范</strong>：如去八股、控制文风、叙事口吻等（可直接把这类「去八股 / 文风」世界书的正文贴进来）。支持 <code>{{char}}</code> / <code>{{user}}</code> 占位符。
                                     </p>
-                                    <textarea id="sp-custom-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="在此填写破限 / 全局指令，会注入到所有 AI 调用系统提示词的最前端…"></textarea>
+                                    <textarea id="sp-custom-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="可留空（只用默认破限）。也可在此追加全局写作规范，如：去八股、控制文风、叙事口吻…会叠加在默认破限词之后一起注入。"></textarea>
                                 </div>
                             </details>
 
@@ -2142,6 +2347,36 @@ function injectModal() {
                                         <span>条 AI 回复判定一次推进</span>
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">判定节奏：楼数越大越省 token、推进越迟钝；越小越灵敏、开销越高（<b>每次判定 = 一次额外 API 调用</b>）。默认 3。</p>
+                                </div>
+                            </details>
+
+                            <!-- 模块设置：历 / 点 · 时间推进（自动确认当前剧情日期 + 手动兜底） -->
+                            <details class="sp-settings-section" id="sp-datetime-section">
+                                <summary class="sp-settings-section-title">历 · 点（时间推进）</summary>
+                                <div class="sp-settings-section-body">
+                                    <p class="sp-cfg-hint">历（全年日历）和点（近七日日程）都靠「当前剧情日期」定位今天。开启自动确认后，每隔若干楼<b>独立判定</b>一次剧情演到了几月几日，把「今天」钉到那天——历的七天条 / 点的日程条会自动跟着剧情走。识别不到就<b>保持上次的日期不动</b>；也可在下方手动钉一个今天兜底。历、点<b>共用同一个「今天」</b>。</p>
+
+                                    <label class="sp-mode-opt" style="margin-top:10px">
+                                        <input type="checkbox" id="sp-almanac-autodetect" ${getSettings().almanacAutoDetect !== false ? 'checked' : ''}>
+                                        <span>历：自动确认当前日期</span>
+                                    </label>
+                                    <label class="sp-mode-opt" style="margin-top:6px">
+                                        <span>每</span>
+                                        <input id="sp-almanac-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getAlmanacJudgeInterval()))}">
+                                        <span>条 AI 回复确认一次</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">默认开。每次确认 = 一次额外 API 调用；楼数越大越省 token、跟进越迟钝。默认 3。</p>
+
+                                    <label class="sp-mode-opt" style="margin-top:12px">
+                                        <input type="checkbox" id="sp-schedule-autodetect" ${getSettings().scheduleAutoDetect === true ? 'checked' : ''}>
+                                        <span>点：自动确认当前日期</span>
+                                    </label>
+                                    <label class="sp-mode-opt" style="margin-top:6px">
+                                        <span>每</span>
+                                        <input id="sp-schedule-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getScheduleJudgeInterval()))}">
+                                        <span>条 AI 回复确认一次</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">默认关。历、点共用同一个「今天」，<b>只开历即可让两者都跟进</b>；单独开点会各自触发 API。默认 3。手动改「今天」现移到历面板顶部。</p>
                                 </div>
                             </details>
 
@@ -2715,6 +2950,35 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-pin', function () { toggleAlmanacPin($(this).attr('data-id')); });
     $almanac.on('click', '.sp-alm-edit', function () { openAlmanacEditor($(this).attr('data-id')); });
     $almanac.on('click', '.sp-alm-del', function () { deleteAlmanacItem($(this).attr('data-id')); });
+    // 历面板「今天」栏：±1天 / 改（内联月日） / 自动（清锚） / 同步到点。前三者经 runAnchorAftermath 共享善后
+    // （刷两条只读条 + 历面板）；改今天不再自动烧点，点要跟随由「同步到点」键显式触发（历点共用这枚今天锚点）。
+    $almanac.on('click', '.sp-alm-today-prev', function () { almNudgeToday(-1); });
+    $almanac.on('click', '.sp-alm-today-next', function () { almNudgeToday(1); });
+    $almanac.on('click', '.sp-alm-today-edit', function () {
+        _almTodayEditing = true;
+        renderAlmanacPanel();
+        setTimeout(() => $('#sp-alm-today-month').trigger('focus'), 30);
+    });
+    $almanac.on('click', '.sp-alm-today-cancel', function () { _almTodayEditing = false; renderAlmanacPanel(); });
+    $almanac.on('click', '.sp-alm-today-save', function () {
+        const key = charStableKey(getContext());
+        if (!key) { showToast('当前没有角色卡，无法钉日期', null, true); return; }
+        const mo = parseInt($('#sp-alm-today-month').val(), 10);
+        const da = parseInt($('#sp-alm-today-day').val(), 10);
+        if (!(mo >= 1 && mo <= 12) || !(da >= 1 && da <= 31)) { showToast('请填 1-12 月、1-31 日', null, true); return; }
+        setDateAnchor(key, mo, da);
+        _almTodayEditing = false;
+        runAnchorAftermath();
+        showToast(`已把今天钉为 ${mo}月${da}日`);
+    });
+    $almanac.on('click', '.sp-alm-today-clear', function () {
+        const key = charStableKey(getContext());
+        if (!key) return;
+        setDateAnchor(key, null);   // 清锚 → 恢复自动确认
+        runAnchorAftermath();
+        showToast('已清除手动日期，恢复自动确认');
+    });
+    $almanac.on('click', '.sp-alm-today-sync-btn', function () { syncPointToToday(); });
     // 月历：翻月 / 选日（再点已选=取消回全月）/ 看全月 / 加到某天
     $almanac.on('click', '.sp-alm-cal-prev', function () { almNavMonth(-1); });
     $almanac.on('click', '.sp-alm-cal-next', function () { almNavMonth(1); });
@@ -2753,7 +3017,9 @@ function injectModal() {
 
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
     $(`#${MODAL_ID}`).on('click', '.sp-view-btn', function () {
-        if (isGenerating) return;
+        // 点生成不再冻结整个侧栏：切模块(历/线/面/棱/锚)随时可用——点正文按状态重建（下方 schedule 分支），
+        // 生成完成走 stillOnView 守卫写进(可能隐藏的) #sp-body，切走不被覆盖、切回自动补正。
+        // 仅「我/TA」子切换在点生成途中仍挡（点按视角生成，中途换视角无意义）。
         const view = $(this).data('view');
         if (!view) return;
         $('#sp-module-intro-pop').hide();   // 切模块即收起介绍气泡
@@ -2933,11 +3199,16 @@ function injectModal() {
             $('#sp-content-title').text('点');
             $('.sp-sub-btn').removeClass('sp-view-active');
             $(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
+            // 生成在途/切走再切回：从状态重建正文（镜像 线/面/棱），别露上次残留或僵尸转圈
+            if (isGenerating) setBody(loadingHtml('正在规划', 'sp-abort-generate'));
+            else if (cachedSchedule) setBody(cachedSchedule);
+            else showEmptyGenerate();
             return;
         }
 
         // Sub-toggle clicks: user / char (only meaningful when schedule mode)
         if (isSubBtn) {
+            if (isGenerating) return;   // 点生成途中不切视角：本次生成绑定当前视角，中途换「我/TA」无意义
             if (view === currentView) return;
             if (view === 'char') {
                 if (charViewName) {
@@ -3021,6 +3292,34 @@ function injectModal() {
         this.value = String(n);
         saveSettingsDebounced();
         outlineJudgeMsgCounter = 0;
+    });
+    // 历·自动确认当前日期 开关：改完重置历计数（避免残留计数刚开就判）
+    $('#sp-almanac-autodetect').on('change', function () {
+        getSettings().almanacAutoDetect = this.checked;
+        saveSettingsDebounced();
+        almanacJudgeCounter = 0;
+    });
+    // 历·确认间隔：改完重新计数
+    $('#sp-almanac-judge-interval').on('change', function () {
+        const n = Math.max(1, parseInt(this.value, 10) || 3);
+        getSettings().almanacJudgeInterval = n;
+        this.value = String(n);
+        saveSettingsDebounced();
+        almanacJudgeCounter = 0;
+    });
+    // 点·自动确认当前日期 开关
+    $('#sp-schedule-autodetect').on('change', function () {
+        getSettings().scheduleAutoDetect = this.checked;
+        saveSettingsDebounced();
+        scheduleJudgeCounter = 0;
+    });
+    // 点·确认间隔：改完重新计数
+    $('#sp-schedule-judge-interval').on('change', function () {
+        const n = Math.max(1, parseInt(this.value, 10) || 3);
+        getSettings().scheduleJudgeInterval = n;
+        this.value = String(n);
+        saveSettingsDebounced();
+        scheduleJudgeCounter = 0;
     });
     // 锚：楼层收藏入口开关——on → 补按钮；off → 清掉所有已注入按钮
     $('#sp-anchor-inline-btn').on('change', function () {
@@ -3106,6 +3405,7 @@ function onRegenClick() {
         triggerGenerateOutline();
         return;
     }
+    if (_almSyncingPoint) { showToast('点正在同步到今天，稍候再刷新', null, true); return; }   // 同步在飞：别让点这边的刷新/重选跟后台同步抢 store（否则重选清点会被同步写回）
     if (isGenerating) return;
     if (currentView === 'char') {
         // Clear char cache and re-show picker so user can pick a different char.
@@ -3499,6 +3799,7 @@ function loadingHtml(baseText, abortId) {
 
 async function triggerGenerate() {
     if (isGenerating) return;
+    if (_almSyncingPoint) { showToast('点正在同步到今天，稍候', null, true); return; }   // 同步在飞：拦住点这边的生成，避免跟后台同步双写
     if (!await memoryPreCheckConfirm()) return;
     // F5 锁点对齐线：不清 raw，保留旧 raw（含 pin 标记）供 mergePinnedPoints 回并；
     // 生成失败/中止则旧点原样留存，成功后 runGenerate 覆写。
@@ -3515,6 +3816,7 @@ async function runGenerate() {
     const viewSnap = currentView;
     const charSnap = charViewName;
     const myCtrl = scheduleAbortController = new AbortController();
+    _autoRegenSchedAbort?.abort();   // 手动生成优先：掐掉可能在飞的「同步到点」后台生成，免得它慢半拍回来覆盖手动结果
     try {
         const ctx      = getContext();
         const userName = ctx.name1 || '用户';
@@ -3532,7 +3834,11 @@ async function runGenerate() {
         const raw = await generate(ctx, userName, charName, viewSnap, myCtrl.signal, pinnedEvents);
         if (scheduleAbortController !== myCtrl) return;   // 生成途中被中止/取代：丢弃本次结果
         // F5：合并锁定，机制对齐 mergePinnedLines(oldRaw, aiRaw)
-        const merged = prevRaw ? mergePinnedPoints(prevRaw, raw) : raw;
+        let merged = prevRaw ? mergePinnedPoints(prevRaw, raw) : raw;
+        if (getSettings().scheduleAutoDetect === true) {   // C：自动检测开 → 手动生成也把点钉到今天，与历同日
+            const t = almTodayAnchor();
+            merged = forceStartDate(merged, t.month, t.day);
+        }
         const html   = renderSchedule(merged, subject, viewSnap);
 
         writeStore(cacheKey, { raw: merged, userName: subject, ts: Date.now() });
@@ -3742,6 +4048,30 @@ async function readSseContent(resp) {
     return out.trim();
 }
 
+// 退避延迟（毫秒）：指数增长 + 抖动，attempt 从 1 起。若上游透传了 Retry-After 就优先听它。
+// 注意：请求过 ST 代理转发，上游的 Retry-After 多半带不回来，属尽力而为，拿不到就走退避。
+function retryBackoffMs(attempt, res) {
+    const ra = res?.headers?.get?.('retry-after');
+    if (ra) {
+        const sec = Number(ra);
+        if (Number.isFinite(sec) && sec >= 0) return Math.min(sec * 1000, 15000);
+        const at = Date.parse(ra);
+        if (Number.isFinite(at)) return Math.min(Math.max(at - Date.now(), 0), 15000);
+    }
+    const base = 800 * Math.pow(2, attempt - 1);   // 800ms → 1600ms → …
+    return Math.min(base + Math.random() * 400, 8000);
+}
+
+// 可被外部 signal 打断的退避睡眠：等待重试期间用户点「中止」立即抛 AbortError，不干等。
+function sleepAbortable(ms, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+        const onAbort = () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); };
+        const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, Math.max(0, ms));
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
 // Single wrapper for all OpenAI-compatible /chat/completions calls.
 // Goes through ST's server-side proxy (/api/backends/chat-completions/generate)
 // instead of fetching the third-party URL directly from the browser. Fixes:
@@ -3754,15 +4084,15 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
     const ctx = getContext();
     if (!ctx?.getRequestHeaders) throw new Error('SillyTavern 上下文不可用');
     const stream = cfg.stream === true;
-    // 自定义提示词（破限）：注入到 system 最前，全局作用于所有链路（点/线/面/记忆/棱/间/面）。
-    // 框内留空 → 用内置默认破限词；填了内容 → 整体替换。支持 {{char}}/{{user}} 占位符；无 system 则前置插入。
-    const custom = substituteParams((getSettings().customPrompt || '').trim() || DEFAULT_JAILBREAK);
-    if (custom) {
-        const si = messages.findIndex(m => m.role === 'system');
-        messages = si >= 0
-            ? messages.map((m, idx) => idx === si ? { ...m, content: custom + '\n\n' + m.content } : m)
-            : [{ role: 'system', content: custom }, ...messages];
-    }
+    // 自定义提示词：注入到 system 最前，全局作用于所有链路（点/线/面/记忆/棱/间/面）。
+    // 内置默认破限词恒在，框里内容【追加】在其后（不再整体替换）——破限词永远兜底，
+    // 用户在框里写的全局写作规范（去八股 / 控文风等）叠加在破限词之上一起生效。支持 {{char}}/{{user}}。
+    const userExtra = (getSettings().customPrompt || '').trim();
+    const custom = substituteParams(userExtra ? `${DEFAULT_JAILBREAK}\n\n${userExtra}` : DEFAULT_JAILBREAK);
+    const si = messages.findIndex(m => m.role === 'system');
+    messages = si >= 0
+        ? messages.map((m, idx) => idx === si ? { ...m, content: custom + '\n\n' + m.content } : m)
+        : [{ role: 'system', content: custom }, ...messages];
     // 调试面板「🐛 AI 输入」的数据源：记在注入之后，让 debug 框显示含破限词的真实请求（覆盖所有链路）。
     lastDebugPayload = { model: cfg.model || 'gpt-4o-mini', messages };
     const body = {
@@ -3787,41 +4117,65 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
     // 全生命周期超时：内部 AbortController 同时受外部 signal 与定时器控制，
     // 覆盖建连 + 非流式 JSON 读取 + 流式 SSE 读取。超时转成明确报错而非静默卡死。
     const timeoutSec = Number.isFinite(cfg.timeoutSec) && cfg.timeoutSec > 0 ? cfg.timeoutSec : 180;
-    const ctrl = new AbortController();
-    let timedOut = false;
-    const onAbort = () => ctrl.abort();
-    if (signal?.aborted) onAbort();
-    else signal?.addEventListener('abort', onAbort, { once: true });
-    const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, Math.max(1000, timeoutSec * 1000));
 
-    try {
-        const res = await fetch('/api/backends/chat-completions/generate', {
-            method : 'POST',
-            headers: ctx.getRequestHeaders(),
-            body   : JSON.stringify(body),
-            signal : ctrl.signal,
-        });
-        if (!res.ok) {
-            const errText = await res.text().catch(() => '');
-            throw new Error(mapApiError(res.status, errText));
+    // 429 / 5xx 自动重试：构画会在主楼回复的同一限流窗口里额外并发多路后台请求
+    // （日期判定、历判定等），比单串行的主楼更容易撞上游 429 或瞬时 5xx。这里做指数
+    // 退避 + 抖动的短重试，让偶发限流自愈；gcli2api 是随机负载均衡的凭证池，重试往往
+    // 换到另一份没耗尽配额的凭证就过了，比立刻甩错给用户更稳。
+    // - 只重试 429 / 5xx / fetch 网络抖动；4xx（400/401/403/404）是配置问题重试无益，立即抛。
+    // - 用户主动中止（外部 signal）与超时不重试：原样抛出；退避睡眠也可被中止打断。
+    const RETRY_MAX = 2;   // 首次 + 最多 2 次重试 = 至多 3 次尝试
+    let attempt = 0;
+    for (;;) {
+        const ctrl = new AbortController();
+        let timedOut = false;
+        const onAbort = () => ctrl.abort();
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener('abort', onAbort, { once: true });
+        const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, Math.max(1000, timeoutSec * 1000));
+        let retryDelay = -1;   // ≥0 表示本次要退避后重试
+
+        try {
+            const res = await fetch('/api/backends/chat-completions/generate', {
+                method : 'POST',
+                headers: ctx.getRequestHeaders(),
+                body   : JSON.stringify(body),
+                signal : ctrl.signal,
+            });
+            if (!res.ok) {
+                const errText = await res.text().catch(() => '');
+                if ((res.status === 429 || res.status >= 500) && attempt < RETRY_MAX && !signal?.aborted) {
+                    retryDelay = retryBackoffMs(attempt + 1, res);   // 可重试 → 记下退避时长，出 finally 后再睡
+                } else {
+                    throw new Error(mapApiError(res.status, errText));
+                }
+            } else if (stream) {
+                const content = await readSseContent(res);
+                if (!content) throw new Error('接口返回空内容');
+                return content;
+            } else {
+                const data = await res.json();
+                if (data?.error) throw new Error(mapApiError(0, data.error.message || '返回错误'));
+                return extractCompletion(data);
+            }
+        } catch (err) {
+            if (timedOut) throw new Error(`请求超时（超过 ${timeoutSec} 秒）。可在设置里调大「请求超时」，或开启「流式传输」让响应边生成边返回。`);
+            if (err?.name === 'AbortError') throw err;   // 用户主动取消：原样抛出，上层按 AbortError 静默处理
+            // fetch 本身抛的网络错误（TypeError: Failed to fetch 等）：也算瞬时抖动，可重试
+            if (err instanceof TypeError) {
+                if (attempt < RETRY_MAX && !signal?.aborted) retryDelay = retryBackoffMs(attempt + 1, null);
+                else throw new Error(mapApiError(0, err.message));
+            } else {
+                throw err;   // 业务错误（空内容/解析失败等）不重试
+            }
+        } finally {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
         }
-        if (stream) {
-            const content = await readSseContent(res);
-            if (!content) throw new Error('接口返回空内容');
-            return content;
-        }
-        const data = await res.json();
-        if (data?.error) throw new Error(mapApiError(0, data.error.message || '返回错误'));
-        return extractCompletion(data);
-    } catch (err) {
-        if (timedOut) throw new Error(`请求超时（超过 ${timeoutSec} 秒）。可在设置里调大「请求超时」，或开启「流式传输」让响应边生成边返回。`);
-        if (err?.name === 'AbortError') throw err;   // 用户主动取消：原样抛出，上层按 AbortError 静默处理
-        // fetch 本身抛的网络错误（TypeError: Failed to fetch 等）也过一遍映射
-        if (err instanceof TypeError) throw new Error(mapApiError(0, err.message));
-        throw err;
-    } finally {
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
+
+        // 走到这里 = 本次判定为可重试（retryDelay≥0）。退避期间用户点「中止」→ sleepAbortable 抛 AbortError 逃出。
+        attempt++;
+        await sleepAbortable(retryDelay, signal);
     }
 }
 
@@ -3912,6 +4266,35 @@ function setDisabledKeys(charKey, disabledSet) {
     if (!charKey) return;
     getWiFilter()[charKey] = [...disabledSet];
     saveSettingsDebounced();
+}
+
+// Manual/auto "today" anchor for 历 + 点 (per-character). Stores {month, day}
+// (year is meaningless in RP). Two writers: the user pinning a date by hand, and
+// the auto-confirm judge writing the date it detected from recent floors. Read as
+// the highest-priority tier in almTodayAnchor (before 柏宝书) so a pinned/confirmed
+// date always wins over the slower passive sources. Keyed by card avatar like
+// wiFilter (reason see charStableKey). Clearing (null) reverts to full auto.
+function getDateAnchor(charKey) {
+    if (!charKey) return null;
+    const s = getSettings();
+    if (!s.dateAnchor || typeof s.dateAnchor !== 'object') s.dateAnchor = {};
+    const a = s.dateAnchor[charKey];
+    if (!a) return null;
+    const month = Number(a.month), day = Number(a.day);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return { month, day };
+    return null;
+}
+
+function setDateAnchor(charKey, month, day) {
+    if (!charKey) return;
+    const s = getSettings();
+    if (!s.dateAnchor || typeof s.dateAnchor !== 'object') s.dateAnchor = {};
+    if (month == null) { delete s.dateAnchor[charKey]; saveSettingsDebounced(); return; }
+    const mo = Number(month), da = Number(day);
+    if (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) {
+        s.dateAnchor[charKey] = { month: mo, day: da };
+        saveSettingsDebounced();
+    }
 }
 
 // ─── Per-character narrative scale ──────────────────────────────────────────
@@ -5901,7 +6284,7 @@ async function renderAnchorFull(itemId) {
         // UA 默认的 q 自动引号在 shadow 里复活；而 ST 格式化阶段已把字面引号写进文本，
         // 于是「字面引号 + UA 自动引号」= 双引号。这里补回同款压制。
         root.innerHTML = `<style>:host{all:initial;display:block;}
-            .sp-anchor-snap{display:block;color:${fg};background:${bg};padding:16px 18px !important;margin:0 !important;border:none !important;border-radius:10px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;word-break:break-word;}
+            .sp-anchor-snap{display:block;color:${fg};background:${bg};padding:16px 18px !important;margin:0 !important;border:none !important;border-radius:10px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.6;word-break:break-word;}
             .sp-anchor-snap img{max-width:100%;height:auto;}
             .sp-anchor-snap a{color:${link};}
             .sp-anchor-snap q:before,.sp-anchor-snap q:after{content:'';}
@@ -6228,10 +6611,10 @@ function triggerToggleLinePin(idx) {
 // 与线的根本区别：不注入正文 / 不注入 AI / 不进 .mes_text。只有「生成 → 存 chat_metadata
 // → 线面板下方展示」三步，无任何回灌路径。不分视角，固定 user scope（子键恒 dashed-user），
 // 只留最新一版、随聊天文件跨设备。默认关（dashedEnabled），开了才在线生成时跟着抽一次。
-const DASHED_PROMPT = `请暂停角色扮演，跳出正文叙事，以设定考据者的身份回答。                                                                                                                   
+const DASHED_PROMPT = `请暂停角色扮演，跳出正文叙事，以设定考据者的身份回答。这是设定考据、不是续写正文：不要输出任何剧情场景、对话、动作或第一/第二人称叙述，不要推进故事，也不要复述记忆库/世界书里已发生的事件经过。                                                                                                                   
   请无视上文里的状态栏、数值面板、表格等格式化内容，绝对不要复述或模仿它们。
   完全遵循char与{{user}}的设定和世界观，列出一到两个关于char、{{user}}或这个世界的"冷知识"。可以是人物设定里的小细节、隐藏的性格侧写、习惯癖好、过往经历，也可以是世界观设定、势力/地点/物品的隐藏特性、未被明说的规则或因果。每一条都要展开讲清来龙去脉、给出背景和细节，不要只丢一句干巴巴的结论。绝对禁止ooc和脱离当前背景。               
-  每行一条冷知识，每条控制在50到100字之间，把细节讲透，纯中文叙述，条与条之间换行分隔，不要序号、不要状态栏或任何格式符号。`;
+  直接从第一条冷知识写起，不要任何开场白或旁白。每行一条冷知识，每条控制在50到100字之间，把细节讲透，纯中文叙述，条与条之间换行分隔，不要序号、不要状态栏或任何格式符号。`;
 
 function getDashedCacheKey() { return keyDesc('dashed', 'user', ''); }  // 固定 user scope = 不分视角
 
@@ -6515,7 +6898,9 @@ Line: 名称|类型(冲突/推进)|阶段|等级(1-4)|时间锚点(如"今天上
 Desc: 描述当前状态、关键背景、涉及的人物势力及其立场（60-100字，写现在的样子，不要写"接下来会…"）
 Next: **必须输出，不得省略**。一句话给出前瞻信号（20-40字），**直接写内容本身、不要加"下一步："/"恢复条件："之类的标签前缀（面板会自动加）**。stall=true 时写恢复推进的触发条件；stall=false 时写最可能的下一动作、下一阶段的催化事件、或即将出现的关键分岔。
 （每条事件线重复上面三行）
-</storylines_widget>`;
+</storylines_widget>
+
+【输出前自查】逐条确认每条事件线都齐 Line / Desc / Next 三行——尤其 Next 绝不能省，缺了补上再输出。`;
 }
 
 // ─── Storylines parse / render ────────────────────────────────────────────────
@@ -6798,6 +7183,12 @@ function almDateFromChat() {
     return null;
 }
 function almTodayAnchor() {
+    // ①′ 手动/自动确认锚点：最高优先。用户手钉或自动确认 judge 写入的日期，压过所有
+    //     被动源——解决「正文都 X+1 号了，历还信较慢的柏宝书/记忆库停在 X 号」的相位差。
+    try {
+        const pinned = getDateAnchor(charStableKey(getContext()));
+        if (pinned) return pinned;
+    } catch { /* 往下走 */ }
     // ① 柏宝书：权威游戏内时间（很多用户不装 → 拿不到就往下走）
     try {
         const api = globalThis.STBaiBaiBook;
@@ -7030,6 +7421,65 @@ function almToolbarHtml() {
         </div>
     </div>`;
 }
+// 历面板「今天」栏：显示共享锚点的今天（月/日·周几），配一排一键控制——
+//   ‹ / ›  = 把「今天」锚点往前/后挪一天（挪一下即固定成手动锚点）
+//   改      = 内联输入月/日（不弹窗，_almTodayEditing 切换）
+//   自动    = 清锚，恢复自动确认（仅当前已手动钉住时出现）
+// 历、点共用这枚锚点：在这里挪今天只更新历；点若落后今天（且开了点·自动检测），今天条会冒出「同步到点」键手动触发（见 syncPointToToday）。
+// 正是给「AI 老提取不准、每天都得去设置里重钉」的卡准备的顺手推进入口。无角色卡 → 只读显示、不给控制。
+function almTodayBarHtml() {
+    const key = charStableKey(getContext());
+    const t = almTodayAnchor();
+    const wd = ALM_WEEKDAYS[almWeekdayFor(t.month, t.day)];
+    if (!key) {
+        return `<div class="sp-alm-today">
+            <span class="sp-alm-today-lbl">今天</span>
+            <span class="sp-alm-today-date">${t.month}月${t.day}日·${wd}</span>
+            <span class="sp-alm-today-hint">无角色卡，无法钉</span>
+        </div>`;
+    }
+    if (_almTodayEditing) {
+        return `<div class="sp-alm-today sp-alm-today-editing">
+            <span class="sp-alm-today-lbl">今天</span>
+            <input id="sp-alm-today-month" class="sp-input sp-alm-today-input" type="number" min="1" max="12" placeholder="月" value="${t.month}">
+            <span class="sp-alm-today-lbl">月</span>
+            <input id="sp-alm-today-day" class="sp-input sp-alm-today-input" type="number" min="1" max="31" placeholder="日" value="${t.day}">
+            <span class="sp-alm-today-lbl">日</span>
+            <span class="sp-alm-today-acts">
+                <button class="sp-icon-btn sp-alm-today-save" title="确定"><i class="fa-solid fa-check"></i></button>
+                <button class="sp-icon-btn sp-alm-today-cancel" title="取消"><i class="fa-solid fa-xmark"></i></button>
+            </span>
+        </div>`;
+    }
+    const pinned = getDateAnchor(key);
+    const pinTag = pinned ? '<span class="sp-alm-today-pin" title="已手动钉住，压过自动确认"><i class="fa-solid fa-thumbtack"></i></span>' : '';
+    const autoBtn = pinned ? '<button class="sp-icon-btn sp-alm-today-clear" title="恢复自动确认"><i class="fa-solid fa-rotate"></i></button>' : '';
+    // 「同步到点」：改了今天后，点若落后于今天（且开了点·自动检测）就冒出这枚 CTA；点一下后台把点重生成到今天。
+    // 正在同步 → 换成禁用的「同步中…」。反馈全在这（按钮态 + toast），结果落在点面板。不弹窗、不占前台生成锁。
+    const syncEl = _almSyncingPoint
+        ? '<span class="sp-alm-today-sync sp-alm-today-sync-busy"><i class="fa-solid fa-spinner fa-spin"></i>同步中…</span>'
+        : (schedulePointNeedsSync()
+            ? '<button class="sp-alm-today-sync sp-alm-today-sync-btn" title="把「点」重新生成到今天，与历同一天"><i class="fa-solid fa-rotate-right"></i>同步到点</button>'
+            : '');
+    return `<div class="sp-alm-today">
+        <span class="sp-alm-today-lbl">今天</span>
+        <span class="sp-alm-today-date">${t.month}月${t.day}日·${wd}</span>${pinTag}${syncEl}
+        <span class="sp-alm-today-acts">
+            <button class="sp-icon-btn sp-alm-today-prev" title="往前一天（−1 天）"><i class="fa-solid fa-chevron-left"></i></button>
+            <button class="sp-icon-btn sp-alm-today-next" title="往后一天（+1 天）"><i class="fa-solid fa-chevron-right"></i></button>
+            <button class="sp-icon-btn sp-alm-today-edit" title="改日期"><i class="fa-solid fa-pen"></i></button>${autoBtn}
+        </span>
+    </div>`;
+}
+// 「今天」±1 天：以当前显示的今天（可能来自自动源）为基准挪 delta 天，钉成手动锚点，走共享善后。
+function almNudgeToday(delta) {
+    const key = charStableKey(getContext());
+    if (!key) { showToast('当前没有角色卡，无法钉日期', null, true); return; }
+    const t = almTodayAnchor();
+    const nd = almMonthDayFromDoy(almDayOfYear(t.month, t.day) + delta);
+    setDateAnchor(key, nd.month, nd.day);
+    runAnchorAftermath();
+}
 function renderAlmanacPanel() {
     if (!almanacMode) return;
     const $wrap = $('#sp-almanac-wrap');
@@ -7044,7 +7494,7 @@ function renderAlmanacPanel() {
         return;
     }
     const bodyHtml = _almanacSheet === 'calendar' ? renderAlmanacCalendar() : renderAlmanacUpcoming();
-    $wrap.html(almToolbarHtml() + `<div class="sp-alm-body">${bodyHtml}</div>`);
+    $wrap.html(almToolbarHtml() + almTodayBarHtml() + `<div class="sp-alm-body">${bodyHtml}</div>`);
 }
 
 function almRowHtml(it, ctx) {
@@ -7812,9 +8262,37 @@ function renderScaleRow() {
 // Perf: builds one HTML string + inserts once, uses event delegation on the list root.
 let _wiEntryCache = new Map();   // key → entry object, for eye-button popup lookup
 
+// Nearest scrollable ancestor — used to keep the viewport steady across a
+// re-render (adding/removing an extra book rebuilds the whole list).
+function _wiScrollParent(el) {
+    let p = el && el.parentElement;
+    while (p) {
+        const oy = getComputedStyle(p).overflowY;
+        if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight) return p;
+        p = p.parentElement;
+    }
+    return null;
+}
+
 async function renderWiList() {
     const ctx = getContext();
     const $list = $('#sp-wi-list');
+
+    // Snapshot the current expand + scroll state BEFORE the loading placeholder
+    // wipes the DOM, so a re-render doesn't spring every <details> group back open
+    // or bounce the viewport. First open has no groups yet → everything defaults
+    // open as before.
+    const prevSources = new Set();
+    const openSources = new Set();
+    $list.find('.sp-wi-group').each(function () {
+        const src = String(this.getAttribute('data-source') || '');
+        prevSources.add(src);
+        if (this.open) openSources.add(src);
+    });
+    const hadGroups = prevSources.size > 0;
+    const scrollEl = _wiScrollParent($list[0]);
+    const savedScroll = scrollEl ? scrollEl.scrollTop : 0;
+
     $list.html('<span class="sp-cfg-hint">正在加载世界书条目…</span>');
 
     let entries;
@@ -7825,19 +8303,14 @@ async function renderWiList() {
         return;
     }
 
-    if (!entries.length) {
-        $list.html('<span class="sp-cfg-hint">当前角色没有绑定世界书条目</span>');
-        return;
-    }
-
     // Cache entries for the eye-button popup
     _wiEntryCache = new Map(entries.map(e => [e.key, e]));
 
-    const disabledKeys = getDisabledKeys(charStableKey(ctx));
+    const charKey = charStableKey(ctx);
+    const disabledKeys = getDisabledKeys(charKey);
 
-    // Two-level group: scope (char / global) → source (book name) → entries
-    // Preserves entry order within each source, and puts char scope first
-    // (feels more relevant to the current character).
+    // Two-level group: scope (char / global) → source (book name) → entries.
+    // Preserves entry order within each source; char first, then global.
     const scopes = new Map([['char', new Map()], ['global', new Map()]]);
     for (const e of entries) {
         const scopeGroup = scopes.get(e.scope) || scopes.get('char');
@@ -7846,14 +8319,18 @@ async function renderWiList() {
     }
     const SCOPE_LABELS = { char: '角色卡世界书', global: '全局世界书' };
 
-    // Build HTML in one pass
+    // Build HTML in one pass.
     const parts = [];
-    parts.push(`<div class="sp-wi-all-row">
-        <label class="sp-wi-toggle-all">
-            <input type="checkbox" id="sp-wi-select-all"> 全选 / 全不选
-        </label>
-        <span class="sp-wi-count">${entries.length} 条</span>
-    </div>`);
+    if (entries.length) {
+        parts.push(`<div class="sp-wi-all-row">
+            <label class="sp-wi-toggle-all">
+                <input type="checkbox" id="sp-wi-select-all"> 全选 / 全不选
+            </label>
+            <span class="sp-wi-count">${entries.length} 条</span>
+        </div>`);
+    } else {
+        parts.push('<span class="sp-cfg-hint">当前角色没有关联 / 全局启用的世界书。</span>');
+    }
 
     for (const [scope, groups] of scopes) {
         if (!groups.size) continue;
@@ -7867,7 +8344,10 @@ async function renderWiList() {
             const groupAllOn   = groupChecked === group.length;
             const groupAllOff  = groupChecked === 0;
             const escSrc       = escapeAttr(source);
-            parts.push(`<details class="sp-wi-group" open data-source="${escSrc}">
+            // Preserve prior expand state across re-renders; open by default on the
+            // first render and for a newly-appearing book (source not seen before).
+            const groupOpen = !hadGroups || openSources.has(source) || !prevSources.has(source);
+            parts.push(`<details class="sp-wi-group" data-source="${escSrc}"${groupOpen ? ' open' : ''}>
                 <summary class="sp-wi-source-label">
                     <input type="checkbox" class="sp-wi-group-cb" data-source="${escSrc}"${groupAllOn ? ' checked' : ''}${!groupAllOn && !groupAllOff ? ' data-indeterminate="true"' : ''}>
                     <span class="sp-wi-source-name">${escapeHtml(source)}</span>
@@ -7936,6 +8416,9 @@ async function renderWiList() {
         // Don't let click on the summary's checkbox also toggle <details> open/close
         ev.stopPropagation();
     });
+
+    // Keep the viewport where it was across a re-render (skip on first open).
+    if (scrollEl && hadGroups) scrollEl.scrollTop = savedScroll;
 
     syncWiSelectAll();
 }
@@ -8569,10 +9052,12 @@ function renderSchedule(raw, userName, perspective = 'user') {
     const totalTabs = days.length + (hasFuture ? 1 : 0);
     const chipCls   = perspective === 'char' ? 'sp-char-chip' : 'sp-user-chip';
 
+    // 历「同步到点」在飞时，点刷新圆圈置灰禁点（同步会后台重写点，此刻手动刷新会跟它抢 store）
+    const refreshBusy = _almSyncingPoint ? ' sp-refresh-busy' : '';
     const header = `<div class="sp-schedule-header">
         <span class="${chipCls}">${escapeHtml(userName)}</span>
         <span class="sp-schedule-label">的点</span>
-        <button class="sp-panel-refresh sp-refresh-schedule" title="重新生成点"><i class="fa-solid fa-rotate-right"></i></button>
+        <button class="sp-panel-refresh sp-refresh-schedule${refreshBusy}" title="${_almSyncingPoint ? '点正在同步中，稍候…' : '重新生成点'}"><i class="fa-solid fa-rotate-right"></i></button>
     </div>`;
 
     // Parse failed (AI leaked prompt / malformed output) — still render header
@@ -8699,6 +9184,15 @@ function serializeCalendar(days, future, startDate) {
     }
     out.push('</calendar_widget>');
     return out.join('\n');
+}
+
+// C·点永远从「今天」起排：固定闰年做基准，只借它的月/日与周几——年份在楼内点条 / 面板都不渲染
+// （_buildScheduleBlockHtml 只显示 月/日/周几），故 2024 对用户不可见，纯为拿到确定的周几与闰日 2/29。
+const POINT_ANCHOR_YEAR = 2024;
+// 把点的 StartDate 强钉到给定 month/day，保留天数 / 天气 / 事件 / 锁定——让点整体平移到「今天」。
+function forceStartDate(raw, month, day) {
+    const { days, future } = parseCalendar(raw);
+    return serializeCalendar(days, future, new Date(POINT_ANCHOR_YEAR, month - 1, day));
 }
 
 // 合并锁定（对齐 mergePinnedLines(oldRaw, aiRaw)）：从旧 raw 读出被锁事件（连同原所在天），
