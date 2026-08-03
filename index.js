@@ -4802,7 +4802,7 @@ async function sendOutlineChat(userMsg) {
     isOutlineChatting = true;
     const chatIdSnap = getContext().chatId;
     outlineChatAbortController = new AbortController();
-    const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').text('…').appendTo('#sp-chat-msgs');
+    const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').html('<span class="sp-typing"><i></i><i></i><i></i></span>').appendTo('#sp-chat-msgs');
     const el = document.getElementById('sp-chat-msgs');
     if (el) el.scrollTop = el.scrollHeight;
     try {
@@ -5059,7 +5059,7 @@ async function sendSpaceChat(userMsg) {
     isSpaceChatting = true;
     const chatIdSnap = getContext().chatId;
     spaceChatAbortController = new AbortController();
-    const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').text('…').appendTo('#sp-space-msgs');
+    const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').html('<span class="sp-typing"><i></i><i></i><i></i></span>').appendTo('#sp-space-msgs');
     const el = document.getElementById('sp-space-msgs');
     if (el) el.scrollTop = el.scrollHeight;
     try {
@@ -6504,6 +6504,10 @@ ${scaleBlock}
 ${previousRaw ? previousRaw : '（无，这是第一次生成。请从当前剧情中提炼 2-4 条事件线；初次生成时冲突类等级不宜超过 2）'}
 
 **注意**：即使已有事件线不少，也请再通读一遍最近剧情，主动寻找是否有新苗头。理想状态下每次推演都能有 1-2 条新增或有实质进展的事件线，剧情才有活力。总数不超过 6 条；已终结或不再重要的老事件直接不输出即可。
+
+【串味杂质·主动剔除】
+- 若【当前已追踪的事件线】里某条线的核心人物 / 事件，在以上剧情、【故事记忆库】、世界书及角色卡设定中**完全找不到任何依据**（既不是本卡的角色 / 地点 / 势力，也从未在剧情或记忆里出现过），判定为串味杂质——**本轮直接不再输出该条**，不要沿用、也不要改写延续它。
+- 判断从严：只针对"整条线的主体明显不属于本故事世界"的情况。一条线只是近期没进展、暂时没被提及、或你一时想不起出处，都**不算**杂质，照常用 stall=true 保留。
 
 【输出格式（严格遵守，三行都必须输出）】
 <storylines_widget>

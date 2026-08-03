@@ -1968,7 +1968,23 @@ select.sp-input { appearance: none; cursor: pointer; }
    Give them their own alignment so they still sit in the correct column. */
 #sp-chat-msgs   > .sp-chat-msg.sp-chat-msg-ai { align-self: flex-start; max-width: 90%; }
 #sp-space-msgs  > .sp-chat-msg.sp-chat-msg-ai { align-self: flex-start; max-width: 90%; }
-.sp-chat-thinking   { opacity: 0.45; display: block; }
+.sp-chat-thinking   { display: block; }
+/* Typing indicator — three dots pulsing while the AI drafts (replaces static "…") */
+.sp-typing { display: inline-flex; align-items: center; gap: 4px; padding: 1px 0; }
+.sp-typing i {
+    width        : 6px;
+    height       : 6px;
+    border-radius: 50%;
+    background   : var(--sp-on-surface);
+    opacity      : 0.35;
+    animation    : sp-typing-bounce 1.2s ease-in-out infinite;
+}
+.sp-typing i:nth-child(2) { animation-delay: 0.18s; }
+.sp-typing i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes sp-typing-bounce {
+    0%, 60%, 100% { transform: translateY(0);    opacity: 0.35; }
+    30%           { transform: translateY(-4px); opacity: 0.9;  }
+}
 .sp-apply-row       { align-self: center; background: transparent !important; padding: 2px 0 !important; display: block; }
 
 /* External actions (edit / delete) — sit below bubble, right-aligned relative
@@ -3873,7 +3889,7 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     min-width  : 0;
 }
 .sp-alm-date-icon { color: var(--alm-c, var(--sp-primary)); font-size: 0.8rem; width: 14px; text-align: center; flex-shrink: 0; }
-.sp-alm-date-txt  { font-size: 0.78rem; color: var(--sp-on-surface); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.sp-alm-date-txt  { font-size: 0.78rem; color: var(--sp-on-surface); font-weight: 600; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* 第二行：节日名 + 类型/自填/进行中标签（可换行，长名字在此独占、溢出省略号，不再顶按钮） */
 .sp-alm-meta {
     display     : flex;
