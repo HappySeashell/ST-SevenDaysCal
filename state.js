@@ -62,7 +62,7 @@ const ADVISOR_TONE_GUIDE = [
     `这是默认基调；当用户明确要求某种风格、或剧情设定确有需要时，以用户与设定为准。`,
 ].join('\n');
 
-export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', recentCtx = '', almanacText = '' }) {
+export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', recentCtx = '', almanacText = '', calDescText = '' }) {
     const outlineSection = outlineRaw
         ? `\n当前大纲：\n${outlineRaw}\n`
         : '\n当前还没有既定大纲，可先从灵感、剧情走向、角色关系、人物设定或世界观想法开始讨论。\n';
@@ -78,6 +78,7 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
         authorNote  ? `【作者注释（当前聊天）】\n${authorNote}` : '',
         wiContext,
         almanacText ? `【本世界观·重要日期（历）】一年之中的既定节日、生日、纪念日（按月日排序）：\n${almanacText}\n讨论剧情走向或排布大纲时间线时，若临近或涉及这些日子，应自然纳入考量，使故事与该世界的历法自洽。` : '',
+        calDescText ? `【本世界观·现行历法（纪年）】${calDescText}\n排布大纲时间线、给节点推演时间时，以此历法为准（月份数、每月天数、纪年名），不要默认套用公历。` : '',
         recentCtx,
         `请以创作顾问身份回答，不要扮演任何角色。默认优先围绕剧情发展、设定补完、角色关系与灵感发散来回应。只有当用户明确要求你"写大纲"或明确要求输出大纲时，才输出完整大纲，并使用 <outline_widget>...</outline_widget> 包裹；其他时间不要输出 <outline_widget> 标签。`,
         `【一旦决定输出大纲，必须一次性写完整份 <outline_widget>】所有节点（6-8 个）的 Beat/Scene/Subtext/Think 四行都要**逐行写满真实内容**，严禁只写字段名后停在冒号处、严禁"（略）/后续同理/……"之类省略或占位，严禁中途截断。哪怕篇幅长也要完整给出，否则大纲窗口无法解析、这次输出作废。`,
@@ -102,7 +103,7 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
     ].filter(Boolean).join('\n');
 }
 
-export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', memText = '', recentCtx = '', pointList = '', lineList = '', almanacText = '' }) {
+export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', memText = '', recentCtx = '', pointList = '', lineList = '', almanacText = '', calDescText = '' }) {
     const parts = [
         `你是 ${userName} 与 ${charName} 故事外的创作顾问。不推进剧情、不扮演角色，直接答问。`,
         personaDesc ? `\n【${userName} 的人物设定】\n${personaDesc}` : '',
@@ -114,6 +115,7 @@ export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '
         pointList ? `\n【当前的点·按序号（可改）】\n${pointList}` : '',
         lineList  ? `\n【当前的线·按序号（可改）】\n${lineList}` : '',
         almanacText ? `\n【本世界观·重要日期（历）】一年之中的既定节日、生日、纪念日（按月日排序）：\n${almanacText}\n涉及日期、节日、生日、纪念日的问题以此为准。用户要记录的日期若已在其中，直接指出即可，不要重复出历卡片。` : '',
+        calDescText ? `\n【本世界观·现行历法（纪年）】${calDescText}\n用户要「改历法/调月份/改纪年名」时，以此为基准做**增量修改**：没提到要改的月份/纪年名逐一保留原值，输出完整的新 <era_widget>（含所有未改动的月份行）。` : '',
         `\n回答风格：`,
         `- 尽可能用更少的文字阐述更多的内容，确保信息密度`,
         `- 长度由问题决定：一句能说清的绝不写两句；确实需要展开的（如剧情推演、设定考据），才分点铺陈`,
@@ -122,10 +124,11 @@ export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '
         ADVISOR_TONE_GUIDE,
 
         `\n【落地卡片：仅当用户明确要求把内容"落地"到某个系统时才触发，否则绝不输出卡片】`,
-        `有三个系统，凭用户用词严格区分该出哪种卡片：`,
+        `有四个系统，凭用户用词严格区分该出哪种卡片：`,
         `- 说"日程 / 日历 / 待办 / 点"（安排到某天某时的具体事项）→ 出【点】卡片，用 <schedule_widget>`,
         `- 说"伏笔 / 线索 / 线 / 事件线"（埋一条待推进的剧情线索）→ 出【线】卡片，用 <line_widget>`,
-        `- 说"历 / 日期 / 节日 / 纪念日 / 生日"（记到年历上、每年固定到期的日子）→ 出【历】卡片，用 <almanac_widget>`,
+        `- 说"历 / 日期 / 节日 / 纪念日 / 生日"（记到年历上、每年固定到期的**某一个日子**）→ 出【历】卡片，用 <almanac_widget>`,
+        `- 说"历法 / 纪年 / 年号 / 月份 / 一年几个月 / 每月几天 / 调整整套历法"（改的是这个世界**用哪套历**，不是某一天）→ 出【历法】卡片，用 <era_widget>`,
         `只输出对应的那**一张**卡片，不寒暄、不解释、不要多种都出。用户没提这些词时绝对不要输出卡片。`,
         `\n① 点卡片（日程/日历/待办/点），用 <schedule_widget> 包裹，格式严格如下（一行）：`,
         `<schedule_widget>Event: type|title|description|time|location|线头动态</schedule_widget>`,
@@ -149,10 +152,19 @@ export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '
         `Item: name|type|month|day|days|displayDate|note`,
         `</almanac_widget>`,
         `- type 只能是 festival（节日）/ birthday（生日）/ anniversary（纪念日）/ custom（自定义）`,
-        `- month/day：数字，month 1-12、day 1-31；年在扮演里无意义，不要写年`,
+        `- month/day：数字；${calDescText ? '按上面【现行历法（纪年）】给出的月份数与每月天数来（别套用公历的 12 月 / 31 日）' : 'month 1-12、day 1-31'}；年在扮演里无意义，不要写年`,
         `- days：持续天数，单日填 1（绝大多数）；连放多天的长假填实际天数、month/day 填第一天`,
         `- displayDate：给人看的写法（如"腊月廿三""七夕"），无特殊写法就留空`,
         `- note：一句话说明，可为空。用户一次说多个日期就列多行 Item`,
+        `\n④ 历法卡片（历法/纪年/月份结构），用 <era_widget> 包裹，一行可选纪年名 + 每月一行：`,
+        `<era_widget>`,
+        `Era: 纪年名`,
+        `Month: 月名|天数`,
+        `</era_widget>`,
+        `- Era：这个世界的纪年/年号名（如"天启""帝国历""精灵历"），没有就把整行省略`,
+        `- Month：按先后顺序一行一个月，月名 + 该月天数（数字）；一年有几个月就写几行`,
+        `- 周固定 7 天不可改；此卡只定义月的数量/名字/长度与纪年名，不涉及具体某一天`,
+        `- 这是「整套历法」不是记某一天：记具体节日/生日/纪念日用③历卡片，别混用`,
         `\n若用户觉得刚才生成的卡片不够好并给出修改建议（如"时间挪到晚上"），根据修改再输出一版新卡片，`,
         `不要修改历史卡片、也不要解释，直接给新版本让用户挑选应用哪个。`,
 

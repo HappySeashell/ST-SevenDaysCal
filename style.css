@@ -1101,6 +1101,13 @@ select.sp-input { appearance: none; cursor: pointer; }
     line-height: 1.6;
 }
 .sp-mode-opt input[type="radio"] { cursor: pointer; flex-shrink: 0; }
+/* 楼内渲染框的三个子开关（点·线·历）：缩进到主开关下面、横排一行。 */
+.sp-inline-subtoggles {
+    display    : flex;
+    gap        : 18px;
+    margin     : 5px 0 0 26px;
+}
+.sp-mode-opt-sub { gap: 4px; opacity: 0.9; }
 .sp-input {
     width        : 100%;
     padding      : 7px 11px;
@@ -2682,6 +2689,27 @@ select.sp-input { appearance: none; cursor: pointer; }
     color       : #5aa6d6;
     border-color: #5aa6d6;
 }
+.sp-space-widget-badge-era {
+    background  : rgba(176, 137, 104, 0.15);
+    color       : #b08968;
+    border-color: #b08968;
+}
+/* 历法卡：每月「名·天数」的小胶囊，wrap 排列、绝不撑破卡片 */
+.sp-space-widget-eramonths {
+    display   : flex;
+    flex-wrap : wrap;
+    gap       : 4px 6px;
+    margin-top: 2px;
+    min-width : 0;
+}
+.sp-space-widget-eramonth {
+    font-size    : 0.7rem;
+    color        : var(--sp-subtle);
+    background    : rgba(127, 127, 127, 0.08);
+    border-radius : 5px;
+    padding       : 1px 6px;
+    white-space   : nowrap;
+}
 .sp-space-widget-almrow {
     display    : flex;
     align-items: baseline;
@@ -4195,7 +4223,7 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-alm-strip-live .sp-alm-scell:hover { background: color-mix(in oklab, var(--alm-primary) 12%, rgba(128,128,128,0.06)); }
 .sp-alm-strip {
     display              : grid;
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     gap                  : 3px;
     min-width            : 0;
 }
@@ -4271,6 +4299,116 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     background    : rgba(128,128,128,0.07);
     border        : 1px solid rgba(128,128,128,0.15);
 }
+
+/* ─── 楼内仪表盘（今头 + 历/点/线三区·融进一个面板）──────────────────────────
+   外壳 .sp-inline-box.sp-dash 是个 <details>：收起=一小条摘要(今 M/D 周X · 历N 点N 线N)，
+   展开=完整面板。面板内历/点/线各自又是 <details>(.sp-dash-region)，可各自折叠。
+   外壳提供唯一的外边距+圆角+边框+背景；进框的区剥掉各自卡片外观、贴合成一节。
+   历史楼只读框 .sp-inline-box-ro 整体降透明、左竖条示意「历史·只读」。 */
+.sp-inline-box {
+    margin-top    : 12px;
+    border-radius : 8px;
+    overflow      : hidden;
+    font-family   : var(--sp-font);
+    font-size     : 0.78rem;
+    color         : inherit;
+    background    : rgba(128,128,128,0.07);
+    border        : 1px solid rgba(128,128,128,0.15);
+}
+/* 折叠摘要条（一小条）：今头缩写 + 计数 chips + 右侧折叠箭头。 */
+.sp-dash-summary {
+    display     : flex;
+    align-items : center;
+    gap         : 8px;
+    padding     : 7px 10px;
+    cursor      : pointer;
+    list-style  : none;
+    user-select : none;
+}
+.sp-dash-summary::-webkit-details-marker { display: none; }
+.sp-dash-summary-flat { cursor: default; }   /* 纯日期扁条：不可折叠，无箭头 */
+.sp-dash-sum-today { font-weight: 700; letter-spacing: 0.02em; opacity: 0.85; }
+.sp-dash-sum-wx    { margin-left: 4px; opacity: 0.9; }   /* 折叠条里的天气图标，紧跟日期 */
+.sp-dash-sum-chips { display: inline-flex; gap: 6px; opacity: 0.6; }
+.sp-dash-sum-chip  { font-size: 0.7rem; }
+.sp-dash-sum-caret { margin-left: auto; font-size: 0.62rem; opacity: 0.45; transition: transform 0.18s; }
+.sp-dash[open] > .sp-dash-summary .sp-dash-sum-caret { transform: rotate(180deg); }
+.sp-dash[open] > .sp-dash-summary { border-bottom: 1px solid rgba(128,128,128,0.13); }
+/* 面板体：区间竖排，相邻区之间一条细分隔线（今头顶行 / 点区 / 线区）。 */
+.sp-dash-body > * + * { border-top: 1px solid rgba(128,128,128,0.13); }
+/* 顶行与紧随的满宽六格条属同一「历」单元，中间不画分隔线。 */
+.sp-dash-top + .sp-alm-strip-region { border-top: none; padding-top: 0; }
+/* 进框的区：去掉独立卡片外观（外壳已提供），退化成一节。 */
+.sp-dash .sp-dash-region {
+    margin-top    : 0;
+    border        : none;
+    border-radius : 0;
+    background    : transparent;
+    overflow      : visible;
+}
+/* 历 summary 提为通栏头栏（原缩在右列、今头上方左侧留空白，现铺满顶行上方填掉那块空白）。
+   点它折叠整个历单元（今头+清单+六格条一起收起）。样式沿用 .sp-inline-summary 基类
+   （7px 10px），与点/线小表头完全对齐——故此处不再单独覆写 padding/opacity。 */
+/* 顶行：方形今头（左）+ 即将到来清单（右·占满剩余）。六格条在本行下方满宽（同属历单元）。 */
+.sp-dash-top {
+    display     : flex;
+    gap         : 8px;
+    align-items : center;
+    padding     : 6px 8px;
+}
+.sp-dash-top .sp-alm-inline-body { flex: 1 1 0; min-width: 0; }
+/* 今头（masthead）：正方形大日期块，整个面板的门面。历 summary 已提为上方通栏头栏，本行右列
+   只剩即将到来清单 ≈ 今头方形高。用「定宽 + aspect-ratio:1 推高」保证恒为正方形（比 stretch
+   推宽稳，后者可能退回按内容宽算成长方形）；align-self:center 让右列偶尔更高时今头上下居中、
+   不在下方留单边空白（呼应之前「大头下方空白」的诉求）。 */
+.sp-dash-today {
+    flex          : 0 0 auto;
+    width         : 4.6rem;
+    aspect-ratio  : 1;
+    align-self    : center;
+    box-sizing    : border-box;
+    display       : flex;
+    flex-direction: column;
+    align-items   : center;
+    justify-content: center;
+    padding       : 6px 8px;
+    border-radius : 6px;
+    background    : color-mix(in oklab, var(--SmartThemeQuoteColor, #6bb6d6) 12%, rgba(128,128,128,0.06));
+    border        : 1px solid color-mix(in oklab, var(--SmartThemeQuoteColor, #6bb6d6) 22%, rgba(128,128,128,0.12));
+}
+.sp-dash-today-md   { font-size: 1.15rem; font-weight: 800; line-height: 1.1; letter-spacing: 0.01em; }
+.sp-dash-today-wd   { font-size: 0.68rem; opacity: 0.7; margin-top: 1px; }
+.sp-dash-today-meta { font-size: 0.72rem; margin-top: 2px; opacity: 0.85; display: flex; align-items: center; justify-content: center; gap: 3px; max-width: 100%; }
+.sp-dash-today-wx   { flex: 0 0 auto; }
+/* 纪年名（era）：世界自定义历法时点亮在今头方块内，位窄故极小字号 + 溢出省略。 */
+.sp-dash-today-era  { flex: 0 1 auto; min-width: 0; font-size: 0.62rem; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 满宽六格条：顶行下方通栏，从明天起 6 天（今天已在今头，不重复）。现挂在 .sp-almanac-inline
+   内，历折叠时随原生 <details> 一并隐藏，无需再用 :has() 联动。 */
+.sp-alm-strip-region { padding: 0 8px 8px; }
+/* 历·即将到来清单（今头右侧的 ≡ 倒计时行）。 */
+.sp-alm-up { display: flex; flex-direction: column; gap: 3px; padding: 2px 4px 6px; }
+.sp-alm-up-row {
+    display     : flex;
+    align-items : center;
+    gap         : 6px;
+    font-size   : 0.74rem;
+}
+.sp-alm-up-dot  { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; background: currentColor; opacity: 0.8; }
+.sp-alm-up-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sp-alm-up-when { margin-left: auto; font-size: 0.68rem; opacity: 0.55; flex: 0 0 auto; }
+.sp-alm-up-when.sp-alm-up-soon { opacity: 0.9; font-weight: 600; color: var(--SmartThemeQuoteColor, #6bb6d6); }
+/* 只读历史框：整体压暗一档 + 左竖条示意「历史·只读」。 */
+.sp-inline-box-ro {
+    position    : relative;
+    opacity     : 0.82;
+    border-left : 2px solid color-mix(in oklab, var(--SmartThemeQuoteColor, #6bb6d6) 45%, rgba(128,128,128,0.2));
+}
+/* 只读框里区标题的动作按钮位（推进/注入/删除等）已在 HTML 层剥除；这里兜底把
+   任何漏网的可变入口藏掉，避免历史楼误触改动活数据。 */
+.sp-inline-box-ro .sp-inline-summary-actions,
+.sp-inline-box-ro .sp-beat-actions,
+.sp-inline-box-ro .sp-inline-advance-lines,
+.sp-inline-box-ro .sp-line-del-one { display: none !important; }
 .sp-sch-inline-body { padding: 4px 8px 8px; }
 .sp-sch-strip-live .sp-sch-scell { cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
 .sp-sch-strip-live .sp-sch-scell:hover { background: color-mix(in oklab, var(--sch-primary) 12%, rgba(128,128,128,0.06)); }
