@@ -42,6 +42,7 @@ const DEFAULT_SETTINGS = {
     utilityPresetId  : '',
     fabShow : true,
     themeMode: 'auto',   // 'auto' | 'day' | 'night' — 'auto' follows ST theme; day/night force
+    notifyMode: 'lite',  // 通知提醒档：'off'=全静音 / 'lite'(默认)=仅你手动生成·刷新时提示 / 'full'=另在后台自动改动点线面历时提示（真改动才弹）
     linesEnabled : true, // master switch: false disables both auto-advance AND inline block rendering
     linesInterval: 2,
     linesMode: 'turns',  // 'turns' | 'days'
@@ -104,10 +105,10 @@ const DEFAULT_JAILBREAK = `<sanctuary_override_directive>
 // 想改文字直接改这里即可（纯展示，不入库、不注入 AI）。
 const MODULE_INTROS = {
     schedule: '「点」是当前视角（我 / TA）的近期待办与状态卡片。它读取聊天剧情，自动推断某人此刻在做什么、接下来有什么安排、心情与所在地，用一张张卡片罗列出来。可手动生成或刷新；也能锁定某条事件，让它在下次重算时被保留不动。适合快速掌握「现在谁在哪、要干嘛」。',
-    almanac : '「历」是这个世界的节日 / 纪念日日历。把你设定里的节日按月、日录进去（支持跨多天的假期），它会自动算出周几、标出即将到来的日子；还能在最新一楼底部挂一块「历·日程」的只读折叠条。让长期设定里的时间节点一目了然，也方便剧情呼应节庆。',
+    almanac : '「历」是这个世界的历法与节日日历。既能定义整套历法——一年几个月、每月几天、纪年名（不必套用公历），也能把节日 / 生日 / 纪念日按月日录进去（支持跨多天的假期），它会依你的历法自动算周几、标出即将到来的日子。这些时间设定还会反哺点 / 线 / 大纲的生成，让故事与世界的历法自洽。',
     lines   : '「线」追踪剧情里的伏笔与暗线——那些已经埋下、还没收束的悬念。它随对话按你设的节奏往前推进；可以锁定某条重点线不让它被冲掉，也可以选择把活跃的线隐形注入正式对话，悄悄提醒 AI 别忘了这些伏笔。是长线叙事的「备忘」。',
     outline : '「面」是整段故事的大纲 / 节拍表。它把剧情拆成若干节点，标出「现在演到哪、下一步去哪」。你可以手动狙击当前节点（再点一下取消），也可以开启自动判定让游标随剧情前进；开启注入后会隐形引导 AI 顺着大纲走，不至于跑偏。',
-    space   : '「间」是一个「局外」对话空间——跳出角色扮演，直接和 AI 聊剧情、设定、人物关系、世界观知识。这里说的话不进入正式对话、不影响角色，用来梳理思路、确认设定、对齐后续走向。相当于你和「导演」的私下讨论。',
+    space   : '「间」是一个「局外」对话空间——跳出角色扮演，直接和 AI 聊剧情、设定、人物关系、世界观知识。这里说的话不进入正式对话、不影响角色。聊出结果后，还能一句话让它落地成点、线、历或历法卡片，直接写进对应模块——相当于你和「导演」私下对完戏，顺手就把决定归了档。',
     theater : '「棱」是小剧场：基于当前故事背景，让 AI 写一段独立的短篇 / 番外。可以设定文风与范文，先生成初稿再美化。产出不会塞进正式对话，纯当创作素材、番外彩蛋或灵感来源。想看「如果……会怎样」时很好用。',
     anchor  : '「坐标」是楼层收藏夹。把喜欢的楼层一键「收藏」下来（连同当时的样式快照），按角色 / 聊天归档，日后可随时回看名场面。可以在每楼角色名旁点星收藏，也能打标签分类管理。是给高光时刻做的书签。',
 };
@@ -467,6 +468,8 @@ jQuery(async () => {
         }
         // 新楼层按 shouldAdvance 推进并贴块；刷新/历史/swipe 回退重渲染 shouldAdvance=false，仅把内联块补回最新楼。
         appendLinesInlineBlock(mid, shouldAdvance);
+        // 全量通知：线随剧情真推进了才弹（不推进不响，对应「变了才提示」）
+        if (shouldAdvance && getSettings().notifyMode === 'full') showToast('线已随剧情自动推进 · 请注意查看');
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.char);
     // 线·swipe：滑到新 swipe 时线跟着重算（临时存 localStorage，发下条消息即固定）。
@@ -1134,12 +1137,13 @@ function _buildScheduleBlockHtml(rawArg = null, readOnly = false) {
             <span class="sp-sch-scell-rel">${escapeHtml(relLabel)}</span>
             <span class="sp-sch-scell-line">${mdLabel ? `<span class="sp-sch-scell-md">${escapeHtml(mdLabel)}</span>` : ''}${wx ? `<span class="sp-sch-scell-wx">${wx}</span>` : ''}<span class="sp-sch-scell-n">${n}</span></span>
         </div>`;
+    const ctx = scheduleDayCtx();
     const cells = days.map((day, i) => {
         const n = day.events.length; total += n;
         let mdLabel = `第${i + 1}天`;
         if (startDate) {
-            const d = new Date(startDate); d.setDate(d.getDate() + i);
-            mdLabel = `${d.getMonth() + 1}/${d.getDate()}`;
+            const { month, day: dd } = scheduleDayLabel(i, startDate, ctx);
+            mdLabel = `${month}/${dd}`;
         }
         const cls = (i === 0 ? ' sp-sch-scell-today' : '') + (n ? ' sp-sch-scell-has' : '');
         return cellHtml(REL[i] || `第${i + 1}天`, mdLabel, weatherGlyph(day.weather), n, cls, i);
@@ -1170,8 +1174,9 @@ function _scheduleStripDayHtml(dayKey, rawArg = null, readOnly = false) {
         wx = String(day?.weather || '').trim();
         tp = String(day?.temp || '').trim();
         if (startDate) {
-            const d = new Date(startDate); d.setDate(d.getDate() + di);
-            headLabel = `${d.getMonth() + 1}月${d.getDate()}日 · ${ALM_WEEKDAYS[d.getDay()]}`;
+            const ctx = scheduleDayCtx();
+            const { month, day: dd, wd } = scheduleDayLabel(di, startDate, ctx);
+            headLabel = `${month}月${dd}日 · ${ALM_WEEKDAYS[wd]}`;
         } else {
             headLabel = `第${di + 1}天`;
         }
@@ -1740,6 +1745,8 @@ async function runJudgeOutlineStep() {
         const advanced = /推进/.test(ans) && !/(未|没|不|无)\s*推进/.test(ans);
         if (advanced) {
             setOutlineCursor(cursor + 1);
+            // 全量通知：面游标真前进一节才弹
+            if (getSettings().notifyMode === 'full') showToast('面已自动推进到下一节点 · 请注意查看');
             refreshOutlineInjection();
             if (outlineMode) {   // 面板开着看大纲 → 重渲染让高亮跟着走
                 const s2 = readStore(getOutlineCacheKey());
@@ -1801,13 +1808,15 @@ async function runJudgeDateStep(mode) {
         const prev = getDateAnchor(charKey);
         if (prev && prev.month === md.month && prev.day === md.day) return; // 日期没变 → 免重渲染
         setDateAnchor(charKey, md.month, md.day);
+        // 全量通知：judge 真把「今天」改了才弹（上面 prev 相等已 return，到这里必是真变）
+        if (getSettings().notifyMode === 'full') showToast(`剧情日期已自动更新为 ${calMonthName(loadCalDesc(), md.month)}${md.day}日 · 请注意查看`);
         runAnchorAftermath();   // 共享善后：刷历条/点条/历面板
         // 方案 A·点自动跟历：开了「点：自动确认当前日期」(scheduleAutoDetect) 时，历自动推进「今天」后，
         // 后台把点也同步重排到今天（保 pin 住的点，见 syncPointToToday）。仅走**自动判定**这条路——
         // 手动 ±1天 / 改今天经 runAnchorAftermath 只刷不烧点（那是纠日期的常规操作，不该顺手重生成点）。
         // 生成中先跳过（避免抢 isGenerating + 弹「稍候」toast），此时今天条会回落到方案 B 的「同步到点」键兜底。
         // syncPointToToday 自带 scheduleAutoDetect/重入/chatId/abort 守卫，fire-and-forget 安全。
-        if (getSettings().scheduleAutoDetect === true && !isGenerating) syncPointToToday();
+        if (getSettings().scheduleAutoDetect === true && !isGenerating) syncPointToToday(true);
     } catch {
         if (getAbort() !== myCtrl) return;
         done();
@@ -1845,7 +1854,7 @@ function schedulePointNeedsSync() {
 // 让「点」从今天起排 7 天、与「历」同一天。反馈全在历（按钮态「同步中…」+ toast），结果落在点。
 // 绝不占用 isGenerating（前台 UI 锁，sidebar 切换靠它挡）——后台占了会把整个面板卡死；防 race 靠自带 abort + 落地前重查。
 let _autoRegenSchedAbort = null;
-async function syncPointToToday() {
+async function syncPointToToday(auto = false) {
     if (_almSyncingPoint) return;                            // 已在同步 → 别重入
     if (isGenerating) { showToast('点正在生成，稍候再同步', null, true); return; }
     if (getSettings().scheduleAutoDetect !== true) return;   // 自动检测关 → 本不该出现此按钮，保守 no-op
@@ -1886,7 +1895,7 @@ async function syncPointToToday() {
             const onPointPanel = !almanacMode && !outlineMode && !linesMode && !spaceMode && !theaterMode && !anchorMode;
             if (onPointPanel && $(`#${MODAL_ID}`).is(':visible')) setBody(cachedSchedule);
         }
-        showToast(`点已同步到 ${calMonthName(loadCalDesc(), today.month)}${today.day}日`);
+        if (auto ? getSettings().notifyMode === 'full' : getSettings().notifyMode !== 'off') showToast(`点已同步到 ${calMonthName(loadCalDesc(), today.month)}${today.day}日`);
     } catch { /* 静默：同步失败不打断主聊天 */ }
     finally {
         if (_autoRegenSchedAbort === myCtrl) _autoRegenSchedAbort = null;
@@ -2575,7 +2584,7 @@ function injectModal() {
 
                             <!-- 显示管理：两个总开关（收藏此楼入口 / 楼内渲染框），渲染框下三个子开关（点·线·历）。都不注入 AI、不请求 API，纯只读展示。 -->
                             <details class="sp-settings-section" id="sp-display-section">
-                                <summary class="sp-settings-section-title">显示管理</summary>
+                                <summary class="sp-settings-section-title">显示与通知管理</summary>
                                 <div class="sp-settings-section-body">
                                     <label class="sp-mode-opt">
                                         <input type="checkbox" id="sp-anchor-inline-btn" ${getSettings().anchorInlineBtn !== false ? 'checked' : ''}>
@@ -2606,6 +2615,23 @@ function injectModal() {
                                         <input id="sp-inline-render-depth" class="sp-input sp-interval-input" type="number" min="0" value="${escapeAttr(String(Number(getSettings().inlineRenderDepth) || 0))}">
                                         <span>层（0=跟随酒馆助手）</span>
                                     </label>
+
+                                    <hr class="sp-mem-divider">
+                                    <p class="sp-cfg-hint">通知提醒</p>
+                                    <div class="sp-mode-row">
+                                        <label class="sp-mode-opt">
+                                            <input type="radio" name="sp-notify-mode" value="off" ${(getSettings().notifyMode || 'lite') === 'off' ? 'checked' : ''}>
+                                            <span>关（全部静音）</span>
+                                        </label>
+                                        <label class="sp-mode-opt">
+                                            <input type="radio" name="sp-notify-mode" value="lite" ${(getSettings().notifyMode || 'lite') === 'lite' ? 'checked' : ''}>
+                                            <span>简约（仅手动生成 / 刷新时提示）</span>
+                                        </label>
+                                        <label class="sp-mode-opt">
+                                            <input type="radio" name="sp-notify-mode" value="full" ${(getSettings().notifyMode || 'lite') === 'full' ? 'checked' : ''}>
+                                            <span>全量（另在后台自动改动点 / 线 / 面 / 历时提示）</span>
+                                        </label>
+                                    </div>
                                 </div>
                             </details>
 
@@ -3665,6 +3691,11 @@ function injectModal() {
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
+    // 通知提醒·三档：off 全静音 / lite 仅手动生成·刷新 / full 另在后台自动改动时提示
+    $(`#${MODAL_ID} input[name="sp-notify-mode"]`).on('change', function () {
+        getSettings().notifyMode = $(`#${MODAL_ID} input[name="sp-notify-mode"]:checked`).val();
+        saveSettingsDebounced();
+    });
     // 锚：楼层收藏入口开关——on → 补按钮；off → 清掉所有已注入按钮
     $('#sp-anchor-inline-btn').on('change', function () {
         getSettings().anchorInlineBtn = this.checked;
@@ -4197,7 +4228,7 @@ async function runGenerate() {
             (viewSnap !== 'char' || charViewName === charSnap);
         if (stillOnView) {
             cachedSchedule = html;
-            if ($(`#${MODAL_ID}`).is(':visible')) setBody(html);
+            if ($(`#${MODAL_ID}`).is(':visible')) { setBody(html); if (getSettings().notifyMode !== 'off') showToast('点已生成'); }
             else showToast('点已生成，点击查看', () => { showPanel(); setBody(html); });
         } else {
             showToast('点已生成，点击查看', () => {
@@ -4834,6 +4865,35 @@ async function getCharBookEntries(ctx) {
         } catch { /* ignore individual load failure */ }
     }
 
+    // 4. 用户/persona 世界书：ST「人物设定」页给当前 persona 链接的世界书（power_user.persona_description_lorebook）。
+    //    与角色卡书同源读法（loadWorldInfo 取活状态），scope='persona' 供设置面板单列一栏、可逐条开关。
+    //    已作为角色卡书 / 全局书收录过的同名书跳过，避免重复。
+    const personaBook = String(ctx.powerUserSettings?.persona_description_lorebook || '').trim();
+    if (personaBook && !worldNames.includes(personaBook) && !globalNames.includes(personaBook)) {
+        try {
+            const data = await ctx.loadWorldInfo(personaBook);
+            if (data?.entries) {
+                for (const [uid, entry] of Object.entries(data.entries)) {
+                    if (entry?.disable) continue;
+                    const label = entry.comment
+                        || (Array.isArray(entry.key) ? entry.key.join(', ') : entry.key)
+                        || `条目 ${uid}`;
+                    const preview = String(entry.content || '').replace(/\s+/g, ' ').slice(0, 120);
+                    const key = `${personaBook}::${uid}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    items.push({
+                        key, uid, label, preview,
+                        content: entry.content || '',
+                        source : personaBook,
+                        embedded: false,
+                        scope  : 'persona',
+                    });
+                }
+            }
+        } catch { /* ignore persona book load failure */ }
+    }
+
     return items;
 }
 
@@ -5438,6 +5498,7 @@ function applyScheduleWidget(body, $btn, editIdx = null) {
     if (!outlineMode && !linesMode && !spaceMode && $(`#${MODAL_ID}`).is(':visible')) {
         setBody(rendered);
     }
+    syncLatestScheduleBlock();   // 楼内点条即时刷（对齐 applyLineWidget → syncLatestInlineBlock）
     $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> ${editIdx != null ? `已改第 ${editIdx} 条` : '已加到点·未来列'}`);
     showToast(editIdx != null ? `已替换点·第 ${editIdx} 条` : '已加到点：请去"未来"列查看');
 }
@@ -5513,6 +5574,7 @@ function applyAlmanacWidget(body, $btn, idx) {
     }
     saveAlmanacItems([...existing, it]);   // 纯追加，不丢任何现有项
     if (almanacMode) renderAlmanacPanel();
+    syncLatestAlmanacBlock();   // 楼内历条即时刷（对齐 applyEraWidget）
     $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 已加到历`);
     showToast(`已加到历：${it.name}`);
 }
@@ -6098,7 +6160,7 @@ async function runGenerateTheater(userInput) {
         isGeneratingTheater = false;
         theaterAbortController = null;
         theaterCurrentPiece = piece;
-        if (theaterMode) renderTheaterPanel();
+        if (theaterMode) { renderTheaterPanel(); if (getSettings().notifyMode !== 'off') showToast('棱已生成'); }
         else showToast('棱已生成，点击查看', () => {
             $('.sp-view-btn[data-view="theater"]').trigger('click');
             showPanel();
@@ -6226,7 +6288,7 @@ async function runGenerateOutline() {
         isGeneratingOutline = false;
         outlineAbortController = null;
         cachedOutline = html;
-        if (outlineMode) setOutlineBody(html);
+        if (outlineMode) { setOutlineBody(html); if (getSettings().notifyMode !== 'off') showToast('面已生成'); }
         else showToast('面已生成，点击查看', () => {
             if (!outlineMode) $('.sp-view-btn[data-view="outline"]').trigger('click');
             showPanel();
@@ -7269,7 +7331,7 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
         linesAbortController = null;
         cachedLines = html;
         // Panel body
-        if (linesMode) setLinesBody(html);
+        if (linesMode) { setLinesBody(html); if (!silent && getSettings().notifyMode !== 'off') showToast('线已生成'); }
         // Sync the inline block on the latest AI message — panel & inline share
         // the same cache; without this the message-level block shows stale data
         // until page reload.
@@ -7797,8 +7859,8 @@ function calRealWeekdayRef(timeStr, cal = loadCalDesc()) {
     if (isNaN(d)) return null;
     return { refDoy: almDayOfYear(+m[2], +m[3], cal), refWd: d.getDay() };
 }
-// 取「参照日→周几」锚：真实年份日期(算现实周几) > 显式周几文本 > 点 StartDate 真实年周几 > 默认(1月1日=周一)。返回 {refDoy, refWd}。
-// 显式周几的来源顺序对齐 almTodayAnchor（柏宝书 > 记忆库），令周几与今天的月/日尽量出自同一权威源、不错配。
+// 取「参照日→周几」锚，优先级：柏宝书/记忆(真实年→现实周几，抠不到退周几token) > 聊天正文真实年 > 点 StartDate > 默认(1月1日=周一)。返回 {refDoy, refWd}。
+// 点 StartDate 排在正文之后：开点自动检测时它的年份是 forceStartDate 钉的固定 POINT_ANCHOR_YEAR，getDay() 为假年周几，不能压过正文里剧情/用户写的真实年。
 function almWeekdayRef(cal = loadCalDesc()) {
     // ① 柏宝书快照 time：先按真实年**算**现实周几（年-正确，压过别处残留的年份），抠不到再退回周几 token
     try {
@@ -7828,7 +7890,18 @@ function almWeekdayRef(cal = loadCalDesc()) {
             if (wd != null) { const a = almTodayAnchor(); return { refDoy: almDayOfYear(a.month, a.day, cal), refWd: wd }; }
         }
     } catch { /* 往下走 */ }
-    // ③ 点 StartDate：卡给了真实年份 → 用其现实周几（与 renderSchedule 的周几显示一致）
+    // ③ 聊天正文里的真实年份日期 → 现实周几（仅阿拉伯 YYYY-M-D 带年）。
+    //    排在点之前：正文年份是剧情/用户写的真实年；点 StartDate 的年份在开了点自动检测时会被
+    //    forceStartDate 钉成固定 POINT_ANCHOR_YEAR，其 getDay() 是假年周几，若压过正文就会把历
+    //    也拖到那个假年（bug：2021/8/20 周五被算成 2024 的周二）。
+    try {
+        const hit = almDateFromChat();
+        if (hit?.date instanceof Date && !isNaN(hit.date)) {
+            return { refDoy: almDayOfYear(hit.month, hit.day, cal), refWd: hit.date.getDay() };
+        }
+    } catch { /* 往下走 */ }
+    // ④ 点 StartDate：最后的真实年份来源（正文也没给日期时）。开了点自动检测时这里是
+    //    POINT_ANCHOR_YEAR 的周几——纯虚构、无其他日期锚的设定下无所谓对错，且点/历同源一致。
     try {
         const saved = readStore(getCacheKey());
         if (saved?.raw) {
@@ -7836,13 +7909,6 @@ function almWeekdayRef(cal = loadCalDesc()) {
             if (startDate instanceof Date && !isNaN(startDate)) {
                 return { refDoy: almDayOfYear(startDate.getMonth() + 1, startDate.getDate(), cal), refWd: startDate.getDay() };
             }
-        }
-    } catch { /* 往下走 */ }
-    // ④ 聊天正文里的真实年份日期 → 现实周几（与点 StartDate 同源逻辑；仅阿拉伯 YYYY-M-D 带年）
-    try {
-        const hit = almDateFromChat();
-        if (hit?.date instanceof Date && !isNaN(hit.date)) {
-            return { refDoy: almDayOfYear(hit.month, hit.day, cal), refWd: hit.date.getDay() };
         }
     } catch { /* 往下走 */ }
     // ⑤ 默认：无年份 → 1 月 1 日定为周一（任意但稳定）
@@ -7864,6 +7930,28 @@ function almMonthDayFromDoy(doy, cal = loadCalDesc()) {
         d -= dim;
     }
     return { month: mc, day: calMonthDays(cal, mc) };
+}
+// 点条七天的日期/周几，历法感知。整轮渲染算一次 ctx：公历只带 cal；自定义历法预算 ref(较重)+锚点日序，避免逐日重算。
+function scheduleDayCtx() {
+    const cal = loadCalDesc();
+    const ref = almWeekdayRef(cal);   // 点周几改走年-free 锚（与历同源）；default 分支也要 ref
+    if (cal === DEFAULT_CAL) return { cal, ref };
+    const anchor = almTodayAnchor();
+    return { cal, ref, anchorDoy: almDayOfYear(anchor.month, anchor.day, cal) };
+}
+// 点条第 i 天 → {month, day, wd(0..6,周日索引)}。公历分支与旧 `new Date(startDate)+i` 逐字节等价；
+// 自定义历法从共享今天锚点 seed、逐日在本历法内步进，令点条与历/今头同源同锚。
+function scheduleDayLabel(i, startDate, ctx) {
+    if (ctx.cal === DEFAULT_CAL) {
+        // 月/日仍按公历步进（跨月/闰日正确）；但周几改用年-free 锚 almWeekdayFor，不用 startDate.getDay()——
+        // startDate 的年份是 forceStartDate 钉的 POINT_ANCHOR_YEAR（固定闰年、纯为拿月日），其 getDay() 是假年
+        // 周几，会和用户设定的现实周几错位（bug：2021/8/20 周五显示成 2024 的周二）。历也走同一锚，两者一致。
+        const d = new Date(startDate); d.setDate(d.getDate() + i);
+        const month = d.getMonth() + 1, day = d.getDate();
+        return { month, day, wd: almWeekdayFor(month, day, ctx.ref, ctx.cal) };
+    }
+    const { month, day } = almMonthDayFromDoy(ctx.anchorDoy + i, ctx.cal);
+    return { month, day, wd: almWeekdayFor(month, day, ctx.ref, ctx.cal) };
 }
 // 多日节假日的结束日 = 起始 + (days-1) 环形折回。days<=1 即单日，返回起点本身。
 function almEndMonthDay(it, cal = loadCalDesc()) {
@@ -8298,7 +8386,7 @@ async function runGenerateAlmanac() {
         isGeneratingAlmanac = false;
         almanacAbortController = null;
         syncLatestAlmanacBlock();   // 历生成 → 楼内七天条即时刷
-        if (almanacMode) renderAlmanacPanel();
+        if (almanacMode) { renderAlmanacPanel(); if (getSettings().notifyMode !== 'off') showToast('历已生成'); }
         else showToast('历已生成，点击查看', () => { $('.sp-view-btn[data-view="almanac"]').trigger('click'); showPanel(); });
     } catch (err) {
         if (almanacAbortController !== myCtrl) return;
@@ -8962,15 +9050,15 @@ async function renderWiList() {
     const charKey = charStableKey(ctx);
     const disabledKeys = getDisabledKeys(charKey);
 
-    // Two-level group: scope (char / global) → source (book name) → entries.
-    // Preserves entry order within each source; char first, then global.
-    const scopes = new Map([['char', new Map()], ['global', new Map()]]);
+    // Two-level group: scope (char / persona / global) → source (book name) → entries.
+    // Preserves entry order within each source; char first, then persona, then global.
+    const scopes = new Map([['char', new Map()], ['persona', new Map()], ['global', new Map()]]);
     for (const e of entries) {
         const scopeGroup = scopes.get(e.scope) || scopes.get('char');
         if (!scopeGroup.has(e.source)) scopeGroup.set(e.source, []);
         scopeGroup.get(e.source).push(e);
     }
-    const SCOPE_LABELS = { char: '角色卡世界书', global: '全局世界书' };
+    const SCOPE_LABELS = { char: '角色卡世界书', persona: '用户世界书', global: '全局世界书' };
 
     // Build HTML in one pass.
     const parts = [];
@@ -9701,7 +9789,6 @@ function renderSchedule(raw, userName, perspective = 'user') {
     const { days, future, startDate } = parseCalendar(raw);
     const hasFuture = future && future.events.length > 0;
 
-    const WEEKDAYS = ['周日','周一','周二','周三','周四','周五','周六'];
     const totalTabs = days.length + (hasFuture ? 1 : 0);
     const chipCls   = perspective === 'char' ? 'sp-char-chip' : 'sp-user-chip';
 
@@ -9720,14 +9807,14 @@ function renderSchedule(raw, userName, perspective = 'user') {
         return header + `<div class="sp-raw">${escapeHtml(raw).replace(/\n/g, '<br>')}</div>`;
     }
 
+    const ctx = scheduleDayCtx();
     const tabs = days.map((_, i) => {
         let numLabel = String(i + 1);
         let wdLabel = '';
         if (startDate) {
-            const d = new Date(startDate);
-            d.setDate(d.getDate() + i);
-            wdLabel  = WEEKDAYS[d.getDay()];
-            numLabel = `${d.getMonth() + 1}/${d.getDate()}`;
+            const { month, day, wd } = scheduleDayLabel(i, startDate, ctx);
+            wdLabel  = ALM_WEEKDAYS[wd];
+            numLabel = `${month}/${day}`;
         }
         return `<button class="sp-tab${i === 0 ? ' sp-tab-active' : ''}" data-day="${i}">
             <span class="sp-tab-num">${numLabel}</span>

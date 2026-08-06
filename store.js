@@ -88,7 +88,14 @@ function store(create = false) {
 }
 
 function persist() {
-    getContext?.()?.saveMetadataDebounced?.();
+    // 立即落盘，而非 saveMetadataDebounced：切档时 ST 的 clearChat() 会
+    // cancelDebouncedMetadataSave() 取消还没触发的防抖保存，紧接着 chat_metadata={}，
+    // 防抖那份就永不落盘 → 点线面/记忆丢失。saveMetadata() 同步快照 chat_metadata、
+    // 走 diff patch（无变化即 no-op），写完当场发出，切档取消不掉。
+    const ctx = getContext?.();
+    if (!ctx) return;
+    if (ctx.saveMetadata) ctx.saveMetadata();
+    else ctx.saveMetadataDebounced?.();   // 兜底：老版本 ST 无 saveMetadata
 }
 
 // sp-store 顶层 key 是否已存在（不含内容判断，也不实例化）。

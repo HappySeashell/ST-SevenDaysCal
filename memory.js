@@ -104,8 +104,12 @@ function freshMeta() {
 }
 
 function persist() {
+    // 立即落盘（同 store.js persist）：切档 clearChat() 会取消防抖并清空 chat_metadata，
+    // 防抖那份记忆就丢——补全过程多次写入、全吊在最后一个防抖上，尤其危险。
     const ctx = getContext();
-    ctx.saveMetadataDebounced?.();
+    if (!ctx) return;
+    if (ctx.saveMetadata) ctx.saveMetadata();
+    else ctx.saveMetadataDebounced?.();
 }
 
 // ─── Content sanitizer ──────────────────────────────────────────────────────

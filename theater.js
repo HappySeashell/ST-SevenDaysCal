@@ -101,7 +101,11 @@ function meta() {
 }
 
 function persist() {
-    getContext().saveMetadataDebounced?.();
+    // 立即落盘（同 store.js persist）：避免切档取消防抖导致棱永久层丢失。
+    const ctx = getContext();
+    if (!ctx) return;
+    if (ctx.saveMetadata) ctx.saveMetadata();
+    else ctx.saveMetadataDebounced?.();
 }
 
 export function loadSaved() {
