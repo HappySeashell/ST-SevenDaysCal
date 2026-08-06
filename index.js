@@ -226,6 +226,7 @@ let _almanacCalDay       = null;   // 月历里选中的某天（1-31）；null 
 let _almanacEditor       = null;   // 内联添加/编辑态：{ id, prefill } 或 null（历的表单走内联窗，不用弹窗）
 let _almTodayEditing     = false;  // 历面板「今天」栏的内联改日期态：true → 显示月/日输入框 + ✓/✗（同样不弹窗）
 let _almSyncingPoint     = false;  // 历面板「同步到点」进行态：true → 今天条按钮显示「同步中…」并禁用（后台正把点重生成到今天）
+let _almSyncPending      = false;  // 同步在飞时又有新的「今天」推进被丢 → 置真，同步收尾时自对账补一轮（都开态·快聊防丢，见 syncPointToToday finally）
 const _injectTexts      = {};
 let   _injectIdSeq      = 0;
 let viewportSyncBound   = false;
@@ -355,6 +356,7 @@ jQuery(async () => {
         _almanacEditor = null;
         _almTodayEditing = false;
         _almSyncingPoint = false;
+        _almSyncPending = false;
         $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
         $(`.sp-side-tab.sp-view-btn[data-view="schedule"]`).addClass('sp-view-active');
         $('.sp-sub-btn').removeClass('sp-view-active');
@@ -1753,10 +1755,14 @@ async function runJudgeOutlineStep() {
                 if (s2?.raw) { cachedOutline = renderOutline(s2.raw, getOutlineCursor()); setOutlineBody(cachedOutline); }
             }
         }
-    } catch {
-        if (outlineJudgeAbort !== myCtrl) return;
+    } catch (err) {
+        if (outlineJudgeAbort !== myCtrl) return;          // 被更新的判定取代 → 别动状态
         isJudgingOutline = false; outlineJudgeAbort = null;
-        // 判定失败静默（不弹错、不动游标）——纯增强功能，不该打断主聊天
+        if (err?.name === 'AbortError') return;            // 中止 / 切档 → 不算失败
+        if (getContext().chatId !== chatIdSnap) return;    // 已切 chat → 作废，别弹
+        // 判定失败也弹（不动游标，纯提示）：同日期判定，每 N 楼跑一次、用户未必盯着，失败要让他知道。
+        // isError toast 不受通知三档静音；下一轮攒够计数会自动再判，无需手动重试。
+        showToast('面自动推进判定失败，请检查 API 或网络', null, true);
     }
 }
 
@@ -1817,10 +1823,14 @@ async function runJudgeDateStep(mode) {
         // 生成中先跳过（避免抢 isGenerating + 弹「稍候」toast），此时今天条会回落到方案 B 的「同步到点」键兜底。
         // syncPointToToday 自带 scheduleAutoDetect/重入/chatId/abort 守卫，fire-and-forget 安全。
         if (getSettings().scheduleAutoDetect === true && !isGenerating) syncPointToToday(true);
-    } catch {
-        if (getAbort() !== myCtrl) return;
+    } catch (err) {
+        if (getAbort() !== myCtrl) return;                 // 被更新的判定取代 → 新判定接管状态，别动
         done();
-        // 判定失败静默（不弹错、不动锚点）——纯增强，不该打断主聊天
+        if (err?.name === 'AbortError') return;            // 中止 / 切档 → 不算失败
+        if (getContext().chatId !== chatIdSnap) return;    // 已切 chat → 结果作废，别弹
+        // 判定失败也弹（不动锚点，纯提示）：判定按每 N 楼跑，用户未必每楼盯着，失败要让他知道去查 API。
+        // isError toast 不受通知三档静音；下一轮 AI 回复攒够计数会自动再判，无需手动重试。
+        showToast('剧情日期自动确认失败，请检查 API 或网络', null, true);
     }
 }
 
@@ -1836,9 +1846,10 @@ function runAnchorAftermath() {
 
 // 方案 B·点随「今天」按钮同步（历面板「同步到点」键触发，非自动）：
 // schedulePointNeedsSync() —— 判定当前视角的点是否落后于共享「今天」，历面板据此决定要不要在今天条冒出「同步到点」键。
-//   条件：点·自动检测开 + 当前视角已生成过点 + 点的 StartDate 月/日 ≠ 今天。refresh-only：空白页不算「需同步」。
+//   条件：当前视角已生成过点 + 点的 StartDate 月/日 ≠ 今天。refresh-only：空白页不算「需同步」。
+//   与「点·自动检测」开关解耦：不论点自动检测开没开，只要点落后今天就给这枚手动补的入口——
+//   点关+历开时历自己推进今天、点原地不动，正是靠它手动追上；点开时它作为自动跟随的兜底也会短暂出现。
 function schedulePointNeedsSync() {
-    if (getSettings().scheduleAutoDetect !== true) return false;   // 点自动检测关（默认）→ 点原地冻结，不催同步
     const cacheKey = getCacheKey(currentView, charViewName);
     if (!cacheKey) return false;
     const raw = readStore(cacheKey)?.raw || '';
@@ -1855,15 +1866,14 @@ function schedulePointNeedsSync() {
 // 绝不占用 isGenerating（前台 UI 锁，sidebar 切换靠它挡）——后台占了会把整个面板卡死；防 race 靠自带 abort + 落地前重查。
 let _autoRegenSchedAbort = null;
 async function syncPointToToday(auto = false) {
-    if (_almSyncingPoint) return;                            // 已在同步 → 别重入
-    if (isGenerating) { showToast('点正在生成，稍候再同步', null, true); return; }
-    if (getSettings().scheduleAutoDetect !== true) return;   // 自动检测关 → 本不该出现此按钮，保守 no-op
+    if (_almSyncingPoint) { _almSyncPending = true; return; }   // 同步在飞：标记待办，等它收尾自对账补一轮（都开态·快聊防丢，别硬丢）
+    if (isGenerating) { if (!auto) showToast('点正在生成，稍候再同步', null, true); return; }
+    if (auto && getSettings().scheduleAutoDetect !== true) return;   // 自动跟随仅在点·自动检测开时走；手动点「同步到点」不受此限（点关也能手动追）
     const view = currentView, charName = charViewName;
     const cacheKey = getCacheKey(view, charName);
     if (!cacheKey) return;
     const raw = readStore(cacheKey)?.raw || '';
     if (!raw) return;                                        // refresh-only：没生成过 → 不凭空建
-    const today = almTodayAnchor();
     _autoRegenSchedAbort?.abort();
     const myCtrl = _autoRegenSchedAbort = new AbortController();
     const chatIdSnap = getContext().chatId;
@@ -1885,6 +1895,7 @@ async function syncPointToToday(auto = false) {
         if (_autoRegenSchedAbort !== myCtrl) return;         // 被更新的同步取代（或被手动生成掐断）
         if (isGenerating) return;                            // 期间前台手动生成插了队 → 让前台赢
         if (getContext().chatId !== chatIdSnap) return;      // 已切 chat → 丢弃
+        const today = almTodayAnchor();                      // 落地前重读今天：regen 期间今天可能又前进，钉最新值而非开跑时的旧值（都开态防落后一格）
         const merged = forceStartDate(mergePinnedPoints(raw, fresh), today.month, today.day);   // C：钉到今天
         writeStore(cacheKey, { raw: merged, userName: subject, ts: Date.now() });
         syncLatestScheduleBlock();                           // 楼内点条即时刷到新日期
@@ -1896,12 +1907,23 @@ async function syncPointToToday(auto = false) {
             if (onPointPanel && $(`#${MODAL_ID}`).is(':visible')) setBody(cachedSchedule);
         }
         if (auto ? getSettings().notifyMode === 'full' : getSettings().notifyMode !== 'off') showToast(`点已同步到 ${calMonthName(loadCalDesc(), today.month)}${today.day}日`);
-    } catch { /* 静默：同步失败不打断主聊天 */ }
+    } catch (err) {
+        // 报错弹窗：同步失败要让用户看见——#41 自愈也靠它，静默会把真问题藏掉。
+        // 排除中止 / 被更新的同步取代 / 切档——那些不是失败。isError toast 不受 notifyMode 静默。
+        if (err?.name !== 'AbortError' && _autoRegenSchedAbort === myCtrl && getContext().chatId === chatIdSnap) {
+            showToast('点同步到今天失败，请重试', null, true);
+        }
+    }
     finally {
         if (_autoRegenSchedAbort === myCtrl) _autoRegenSchedAbort = null;
         _almSyncingPoint = false;
         if (almanacMode) renderAlmanacPanel();               // 恢复今天条（同步键消失，或仍需同步则复现）
         $('#sp-body .sp-refresh-schedule').removeClass('sp-refresh-busy');   // 同步结束：解除刷新圆圈置灰
+        // 自对账：同步在飞期间被丢过新的「今天」推进 → 若点仍落后今天且环境未变，收尾补一轮，保证都开态最终收敛（不会永久停在旧日期）。
+        if (_almSyncPending) {
+            _almSyncPending = false;
+            if (getContext().chatId === chatIdSnap && !isGenerating && schedulePointNeedsSync()) syncPointToToday(auto);
+        }
     }
 }
 
@@ -5254,18 +5276,32 @@ function injectToST(text) {
 
 // ─── Outline chat ─────────────────────────────────────────────────────────────
 
-// Turn AI reply text into safe rendered HTML. Prefer ST's own
-// messageFormatting (which routes through their markdown + sanitizer + custom
-// hooks) so behavior matches the main chat area. Falls back to escaped text
-// with <br> if the API isn't available. Never used for user messages —
-// user typed plain text, don't reinterpret markdown they didn't write.
+// Turn AI reply text into safe rendered HTML via ST's own messageFormatting
+// (markdown + sanitizer + quote-wrap), so 间/面/棱 match the main chat area.
+// Falls back to escaped text with <br> if the API isn't available. Never used
+// for user messages — they typed plain text, don't reinterpret it as markdown.
+//
+// Regex isolation (约定：构画渲染绝不被用户正则改写)：构画的气泡没有真实楼层，
+// messageId 只能传 null → ST 把它当成最远深度的楼，于是「显示域 + 按深度过滤」的
+// 用户正则会命中并清空气泡（曾有用户装「不发送远楼信息」正则后 间/面/棱 全白）。
+// 做法：调用期间临时把 'regex' 塞进 disabledExtensions，getRegexedString 开头即
+// 短路返回原文（engine.js），markdown / 引号包裹 / 净化等其余步骤照跑，渲染与主
+// 聊天一致。调用是同步的、随即在 finally 还原，不落盘、不触发保存、对别处无副作用。
 function renderAiMessageHtml(text) {
     const ctx = getContext();
     if (typeof ctx?.messageFormatting === 'function') {
+        const de = extension_settings?.disabledExtensions;
+        const guardRegex = Array.isArray(de) && !de.includes('regex');
+        if (guardRegex) de.push('regex');
         try {
             return ctx.messageFormatting(String(text ?? ''), '', false, false, null, {}, false);
         } catch (err) {
             console.warn('[7dayscal] messageFormatting failed, falling back to plain:', err);
+        } finally {
+            if (guardRegex) {
+                const i = de.indexOf('regex');
+                if (i !== -1) de.splice(i, 1);
+            }
         }
     }
     return escapeHtml(String(text ?? '')).replace(/\n/g, '<br>');
@@ -7351,9 +7387,10 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
             if (linesMode && getContext().chatId === chatIdSnap) setLinesBody(`<div class="sp-empty"><i class="fa-solid fa-diagram-project"></i><p>已中止</p></div>`);
             return;
         }
-        if (!silent && getContext().chatId === chatIdSnap) {
-            const errHtml = `<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p></div>`;
-            if (linesMode) setLinesBody(errHtml);
+        // 报错弹窗：线生成失败要让用户看见——即便后台自动推进（silent）也弹（isError 不受 notifyMode 静默）。
+        // 前台在面板里生成 → 错落面板；后台/自动 → 走 toast，不清掉可能正开着的面板。成功路径仍按 silent 静默。
+        if (getContext().chatId === chatIdSnap) {
+            if (linesMode && !silent) setLinesBody(`<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p></div>`);
             else showToast('线生成失败，请重试', null, true);
         }
     }
@@ -8076,7 +8113,7 @@ function almToolbarHtml() {
 //   ‹ / ›  = 把「今天」锚点往前/后挪一天（挪一下即固定成手动锚点）
 //   改      = 内联输入月/日（不弹窗，_almTodayEditing 切换）
 //   自动    = 清锚，恢复自动确认（仅当前已手动钉住时出现）
-// 历、点共用这枚锚点：在这里挪今天只更新历；点若落后今天（且开了点·自动检测），今天条会冒出「同步到点」键手动触发（见 syncPointToToday）。
+// 历、点共用这枚锚点：在这里挪今天只更新历；点若落后今天，今天条就冒出「同步到点」键手动触发（见 syncPointToToday）——不论点·自动检测开没开都给这个手动入口。
 // 正是给「AI 老提取不准、每天都得去设置里重钉」的卡准备的顺手推进入口。无角色卡 → 只读显示、不给控制。
 function almTodayBarHtml() {
     const key = charStableKey(getContext());
@@ -8107,7 +8144,7 @@ function almTodayBarHtml() {
     const pinned = getDateAnchor(key);
     const pinTag = pinned ? '<span class="sp-alm-today-pin" title="已手动钉住，压过自动确认"><i class="fa-solid fa-thumbtack"></i></span>' : '';
     const autoBtn = pinned ? '<button class="sp-icon-btn sp-alm-today-clear" title="恢复自动确认"><i class="fa-solid fa-rotate"></i></button>' : '';
-    // 「同步到点」：改了今天后，点若落后于今天（且开了点·自动检测）就冒出这枚 CTA；点一下后台把点重生成到今天。
+    // 「同步到点」：改了今天后，点若落后于今天就冒出这枚 CTA；点一下后台把点重生成到今天（点·自动检测开没开都有此键，点关时全靠它手动追）。
     // 正在同步 → 换成禁用的「同步中…」。反馈全在这（按钮态 + toast），结果落在点面板。不弹窗、不占前台生成锁。
     const syncEl = _almSyncingPoint
         ? '<span class="sp-alm-today-sync sp-alm-today-sync-busy"><i class="fa-solid fa-spinner fa-spin"></i>同步中…</span>'
