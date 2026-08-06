@@ -1522,8 +1522,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     z-index : 2000000;
 }
 .sp-fab-btn {
-    width         : 44px;
-    height        : 44px;
+    width         : 36px;
+    height        : 36px;
     border-radius : 50%;
     border        : none;
     cursor        : pointer;
@@ -1532,14 +1532,16 @@ select.sp-input { appearance: none; cursor: pointer; }
     justify-content: center;
     font-size     : 1.15rem;
     box-shadow    : 0 4px 14px rgba(0,0,0,0.4);
-    /* 常态略透（够看清、又不太挡楼内阅读）；hover / 生成中 / 完成态再恢复全实（见下）。 */
-    opacity       : 0.7;
+    /* 半透明常态：不挡楼内阅读；hover / 生成中 / 完成态再恢复到清晰（见下）。 */
+    opacity       : 0.45;
     transition    : transform 0.15s, box-shadow 0.15s, color 0.15s, opacity 0.2s;
 }
 .sp-fab-btn {
-    background: var(--sp-primary);
+    /* 背景真透明（不挡楼内阅读）；那个「若隐若现的小圈」靠下面这圈淡边框呈现，不是填充。 */
+    background: transparent;
     border    : 1.5px solid color-mix(in oklab, var(--sp-primary) 45%, transparent);
-    color     : var(--sp-on-primary);
+    /* 图标色跟主题明暗（sp-day 近黑 / sp-night 近白）——深色主题自动给浅图标。 */
+    color     : var(--sp-on-surface);
 }
 .sp-fab-btn:hover {
     transform : scale(1.1);
