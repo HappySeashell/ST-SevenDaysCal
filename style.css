@@ -78,7 +78,12 @@
 }
 
 /* ─── ST theme cascade — ST var 优先，fallback 到上面的 -legacy 值 ──────────── */
-.sp-root {
+/* .sp-fab-btn 一并纳入：悬浮球 #sp-fab 挂在 <html> 下、在 .sp-root（#sp-modal-root）
+   之外，拿不到这里映射的 --sp-primary，会导致 background:var(--sp-primary) 落空→
+   悬浮球填充透明（看不见）。它自带 .sp-day/.sp-night 提供 legacy 回退、强制模式下
+   还会被加 .sp-forced-*（在下方、源序靠后→照常覆盖），级联语义与面板完全一致。 */
+.sp-root,
+.sp-fab-btn {
     --sp-on-surface  : var(--SmartThemeBodyColor,        var(--sp-on-surface-legacy));
     --sp-subtle      : color-mix(in oklab, var(--SmartThemeBodyColor, var(--sp-on-surface-legacy)) 62%, transparent);
     --sp-primary     : var(--SmartThemeQuoteColor,       var(--sp-primary-legacy));
@@ -762,6 +767,37 @@ select.sp-input { appearance: none; cursor: pointer; }
     background    : var(--sp-surface);
 }
 
+/* ─── Settings layers (三层收纳盒：基础 / 模块 / 高级) ─────────────────────────── */
+.sp-settings-layer:not(:last-child) { border-bottom: 1px solid var(--sp-divider); }
+.sp-settings-layer-title {
+    display       : flex;
+    align-items   : center;
+    gap           : 9px;
+    padding       : 13px 16px;
+    font-size     : 0.9rem;
+    font-weight   : 700;
+    letter-spacing: 0.04em;
+    color         : var(--sp-on-surface);
+    cursor        : pointer;
+    user-select   : none;
+    list-style    : none;
+    background    : var(--sp-hover-bg);
+}
+.sp-settings-layer-title::-webkit-details-marker { display: none; }
+.sp-settings-layer-title::before {
+    content    : '▾';
+    font-size  : 0.72rem;
+    color      : var(--sp-subtle);
+    transition : transform 0.18s;
+    display    : inline-block;
+    flex-shrink: 0;
+}
+.sp-settings-layer:not([open]) > .sp-settings-layer-title::before { transform: rotate(-90deg); }
+.sp-settings-layer-title:hover { background: var(--sp-divider); }
+/* 嵌套 section 读作层的子项：标题略缩进，层内最后一节去掉分隔线让层色带干净 */
+.sp-settings-layer-body > .sp-settings-section:last-child { border-bottom: none; }
+.sp-settings-layer-body > .sp-settings-section > .sp-settings-section-title { padding-left: 26px; }
+
 /* ─── World-info entry checklist ─────────────────────────────────────────────── */
 .sp-wi-list {
     display       : flex;
@@ -1100,7 +1136,15 @@ select.sp-input { appearance: none; cursor: pointer; }
     cursor     : pointer;
     line-height: 1.6;
 }
-.sp-mode-opt input[type="radio"] { cursor: pointer; flex-shrink: 0; }
+.sp-mode-opt input[type="checkbox"],
+.sp-mode-opt input[type="radio"] {
+    width       : 16px;
+    height      : 16px;
+    accent-color: var(--sp-primary);
+    cursor      : pointer;
+    flex-shrink : 0;
+    margin      : 0;
+}
 /* 楼内渲染框的三个子开关（点·线·历）：缩进到主开关下面、横排一行。 */
 .sp-inline-subtoggles {
     display    : flex;
@@ -1488,8 +1532,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     justify-content: center;
     font-size     : 1.15rem;
     box-shadow    : 0 4px 14px rgba(0,0,0,0.4);
-    /* 半透明常态：不挡楼内阅读；hover / 生成中 / 完成态再恢复到清晰（见下）。 */
-    opacity       : 0.45;
+    /* 常态略透（够看清、又不太挡楼内阅读）；hover / 生成中 / 完成态再恢复全实（见下）。 */
+    opacity       : 0.7;
     transition    : transform 0.15s, box-shadow 0.15s, color 0.15s, opacity 0.2s;
 }
 .sp-fab-btn {
@@ -2189,6 +2233,15 @@ select.sp-input { appearance: none; cursor: pointer; }
     font-weight: 500;
     color      : var(--sp-on-surface);
     margin     : 6px 0 4px;
+}
+/* 设置分节内的子组标题：比字段 label 更醒目，配 sp-mem-divider 划分不同设置组 */
+.sp-cfg-group {
+    display       : block;
+    font-size     : 0.82rem;
+    font-weight   : 600;
+    color         : var(--sp-on-surface);
+    letter-spacing: 0.02em;
+    margin        : 2px 0 7px;
 }
 /* 提示里的 <code> 片段：随主题给底色+正文色，避免继承酒馆全局 code 的低对比配色看不清 */
 .sp-cfg-hint code,

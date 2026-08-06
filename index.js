@@ -1,5 +1,5 @@
 import { getContext, extension_settings } from '../../../extensions.js';
-import { eventSource, event_types, substituteParams, saveSettingsDebounced } from '../../../../script.js';
+import { eventSource, event_types, substituteParams, saveSettingsDebounced, saveSettings as stSaveSettings } from '../../../../script.js';
 import {
     buildCreativeChatSystemPrompt,
     buildSpaceChatSystemPrompt,
@@ -41,6 +41,11 @@ const DEFAULT_SETTINGS = {
     // 存的是预设 id；指向的预设被删或缺 url/key 时，loadUtilityCfg() 自动退回主 API。
     utilityPresetId  : '',
     fabShow : true,
+    // 插件总开关：false = 构画完全隐身（藏悬浮球 / 楼内块 / 锚点收藏入口，停一切后台判定与潜伏注入），如同未安装；
+    // 设置面板仍可从酒馆魔杖菜单进入以重新开启。默认开。
+    pluginEnabled: true,
+    // 潜伏注入总闸（受 pluginEnabled 统辖）：false = 线 / 面一律不注入主楼 AI（不影响楼内展示与手动生成）。默认开。
+    injectEnabled: true,
     themeMode: 'auto',   // 'auto' | 'day' | 'night' — 'auto' follows ST theme; day/night force
     notifyMode: 'lite',  // 通知提醒档：'off'=全静音 / 'lite'(默认)=仅你手动生成·刷新时提示 / 'full'=另在后台自动改动点线面历时提示（真改动才弹）
     linesEnabled : true, // master switch: false disables both auto-advance AND inline block rendering
@@ -305,6 +310,8 @@ jQuery(async () => {
         // 必须早于下面任何 load（否则读的是空 metadata）。冲突（云端/本机各一份且不同）时
         // migrate 不动任何数据，稍后异步弹窗让用户决策。
         const _mig = store.migrateChatFromLocalStorage(getContext().chatId);
+        // 插件总关：迁移照做（幂等·防老用户数据漂移），其余全屏隐藏/后台相关一律不跑。
+        if (!pluginEnabled()) return;
         currentView  = 'user';
         charViewName = null;
         outlineMode  = false;
@@ -417,6 +424,7 @@ jQuery(async () => {
     // and this message just gets the freshly-generated result injected.
     if (_stListeners.char) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.char);
     _stListeners.char = async (messageId, type) => {
+        if (!pluginEnabled()) return;   // 插件总关：不补锚点 / 不挂楼内块 / 不推进 / 不生成
         // 锚收藏入口独立于线：不受 linesEnabled 影响，新楼渲染后补按钮
         setTimeout(scanAnchorButtons, 150);
         // 历·七天条：独立于线主开关，每次楼层渲染都把七天条补挂到最新 AI 楼（只读，无生成）
@@ -479,6 +487,7 @@ jQuery(async () => {
     // CHARACTER_MESSAGE_RENDERED 再从楼层基线 B0 重算；=false → 滑回已生成的 swipe，直接取临时层已存线，不请求 API。
     if (_stListeners.swiped) eventSource.removeListener?.(event_types.MESSAGE_SWIPED, _stListeners.swiped);
     _stListeners.swiped = async (mesId, info) => {
+        if (!pluginEnabled()) return;   // 插件总关
         // 历·七天条：swipe 可能改动剧情内时间锚点 → 按现锚点重建（只读，无生成，独立于线主开关）
         syncLatestAlmanacBlock();
         syncLatestScheduleBlock();   // 点·日程条：swipe 后一并重挂（点本身不随 swipe 变，纯补块）
@@ -492,6 +501,7 @@ jQuery(async () => {
     // 线·固定：用户发出下一条消息 → 上一 AI 楼层定稿，清掉它的 swipe 临时层（store 已是当前 swipe 的线）。
     if (_stListeners.sent) eventSource.removeListener?.(event_types.MESSAGE_SENT, _stListeners.sent);
     _stListeners.sent = (insertAt) => {
+        if (!pluginEnabled()) return;   // 插件总关
         if (getSettings().linesEnabled === false) return;
         const chat = getContext().chat;
         if (!Array.isArray(chat)) return;
@@ -507,6 +517,7 @@ jQuery(async () => {
     // 时间戳闸靠「最近流式 token 时间」续期、到点自动失效，绝不卡死。
     if (_stListeners.genStart) eventSource.removeListener?.(event_types.GENERATION_STARTED, _stListeners.genStart);
     _stListeners.genStart = (genType, _opts, dryRun) => {
+        if (!pluginEnabled()) return;   // 插件总关
         if (dryRun) return;
         _stStreamUntil = Date.now() + 3000;   // 盖住首 token 前的模型延迟；无 token 也 3s 自愈
         // 🔄重生成：此刻 type 尚是原始 'regenerate'（还没进 saveReply 被降级成 'normal'）→ 置位待下一条 CMR 消费。
@@ -514,13 +525,14 @@ jQuery(async () => {
     };
     eventSource.on(event_types.GENERATION_STARTED, _stListeners.genStart);
     if (_stListeners.streamTok) eventSource.removeListener?.(event_types.STREAM_TOKEN_RECEIVED, _stListeners.streamTok);
-    _stListeners.streamTok = () => { _stStreamUntil = Date.now() + 1500; }; // 每个可见 token 把闸续 1.5s；token 停 1.5s 后 observer 自动恢复补块
+    _stListeners.streamTok = () => { if (!pluginEnabled()) return; _stStreamUntil = Date.now() + 1500; }; // 每个可见 token 把闸续 1.5s；token 停 1.5s 后 observer 自动恢复补块
     eventSource.on(event_types.STREAM_TOKEN_RECEIVED, _stListeners.streamTok);
     if (_stListeners.genEnd) {
         eventSource.removeListener?.(event_types.GENERATION_ENDED, _stListeners.genEnd);
         eventSource.removeListener?.(event_types.GENERATION_STOPPED, _stListeners.genEnd);
     }
     _stListeners.genEnd = () => {
+        if (!pluginEnabled()) return;   // 插件总关
         _stStreamUntil = 0;   // 立即开闸（有 ENDED 就即时恢复；没有也无妨，时间戳会自愈）
         _pendingReroll = false;   // 兜底清🔄握手：中断/无 CMR/linesEnabled 关时防标记滞留（正常路径已被 CMR 消费，此处多为 no-op）
         setTimeout(() => refreshInlineWindow(true), 60);   // 流式结束 → 重算渲染窗口（最新楼冻快照+重挂）
@@ -531,6 +543,7 @@ jQuery(async () => {
     // 会 early-return，连坐大纲）。每隔 N 楼独立判定一次剧情是否推进到下一节点，推进则游标 +1。
     if (_stListeners.outlineJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.outlineJudge);
     _stListeners.outlineJudge = async (messageId) => {
+        if (!pluginEnabled()) return;   // 插件总关：停后台大纲推进判定
         if (getSettings().outlineInject !== true) return;
         const chat = getContext().chat;
         if (!Array.isArray(chat)) return;
@@ -548,6 +561,7 @@ jQuery(async () => {
     // 每 N 楼跑一次轻量日期判定 → 写共享 dateAnchor。关开关即 early-return（不判、不调 API）。
     if (_stListeners.almanacJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.almanacJudge);
     _stListeners.almanacJudge = async (messageId) => {
+        if (!pluginEnabled()) return;   // 插件总关：停后台历日期判定
         if (getSettings().almanacAutoDetect === false) return;
         const chat = getContext().chat;
         if (!Array.isArray(chat)) return;
@@ -562,6 +576,7 @@ jQuery(async () => {
     // 点·自动确认当前剧情日期：同上，独立开关/间隔/单调闸；默认关。历、点共写同一个锚点。
     if (_stListeners.scheduleJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.scheduleJudge);
     _stListeners.scheduleJudge = async (messageId) => {
+        if (!pluginEnabled()) return;   // 插件总关：停后台点日期判定
         if (getSettings().scheduleAutoDetect !== true) return;
         const chat = getContext().chat;
         if (!Array.isArray(chat)) return;
@@ -578,6 +593,7 @@ jQuery(async () => {
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
     if (_stListeners.rename) eventSource.removeListener?.(event_types.CHAT_RENAMED, _stListeners.rename);
     _stListeners.rename = async (data) => {
+        if (!pluginEnabled()) return;   // 插件总关：与"如同未安装"一致，不做锚点改名同步
         // ST 的 CHAT_RENAMED 事件里 oldFileName/newFileName 带 .jsonl 后缀（script.js 的
         // original_file/renamed_file），而 ctx.chatId 不带——不剥后缀就永远匹配不上，
         // 改名同步等于从没生效过（正是"改了所有名字坐标全没跟上"的根因）。
@@ -598,6 +614,7 @@ jQuery(async () => {
     // 并在面板开着且选了柏宝书源时立刻把状态刷成"已就绪"。
     if (_bbbReadyListener) window.removeEventListener('st-baibai-book:ready', _bbbReadyListener);
     _bbbReadyListener = () => {
+        if (!pluginEnabled()) return;   // 插件总关
         _bbbWarned = false;
         getMemText._bbbWarned = false;
         if (getSettings().useBaiBaiBook) { try { renderMemorySection(); } catch {} }
@@ -612,6 +629,9 @@ jQuery(async () => {
         if (t !== currentTheme) applyTheme(t);
     });
     _themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+    // 首屏落地插件总开关：若加载时已是关闭态，藏球 / 清块 / 断后台 / 撤注入（各首屏挂载虽已被 pluginEnabled 闸挡，
+    // 这里兜底把已挂的悬浮球藏掉、把注入清干净）。开启态无需动——上面各首屏路径已正常挂载。
+    if (!pluginEnabled()) applyPluginEnabled(false);
 });
 
 // ─── Config helpers ───────────────────────────────────────────────────────────
@@ -619,8 +639,10 @@ jQuery(async () => {
 // ─── Plugin settings (persisted in ST's settings.json) ────────────────────────
 
 function getSettings() {
-    if (!extension_settings[PLUGIN_ID]) extension_settings[PLUGIN_ID] = { ...DEFAULT_SETTINGS };
-    return extension_settings[PLUGIN_ID];
+    const s = extension_settings[PLUGIN_ID] ??= { ...DEFAULT_SETTINGS };
+    // 老用户的设置段可能缺后加字段（如 customPrompt）：逐一补默认值，只补缺失、不覆盖已有值。
+    for (const k in DEFAULT_SETTINGS) if (!(k in s)) s[k] = DEFAULT_SETTINGS[k];
+    return s;
 }
 
 // 剔除参数：解析用户输入（换行/逗号分隔的参数名）成去空去重的数组。
@@ -722,6 +744,50 @@ function renameApiPreset(id, name) {
 }
 
 function fabEnabled() { return getSettings().fabShow !== false; }
+
+// ─── 插件总开关（③）───────────────────────────────────────────────────────────
+// pluginEnabled 关 = 全隐身；injectEnabled 关 = 只掐线/面潜伏注入（受 pluginEnabled 统辖）。
+function pluginEnabled() { return getSettings().pluginEnabled !== false; }
+function injectEnabled() { return pluginEnabled() && getSettings().injectEnabled !== false; }
+
+// 一键中断所有在飞的后台判定与生成（点/线/虚线/面/间/棱/历 + 三路日期判定 + 同步到点），并清 re-entry 闸，
+// 让重新开启后能干净重跑。照 CHAT_CHANGED 的中断序列集中一处。
+function _abortAllBackground() {
+    for (const c of [
+        linesAbortController, dashedAbortController, spaceChatAbortController,
+        scheduleAbortController, outlineAbortController, theaterAbortController,
+        almanacAbortController, outlineChatAbortController,
+        outlineJudgeAbort, almanacJudgeAbort, scheduleJudgeAbort, _autoRegenSchedAbort,
+    ]) { try { c?.abort(); } catch {} }
+    linesAbortController = dashedAbortController = spaceChatAbortController = null;
+    scheduleAbortController = outlineAbortController = theaterAbortController = null;
+    almanacAbortController = outlineChatAbortController = null;
+    outlineJudgeAbort = almanacJudgeAbort = scheduleJudgeAbort = _autoRegenSchedAbort = null;
+    isGeneratingOutline = isGeneratingLines = isGeneratingDashed = false;
+    isGeneratingTheater = isGeneratingAlmanac = false;
+    isJudgingOutline = isJudgingDate = false;
+}
+
+// 插件总开关落地。关：藏悬浮球、清所有楼内块与锚点入口（由 refreshInlineWindow/scanAnchorButtons 内部闸兜底）、
+// 断所有后台任务、撤两路潜伏注入。不关面板——用户往往正站在设置里切它，留着好即时切回。
+// 开：按各子开关恢复——显示悬浮球、重挂楼内块与两路注入、补锚点入口。事件监听不注销，靠各 listener 的 pluginEnabled() 闸空转。
+function applyPluginEnabled(on) {
+    const ctx = getContext();
+    if (on) {
+        $(`#${FAB_ID}`).css('display', fabEnabled() ? '' : 'none');
+        try { backfillLinesInlineBlocks(); } catch {}   // 重挂线/历/点楼内块 + 重设线潜伏注入
+        try { refreshOutlineInjection(); } catch {}       // 重设大纲潜伏注入
+        try { scanAnchorButtons(); } catch {}             // 补回锚点收藏入口
+        try { refreshInlineWindow(true); } catch {}
+    } else {
+        $(`#${FAB_ID}`).css('display', 'none');
+        try { _clearAllInlineBoxes(); } catch {}
+        _abortAllBackground();
+        try { ctx.setExtensionPrompt?.(LINES_INJECT_KEY, ''); } catch {}
+        try { ctx.setExtensionPrompt?.(OUTLINE_INJECT_KEY, ''); } catch {}
+    }
+}
+
 
 function getLinesInterval() {
     const v = parseInt(getSettings().linesInterval, 10);
@@ -1479,6 +1545,7 @@ function computeInlineWindow() {
 // 在某层 AI 楼 el 上挂/更新统一框。isLatest 决定全功能/只读、活缓存/快照。
 // 幂等：内容 HTML 没变则不动 DOM（保住 <details> 展开态、断自激循环）。
 function mountInlineBox(el, isLatest) {
+    if (!pluginEnabled()) return;   // 插件总关：兜住 IO 回调直呼此处的路径
     const msgEl = el.querySelector('.mes_text');
     if (!msgEl) return;
     let snap = null;
@@ -1518,6 +1585,7 @@ function unmountInlineBox(el) {
 
 // 全量重算渲染窗口：确定深度窗 + 观察窗内每层楼、卸掉窗外楼的框。防抖调用（refreshInlineWindow）。
 function _recomputeInlineWindow() {
+    if (!pluginEnabled()) { _clearAllInlineBoxes(); return; }   // 插件总关：兜住防抖定时器直呼此处的路径
     if (!_anyInlineSegOn()) { _clearAllInlineBoxes(); return; }   // 三段全关 → 清干净、不观察
     _ensureInlineIO();
     const { winSet, latestEl } = computeInlineWindow();
@@ -1569,6 +1637,7 @@ function _ensureInlineIO() {
 
 // 对外主入口：数据变了 / 楼变了 / 开关变了 → 防抖重算窗口。取代旧 syncLatest*/ensure*/backfill*。
 function refreshInlineWindow(immediate = false) {
+    if (!pluginEnabled()) { _clearAllInlineBoxes(); return; }   // 插件总关：不挂任何楼内块（兜住定时器/观察者等一切调用方）
     clearTimeout(_inlineWinTimer);
     if (immediate) { _recomputeInlineWindow(); return; }
     _inlineWinTimer = setTimeout(_recomputeInlineWindow, 120);
@@ -1610,6 +1679,7 @@ function refreshLinesInjection() {
     if (typeof ctx.setExtensionPrompt !== 'function') return;
     const clear = () => ctx.setExtensionPrompt(LINES_INJECT_KEY, '');
     const s = getSettings();
+    if (!injectEnabled()) { clear(); return; }   // 注入总闸（含插件总关）→ 一律不注入
     if (s.linesEnabled === false || s.linesInject !== true) { clear(); return; }
     let lines = [];
     try {
@@ -1699,6 +1769,7 @@ function refreshOutlineInjection() {
     const ctx = getContext();
     if (typeof ctx.setExtensionPrompt !== 'function') return;
     const clear = () => ctx.setExtensionPrompt(OUTLINE_INJECT_KEY, '');
+    if (!injectEnabled()) { clear(); return; }   // 注入总闸（含插件总关）→ 一律不注入
     if (getSettings().outlineInject !== true) { clear(); return; }
     let beats = [], cursor = 0;
     try {
@@ -1963,6 +2034,10 @@ async function refreshAnchorSavedKeys() {
 
 // 给每条 AI 楼补「收藏此楼」按钮（幂等）。关掉入口开关则清干净。
 function scanAnchorButtons() {
+    if (!pluginEnabled()) {   // 插件总关：清掉并不再补锚点入口（兜住 _anchorObserver 的突变回调）
+        document.querySelectorAll('#chat .sp-anchor-btn').forEach(el => el.remove());
+        return;
+    }
     if (getSettings().anchorInlineBtn === false) {
         document.querySelectorAll('#chat .sp-anchor-btn').forEach(el => el.remove());
         return;
@@ -2401,6 +2476,29 @@ function injectModal() {
                         </div>
                         <div class="sp-settings-body">
 
+                            <!-- ═══════════ 总开关 ═══════════ -->
+                            <details class="sp-settings-section" open>
+                                <summary class="sp-settings-section-title">总开关</summary>
+                                <div class="sp-settings-section-body">
+                                    <label class="sp-mode-opt">
+                                        <input type="checkbox" id="sp-plugin-enabled" ${getSettings().pluginEnabled !== false ? 'checked' : ''}>
+                                        <span>启用构画</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">关闭后如同未安装：隐藏悬浮球与全部楼内展示，停止一切后台判定与注入。此设置面板仍可从酒馆魔杖菜单重新打开。</p>
+
+                                    <label class="sp-mode-opt" style="margin-top:10px">
+                                        <input type="checkbox" id="sp-inject-enabled" ${getSettings().injectEnabled !== false ? 'checked' : ''}>
+                                        <span>允许潜伏注入主楼 AI（线 / 面）</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">总闸：关闭则线 / 面一律不注入主楼 AI（不影响楼内展示与手动生成）。各模块自身的注入开关仍需分别开启才生效。</p>
+                                </div>
+                            </details>
+
+                            <!-- ═══════════ 基础设置 ═══════════ -->
+                            <details class="sp-settings-layer">
+                                <summary class="sp-settings-layer-title">基础设置</summary>
+                                <div class="sp-settings-layer-body">
+
                             <!-- 全局设置 1：API -->
                             <details class="sp-settings-section" open>
                                 <summary class="sp-settings-section-title">API</summary>
@@ -2452,10 +2550,10 @@ function injectModal() {
                                     </details>
 
                                     <details class="sp-adv-api" style="margin-top:10px">
-                                        <summary class="sp-adv-api-summary">高级设置</summary>
+                                        <summary class="sp-adv-api-summary">接口高级选项</summary>
                                         <div class="sp-adv-api-body">
                                             <p class="sp-cfg-hint" style="margin-top:8px">
-                                                <b>剔除参数</b>：这些字段会在发送前从请求中删除，用于规避不接受某些参数的接口报 400。多个用换行或逗号分隔，只填参数名。
+                                                <b>剔除参数</b>：发送前从请求里删掉这些字段，规避接口对某些参数报 400。多个用换行或逗号分隔，只填参数名。
                                             </p>
                                             <textarea id="sp-cfg-exclude" class="sp-input sp-exclude-input" rows="2"
                                                       placeholder="如：frequency_penalty&#10;presence_penalty">${escapeHtml((cfg.excludeParams || []).join('\n'))}</textarea>
@@ -2471,11 +2569,11 @@ function injectModal() {
                                         </div>
                                     </details>
 
+                                    <hr class="sp-mem-divider">
+                                    <label class="sp-cfg-group">机械任务分流</label>
                                     <!-- 机械任务分流：把「记忆摘要 / 大纲推进判定」这类机械调用可选路由到某个预设（如便宜小模型）；生成类始终走上面主 API。选项即时生效落 settings.json，无需点保存。留空=不分流 -->
                                     <div class="sp-util-preset-block">
-                                        <p class="sp-cfg-hint" style="margin-top:12px">
-                                            <b>机械任务预设</b>：记忆摘要、大纲推进判定这类机械调用改走此预设（如便宜小模型省钱降配）；点 / 线 / 面 / 间 / 棱 / 历的正式生成始终走上面主 API。选了即时生效，无需点保存。
-                                        </p>
+                                        <p class="sp-cfg-hint">记忆摘要、日期 / 大纲判定这类机械调用改走此预设（如便宜小模型省钱）；正式生成始终走主 API。即时生效，无需保存。</p>
                                         <div class="sp-preset-row">
                                             <button type="button" id="sp-util-preset-box" class="sp-preset-box" title="选择机械任务预设">
                                                 <span id="sp-util-preset-label" class="sp-preset-label">跟随主 API（不分流）</span>
@@ -2491,7 +2589,7 @@ function injectModal() {
                             <details class="sp-settings-section" id="sp-wi-section">
                                 <summary class="sp-settings-section-title">世界书</summary>
                                 <div class="sp-settings-section-body" id="sp-wi-body">
-                                    <p class="sp-cfg-hint">识别角色卡关联和全局启用的所有世界书。勾选的条目会传给 AI，取消勾选则跳过。按角色卡保存。</p>
+                                    <p class="sp-cfg-hint">列出角色卡关联 + 全局启用的世界书。勾选的传给 AI，不勾则跳过。按角色卡保存。</p>
                                     <div id="sp-wi-list" class="sp-wi-list">
                                         <span class="sp-cfg-hint">（打开设置时自动加载）</span>
                                     </div>
@@ -2502,33 +2600,31 @@ function injectModal() {
                             <details class="sp-settings-section" id="sp-mem-section">
                                 <summary class="sp-settings-section-title">记忆</summary>
                                 <div class="sp-settings-section-body" id="sp-mem-body">
+                                    <label class="sp-cfg-group">记忆源</label>
                                     <label class="sp-mode-opt sp-mem-source-toggle">
                                         <input type="checkbox" id="sp-mem-source-bbb">
                                         <span>使用柏宝书作为记忆源</span>
                                     </label>
                                     <div id="sp-mem-bbb-status" class="sp-cfg-hint" style="display:none"></div>
-
                                     <label class="sp-mode-opt sp-mem-source-toggle">
                                         <input type="checkbox" id="sp-mem-source-anima">
                                         <span>使用 Anima 作为记忆源</span>
                                     </label>
                                     <div id="sp-mem-anima-status" class="sp-cfg-hint" style="display:none"></div>
 
+                                    <hr class="sp-mem-divider">
+                                    <label class="sp-cfg-group">容量</label>
                                     <div class="sp-mode-opt">
                                         <span>记忆块 token 上限</span>
                                         <input id="sp-mem-maxtokens" class="sp-input sp-interval-input" type="number" min="0" step="1000" value="60000">
                                         <span>（0=不限）</span>
                                     </div>
-                                    <p class="sp-cfg-hint">
-                                        超出则自动压缩再注入：点/线/面/间取近景（最近 + 一小段早期梗概），历取全程等距节选（保不漏日期）；不超则原样。防长故事记忆撑爆 token。
-                                    </p>
+                                    <p class="sp-cfg-hint">超出则压缩再注入：点 / 线 / 面 / 间取近景，历全程等距节选（不漏日期）；不超原样。防长故事撑爆 token。</p>
 
                                     <div id="sp-mem-internal">
-                                    <p class="sp-cfg-hint">
-                                        对话时自动为每层楼生成客观摘要，供点 / 线 / 面 / 间生成时参考。
-                                        随聊天存储（不占浏览器缓存）。最新一楼永不摘要，防重 roll。
-                                    </p>
-
+                                    <hr class="sp-mem-divider">
+                                    <label class="sp-cfg-group">自动记忆</label>
+                                    <p class="sp-cfg-hint">对话时逐楼生成客观摘要，供点 / 线 / 面 / 间参考。随聊天存储（不占浏览器缓存），最新一楼不摘要防重 roll。</p>
                                     <label class="sp-mode-opt">
                                         <input type="checkbox" id="sp-mem-enabled">
                                         <span>自动记忆开启</span>
@@ -2573,41 +2669,11 @@ function injectModal() {
                                 </div>
                             </details>
 
-                            <!-- 全局：标签清洗（作用于全部生成链路） -->
-                            <details class="sp-settings-section">
-                                <summary class="sp-settings-section-title">标签与提示词</summary>
-                                <div class="sp-settings-section-body">
-                                    <p class="sp-cfg-hint">
-                                        读取 AI 楼层原文时的标签过滤规则，<strong>对全部生成链路生效</strong>：记忆摘要、点 / 线 / 面生成、间 / 面讨论的最近对话注入。用来剔除状态栏、思维链等包裹内容，避免污染上下文、影响生成质量。
-                                    </p>
-                                    <p class="sp-cfg-hint">
-                                        多个用英文逗号分隔，只写标签名（如 <code>content</code>），不用带尖括号。
-                                    </p>
-                                    <div class="sp-mode-opt sp-tag-opt">
-                                        <span>保留包裹符</span>
-                                        <input id="sp-mem-keeptags" class="sp-input sp-tag-input" type="text" placeholder="content" value="">
-                                    </div>
-                                    <p class="sp-cfg-hint">保留：这些标签本身被去掉，但<strong>内部文字保留</strong>（如正文被 <code>content</code> 包裹时）。</p>
-                                    <div class="sp-mode-opt sp-tag-opt">
-                                        <span>剔除包裹符</span>
-                                        <input id="sp-mem-extratags" class="sp-input sp-tag-input" type="text" placeholder="think,reasoning" value="">
-                                    </div>
-                                    <p class="sp-cfg-hint">剔除：这些标签<strong>连同内部内容一起删除</strong>（如思维链 <code>think</code> / <code>reasoning</code>）。</p>
-
-                                    <hr class="sp-mem-divider">
-
-                                    <label class="sp-cfg-label">自定义提示词 / 全局写作规范</label>
-                                    <p class="sp-cfg-hint">
-                                        <strong>已内置一版默认破限词</strong>（不显示在此，恒定生效）。在此填写的内容会<strong>追加在默认破限词之后</strong>——破限永远兜底，你写的内容叠加其上，一同拼到<strong>全部生成链路</strong>（点 / 线 / 面 / 记忆 / 棱 / 间 · 面讨论）系统提示词的<strong>最前端</strong>。适合放<strong>全局写作规范</strong>：如去八股、控制文风、叙事口吻等（可直接把这类「去八股 / 文风」世界书的正文贴进来）。支持 <code>{{char}}</code> / <code>{{user}}</code> 占位符。
-                                    </p>
-                                    <textarea id="sp-custom-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="可留空（只用默认破限）。也可在此追加全局写作规范，如：去八股、控制文风、叙事口吻…会叠加在默认破限词之后一起注入。"></textarea>
-                                </div>
-                            </details>
-
                             <!-- 显示管理：两个总开关（收藏此楼入口 / 楼内渲染框），渲染框下三个子开关（点·线·历）。都不注入 AI、不请求 API，纯只读展示。 -->
                             <details class="sp-settings-section" id="sp-display-section">
                                 <summary class="sp-settings-section-title">显示与通知管理</summary>
                                 <div class="sp-settings-section-body">
+                                    <label class="sp-cfg-group">显示</label>
                                     <label class="sp-mode-opt">
                                         <input type="checkbox" id="sp-anchor-inline-btn" ${getSettings().anchorInlineBtn !== false ? 'checked' : ''}>
                                         <span>收藏此楼入口</span>
@@ -2639,7 +2705,7 @@ function injectModal() {
                                     </label>
 
                                     <hr class="sp-mem-divider">
-                                    <p class="sp-cfg-hint">通知提醒</p>
+                                    <label class="sp-cfg-group">通知提醒</label>
                                     <div class="sp-mode-row">
                                         <label class="sp-mode-opt">
                                             <input type="radio" name="sp-notify-mode" value="off" ${(getSettings().notifyMode || 'lite') === 'off' ? 'checked' : ''}>
@@ -2657,10 +2723,19 @@ function injectModal() {
                                 </div>
                             </details>
 
+                                </div>
+                            </details>
+
+                            <!-- ═══════════ 模块设置 ═══════════ -->
+                            <details class="sp-settings-layer">
+                                <summary class="sp-settings-layer-title">模块设置</summary>
+                                <div class="sp-settings-layer-body">
+
                             <!-- 模块设置 1：线（伏笔） -->
                             <details class="sp-settings-section">
                                 <summary class="sp-settings-section-title">线</summary>
                                 <div class="sp-settings-section-body">
+                                    <label class="sp-cfg-group">功能开关</label>
                                     <label class="sp-mode-opt">
                                         <input type="checkbox" id="sp-lines-enabled" ${getSettings().linesEnabled !== false ? 'checked' : ''}>
                                         <span>启用平行事件（线）</span>
@@ -2671,17 +2746,17 @@ function injectModal() {
                                         <input type="checkbox" id="sp-lines-inject" ${getSettings().linesInject === true ? 'checked' : ''}>
                                         <span>潜伏注入主楼 AI</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">开启后，活跃线会隐形注入主楼 AI（聊天里不显示），让它把伏笔当暗流自然缓慢推进。会改变 AI 行为、略增 token，默认关。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">活跃线隐形注入主楼 AI（聊天不显示），让伏笔当暗流缓慢推进。会改 AI 行为、略增 token，默认关。</p>
 
                                     <label class="sp-mode-opt" style="margin-top:10px">
                                         <input type="checkbox" id="sp-dashed-enabled" ${getSettings().dashedEnabled === true ? 'checked' : ''}>
                                         <span>虚线 · 冷知识（跟随线生成）</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">开启后，每次线生成 / 推进时额外抽 1~2 条关于角色 / 你 / 世界观的"冷知识"，显示在线面板下方。<b>纯供娱乐、不会注入任何地方</b>。会多一次 API 调用，默认关。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">每次线生成 / 推进额外抽 1~2 条角色 / 你 / 世界观的冷知识，显示在线面板下方。<b>纯娱乐、不注入任何地方</b>。多一次 API，默认关。</p>
 
                                     <hr class="sp-mem-divider">
 
-                                    <p class="sp-cfg-hint">平行事件推进策略</p>
+                                    <p class="sp-cfg-group">推进策略</p>
                                     <div class="sp-mode-row">
                                         <label class="sp-mode-opt">
                                             <input type="radio" name="sp-lines-mode" value="turns" ${getLinesMode() === 'turns' ? 'checked' : ''}>
@@ -2699,7 +2774,8 @@ function injectModal() {
                                         </label>
                                     </div>
 
-                                    <p class="sp-cfg-hint" id="sp-scale-hint" style="margin-top:14px">叙事尺度（按角色保存）</p>
+                                    <hr class="sp-mem-divider">
+                                    <p class="sp-cfg-group" id="sp-scale-hint" style="margin-top:0">叙事尺度（按角色保存）</p>
                                     <div class="sp-mode-row" id="sp-scale-row">
                                         <!-- populated by refreshScaleRadio() when settings opens -->
                                     </div>
@@ -2714,14 +2790,16 @@ function injectModal() {
                                         <input type="checkbox" id="sp-outline-inject" ${getSettings().outlineInject === true ? 'checked' : ''}>
                                         <span>大纲自动注入</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">开启后，剧情会沿着大纲的节点缓慢推进：每隔若干楼<b>独立判定</b>一次当前演到哪个节点，把「当前节点 + 下个方向」隐形注入主楼 AI（聊天里不显示），让叙事自然顺着大纲走。游标<b>只进不退、无推进信号不动</b>——你写多少跑题日常都不会硬推。默认关；开着需先有一版面。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">沿大纲节点缓慢推进：每隔若干楼<b>独立判定</b>当前演到哪个节点，把「当前节点 + 下一步方向」隐形注入主楼 AI（聊天不显示）。游标<b>只进不退、无信号不动</b>，写再多跑题日常也不硬推。默认关，需先有一版面。</p>
 
-                                    <label class="sp-mode-opt" style="margin-top:10px">
+                                    <hr class="sp-mem-divider">
+                                    <label class="sp-cfg-group">判定节奏</label>
+                                    <label class="sp-mode-opt">
                                         <span>每</span>
                                         <input id="sp-outline-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getOutlineJudgeInterval()))}">
                                         <span>条 AI 回复判定一次推进</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">判定节奏：楼数越大越省 token、推进越迟钝；越小越灵敏、开销越高（<b>每次判定 = 一次额外 API 调用</b>）。默认 3。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">楼数越大越省 token、越迟钝；越小越灵敏、开销越高（<b>每次判定 = 一次额外 API</b>）。默认 3。</p>
                                 </div>
                             </details>
 
@@ -2729,7 +2807,7 @@ function injectModal() {
                             <details class="sp-settings-section" id="sp-datetime-section">
                                 <summary class="sp-settings-section-title">历 · 点（时间推进）</summary>
                                 <div class="sp-settings-section-body">
-                                    <p class="sp-cfg-hint">历（全年日历）和点（近七日日程）都靠「当前剧情日期」定位今天。开启自动确认后，每隔若干楼<b>独立判定</b>一次剧情演到了几月几日，把「今天」钉到那天——历的七天条 / 点的日程条会自动跟着剧情走。识别不到就<b>保持上次的日期不动</b>；也可在下方手动钉一个今天兜底。历、点<b>共用同一个「今天」</b>。</p>
+                                    <p class="sp-cfg-hint">历（全年日历）与点（近七日日程）<b>共用同一个「今天」</b>，都靠「当前剧情日期」定位。开启自动确认后，每隔若干楼<b>独立判定</b>剧情演到几月几日、把「今天」钉过去，七天条 / 日程条随之走；识别不到<b>保持原日期</b>。也可在历面板顶部手动钉今天兜底。</p>
 
                                     <label class="sp-mode-opt" style="margin-top:10px">
                                         <input type="checkbox" id="sp-almanac-autodetect" ${getSettings().almanacAutoDetect !== false ? 'checked' : ''}>
@@ -2740,9 +2818,10 @@ function injectModal() {
                                         <input id="sp-almanac-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getAlmanacJudgeInterval()))}">
                                         <span>条 AI 回复确认一次</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">默认开。每次确认 = 一次额外 API 调用；楼数越大越省 token、跟进越迟钝。默认 3。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">默认开。每次确认 = 一次额外 API；楼数越大越省、越迟钝。默认 3。</p>
 
-                                    <label class="sp-mode-opt" style="margin-top:12px">
+                                    <hr class="sp-mem-divider">
+                                    <label class="sp-mode-opt">
                                         <input type="checkbox" id="sp-schedule-autodetect" ${getSettings().scheduleAutoDetect === true ? 'checked' : ''}>
                                         <span>点：自动确认当前日期</span>
                                     </label>
@@ -2751,7 +2830,7 @@ function injectModal() {
                                         <input id="sp-schedule-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getScheduleJudgeInterval()))}">
                                         <span>条 AI 回复确认一次</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">默认关。开此项 = 历自动推进「今天」时，<b>点也自动重排到今天</b>（保 pin 住的点，每次推进多一次 API）；不开则点原地冻结、落后时历面板今天条冒「同步到点」键手动补。默认 3。手动改「今天」在历面板顶部（只改历、不烧点）。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">默认关。开 = 历推进「今天」时<b>点也自动重排到今天</b>（保 pin 点，每次多一次 API）；不开则点原地冻结，落后时历面板今天条冒「同步到点」键手动补。</p>
                                 </div>
                             </details>
 
@@ -2759,20 +2838,50 @@ function injectModal() {
                             <details class="sp-settings-section" id="sp-theater-section">
                                 <summary class="sp-settings-section-title">棱</summary>
                                 <div class="sp-settings-section-body">
-                                    <p class="sp-cfg-hint">
-                                        棱 = 单轮小剧场（if 线 / 番外 / 可能性）。写作 agent 出文本、美化 agent 自动排版。
-                                    </p>
+                                    <p class="sp-cfg-hint">棱 = 单轮小剧场（if 线 / 番外 / 可能性）。写作 agent 出文本、美化 agent 自动排版。</p>
                                     <label class="sp-cfg-label">写作提示词（文风 + 范文）</label>
                                     <textarea id="sp-theater-style" class="sp-input sp-theater-cfg-textarea" placeholder="指定文体基调、节奏、感官描写要求，禁套路化开头结尾；也可直接贴 1-2 段你认可的文笔让 AI 模仿其笔触…"></textarea>
 
                                     <hr class="sp-mem-divider">
 
-                                    <p class="sp-cfg-hint">
-                                        小剧场模板库（存于专用世界书 <code>构画-棱-小剧场模板</code>，全局共享、不进聊天文件、绝不注入 AI）。棱输入区可点选模板起草。缓存用量与清理已收进「存储管理」分节。
-                                    </p>
+                                    <label class="sp-cfg-group">小剧场模板库</label>
+                                    <p class="sp-cfg-hint">存于专用世界书 <code>构画-棱-小剧场模板</code>，全局共享、不进聊天文件、绝不注入 AI。棱输入区可点选模板起草；缓存用量与清理见「存储管理」。</p>
                                     <div id="sp-theater-tpl-mgr" class="sp-theater-tpl-mgr">
                                         <div class="sp-theater-list-empty">（打开设置时自动加载）</div>
                                     </div>
+                                </div>
+                            </details>
+
+                                </div>
+                            </details>
+
+                            <!-- ═══════════ 高级设置 ═══════════ -->
+                            <details class="sp-settings-layer">
+                                <summary class="sp-settings-layer-title">高级设置</summary>
+                                <div class="sp-settings-layer-body">
+
+                            <!-- 高级：标签清洗与全局提示词（作用于全部生成链路） -->
+                            <details class="sp-settings-section">
+                                <summary class="sp-settings-section-title">标签与提示词</summary>
+                                <div class="sp-settings-section-body">
+                                    <label class="sp-cfg-group">标签清洗</label>
+                                    <p class="sp-cfg-hint">读取 AI 楼层原文时的标签过滤规则，<strong>对全部生成链路生效</strong>（记忆摘要、点 / 线 / 面生成、间 / 面讨论的对话注入），用来剔除状态栏 / 思维链等包裹、避免污染上下文。多个用英文逗号分隔，只写标签名（如 <code>content</code>）、不带尖括号。</p>
+                                    <div class="sp-mode-opt sp-tag-opt">
+                                        <span>保留包裹符</span>
+                                        <input id="sp-mem-keeptags" class="sp-input sp-tag-input" type="text" placeholder="content" value="">
+                                    </div>
+                                    <p class="sp-cfg-hint">标签本身去掉、<strong>内部文字保留</strong>（如正文被 <code>content</code> 包裹）。</p>
+                                    <div class="sp-mode-opt sp-tag-opt">
+                                        <span>剔除包裹符</span>
+                                        <input id="sp-mem-extratags" class="sp-input sp-tag-input" type="text" placeholder="think,reasoning" value="">
+                                    </div>
+                                    <p class="sp-cfg-hint">标签<strong>连同内部内容一起删除</strong>（如思维链 <code>think</code> / <code>reasoning</code>）。</p>
+
+                                    <hr class="sp-mem-divider">
+
+                                    <label class="sp-cfg-group">自定义提示词 / 全局写作规范</label>
+                                    <p class="sp-cfg-hint"><strong>已内置一版默认破限词</strong>（不显示、恒定生效）。此处内容<strong>追加在其后</strong>，一同拼到<strong>全部生成链路</strong>系统提示词最前端。适合放全局写作规范：去八股 / 控制文风 / 叙事口吻（可直接贴这类世界书正文）。支持 <code>{{char}}</code> / <code>{{user}}</code> 占位符。</p>
+                                    <textarea id="sp-custom-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="可留空（只用默认破限）。也可在此追加全局写作规范，如：去八股、控制文风、叙事口吻…会叠加在默认破限词之后一起注入。"></textarea>
                                 </div>
                             </details>
 
@@ -2780,15 +2889,16 @@ function injectModal() {
                             <details class="sp-settings-section" id="sp-storage-section">
                                 <summary class="sp-settings-section-title">存储管理</summary>
                                 <div class="sp-settings-section-body">
-                                    <p class="sp-cfg-hint">
-                                        统管构画的数据占用，按存储位置分层。
-                                    </p>
+                                    <p class="sp-cfg-hint">统管构画的数据占用，按存储位置分层。</p>
                                     <div id="sp-storage-body">
                                         <div class="sp-cfg-hint">（打开设置时自动统计…）</div>
                                     </div>
                                     <div class="sp-mem-actions">
                                         <button id="sp-storage-refresh" class="sp-mem-btn">刷新用量</button>
                                     </div>
+                                </div>
+                            </details>
+
                                 </div>
                             </details>
 
@@ -2962,6 +3072,22 @@ function injectModal() {
         spaceChatHistory.splice(idx, 1);
         saveSpaceChatHistory();
         renderSpaceChatHistory();
+    });
+
+    // 逐条复制：取该条干净文本（AI 剥 widget 标签）写剪贴板，图标闪一下 ✓ 反馈。不受生成中态限制（只读操作）。
+    $('#sp-space-msgs').on('click', '.sp-chat-msg-copy', async function () {
+        const idx = Number($(this).closest('.sp-chat-msg-wrap').attr('data-idx'));
+        if (!Number.isInteger(idx) || idx < 0 || idx >= spaceChatHistory.length) return;
+        const text = spaceMsgPlainText(spaceChatHistory[idx]);
+        const $btn = $(this);
+        if ($btn.data('sp-copy-reset')) { clearTimeout($btn.data('sp-copy-reset')); }
+        const ok = await copyPlainText(text);
+        $btn.html(ok ? '<i class="fa-solid fa-check"></i>' : '<i class="fa-solid fa-xmark"></i>')
+            .attr('title', ok ? '已复制' : '复制失败');
+        const t = setTimeout(() => {
+            $btn.html('<i class="fa-solid fa-copy"></i>').attr('title', '复制').removeData('sp-copy-reset');
+        }, 1200);
+        $btn.data('sp-copy-reset', t);
     });
 
     $('#sp-space-msgs').on('click', '.sp-chat-msg-edit', function () {
@@ -3613,6 +3739,20 @@ function injectModal() {
     bindApiPresetEvents();
     renderApiPresetList();
     renderUtilityPresetList();
+    // 插件总开关：立刻生效——关则全隐身（藏球/清楼内块/断后台/撤注入），开则按各子开关恢复。
+    // 用 stSaveSettings 立即落盘，避免用户切完立刻刷新丢状态（与 customPrompt 同理）。
+    $('#sp-plugin-enabled').on('change', function () {
+        getSettings().pluginEnabled = this.checked;
+        stSaveSettings();
+        applyPluginEnabled(this.checked);
+    });
+    // 潜伏注入总闸：立刻生效——重设线 / 面两路注入（关时内部各自清空）。
+    $('#sp-inject-enabled').on('change', function () {
+        getSettings().injectEnabled = this.checked;
+        saveSettingsDebounced();
+        refreshLinesInjection();
+        refreshOutlineInjection();
+    });
     // Master switch: apply immediately so the user sees inline blocks appear/
     // disappear the moment they toggle, not on next AI message.
     $('#sp-lines-enabled').on('change', function () {
@@ -4477,6 +4617,8 @@ function sleepAbortable(ms, signal) {
 // - Intranet / firewalled endpoints: browser can't reach them, ST server can
 // This is the same strategy 柏宝书 uses (借鉴柏宝书 client.ts).
 async function postChatCompletion({ cfg, messages, maxTokens, temperature, signal = null } = {}) {
+    // 总开关硬闸：插件关闭时挡住一切生成（手动 + 后台判定），防任何路径漏网。tag 供调用方识别、静默处理。
+    if (!pluginEnabled()) { const e = new Error('构画已关闭'); e.spDisabled = true; throw e; }
     if (!cfg?.url || !cfg?.key) throw new Error('API 未配置');
     const ctx = getContext();
     if (!ctx?.getRequestHeaders) throw new Error('SillyTavern 上下文不可用');
@@ -5158,7 +5300,7 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10,
     // 历（本世界观重要日期）：历自己不进主楼，只在这里作为数据源反哺点/线/大纲。
     const almanacText = getAlmanacInjectText();
     const almanacBlock = almanacText
-        ? `【本世界观·重要日期（历）】以下是这个世界一年之中的既定节日、生日、纪念日等重要日子（按月日排序）。推演点/线/大纲时，若时间线临近或涉及这些日子，应自然地纳入考量，使故事与该世界的历法自洽。\n${almanacText}`
+        ? `【本世界观·重要日期（历）】以下是这个世界的既定节日、生日、纪念日等重要日子，已按「当前剧情日期」标注倒计时；每条冒号后的「说明」是该日子的既定设定（由来、涉及人物阵营、习俗活动、持续天数等），是背景事实。\n${almanacText}\n\n★ 推演点/线/大纲时：凡列在【近期将至】里的日子（未来数日内或进行中），应**主动**把它纳入近期剧情——依据其「说明」里的设定生成与之相关的铺垫、筹备、事件或人物动向，让故事顺着该世界的历法自然推进；【全年其他重要日子】作为背景，时间线接近时再纳入考量。\n★ 务必尊重每条「说明」里的既定设定，据此展开合理、可延续的剧情；说明里没写到的细节可以合理补完，但**不得编造与既定设定冲突的内容**。`
         : '';
 
     // 历法（纪年/月份结构）：内置公历返回空、无需告知；自定义历法则反哺点/线/大纲，免得套用公历月份/天数。
@@ -5806,6 +5948,35 @@ function saveSpaceChatHistory(view, charName) {
     writeStore(getSpaceChatHistoryKey(view, charName), spaceChatHistory);
 }
 
+// 写剪贴板：优先 navigator.clipboard（需安全上下文），失败/不可用则退回 execCommand。
+// 酒馆常跑在非 https 的 WebView 里，clipboard API 可能缺失或抛权限错——execCommand 兜底保证手机也能复制。
+async function copyPlainText(text) {
+    const s = String(text ?? '');
+    if (navigator.clipboard?.writeText) {
+        try { await navigator.clipboard.writeText(s); return true; } catch {}
+    }
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = s;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, s.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+    } catch { return false; }
+}
+
+// 取某条间消息的可复制纯文本：AI 消息剥掉 widget 标签（只留正文），user/system 原样。
+function spaceMsgPlainText(msg) {
+    if (!msg) return '';
+    const raw = String(msg.content ?? '');
+    if (msg.role === 'assistant') return extractSpaceWidgets(raw).text;
+    return raw;
+}
+
 function renderSpaceChatHistory() {
     const $msgs = $('#sp-space-msgs');
     $msgs.empty();
@@ -5851,6 +6022,7 @@ function appendSpaceChatMsg(role, content, historyIndex = null) {
             : '';
         $wrap.append(
             `<div class="sp-chat-msg-actions">${editBtn}` +
+            `<button class="sp-chat-msg-copy" title="复制"><i class="fa-solid fa-copy"></i></button>` +
             `<button class="sp-chat-msg-delete" title="删除"><i class="fa-solid fa-trash"></i></button></div>`,
         );
     }
@@ -8018,13 +8190,35 @@ function sortAlmanacUpcoming(items, cal = loadCalDesc()) {
 }
 
 // 供 buildMessages 反哺点/线/大纲的文本（历自己不进主楼）。空则返回 ''。
+// 三段式：以「当前剧情日期」为锚 → 近期将至（未来 N 天内 + 进行中，带倒计时，给点/线明确抓手）→ 全年其他（背景）。
+// 只有带「今天 + 还有几天」AI 才判得出哪个日子临近；旧版只按月日死序列全年、无锚点，故点/线对临近日子毫无反应。
 function getAlmanacInjectText() {
     const items = loadAlmanac();
     if (!items.length) return '';
-    return [...items]
-        .sort((a, b) => a.month - b.month || a.day - b.day)
-        .map(it => `- ${almDateLabel(it)}　${it.name}（${almTypeMeta(it.type).label}）${it.note ? '：' + it.note : ''}`)
-        .join('\n');
+    const cal      = loadCalDesc();
+    const anchor   = almTodayAnchor();
+    const todayDoy = almDayOfYear(anchor.month, anchor.day, cal);
+    const NEAR_DAYS = 7;   // 「近期」窗口：未来 7 天内算临近（与楼内七天条同尺度）
+    // 逐条算「距今几天」；多日节日今天正落区间内记「进行中」(d=-1) 置顶。与 sortAlmanacUpcoming 同口径。
+    const scored = items.map(it => {
+        const active = almClampInt(it.days, 1, calYearLen(cal), 1) > 1 && almItemCoversDoy(it, todayDoy, cal);
+        return { it, d: active ? -1 : almDaysUntil(it.month, it.day, anchor, cal) };
+    });
+    const near = scored.filter(x => x.d === -1 || x.d <= NEAR_DAYS)
+                       .sort((a, b) => a.d - b.d || a.it.month - b.it.month || a.it.day - b.it.day);
+    const rest = scored.filter(x => x.d !== -1 && x.d > NEAR_DAYS)
+                       .sort((a, b) => a.it.month - b.it.month || a.it.day - b.it.day);
+    const durOf    = it => almClampInt(it.days, 1, calYearLen(cal), 1);
+    const fmtItem  = it => { const d = durOf(it); return `${almDateLabel(it, cal)}　${it.name}（${almTypeMeta(it.type).label}${d > 1 ? '·持续 ' + d + ' 天' : ''}）${it.note ? '：' + it.note : ''}`; };
+    const nearWhen = x => x.d === -1 ? '进行中' : x.d === 0 ? '就是今天' : `还有 ${x.d} 天`;
+    const out = [`【当前剧情日期】${calMonthName(cal, anchor.month)}${anchor.day}日`];
+    if (near.length) {
+        out.push('【近期将至】\n' + near.map(x => `- ${nearWhen(x)}：${fmtItem(x.it)}`).join('\n'));
+    }
+    if (rest.length) {
+        out.push('【全年其他重要日子】\n' + rest.map(x => `- ${fmtItem(x.it)}`).join('\n'));
+    }
+    return out.join('\n');
 }
 
 // 当前历法描述（供间做「改历法」增量编辑参考）；内置公历返回 ''（无需告知，AI 直接按需新建）。
@@ -8498,10 +8692,18 @@ ${gridSection}
 - 连放多天的长假：给实际天数，且 month/day 填**第一天**。例：春节黄金周 days=7、五一黄金周 days=5、国庆黄金周 days=7；其它世界观里的连日庆典（如三日祭、七日狩猎节）同理。
 - 拿不准就填 1。
 
+【说明（每条最后一段）· 这是点/线/大纲乃至主楼 AI 日后展开这个日子的唯一依据，务必写全、写实，别只写一句泛泛套话】
+最后一段「说明」要在**同一行内**（严禁换行，可用逗号 / 分号分隔要点）交代清楚：
+- 由来与意义：纪念什么、为何重要；
+- 涉及的人物 / 阵营：谁的生日 / 忌日 / 纪念，哪些人会参与或格外在意；
+- 典型活动 / 习俗：这天通常做什么（祭祀、团聚、赠礼、休战、狩猎、庆典……）；
+- 专属日期（anniversary / custom）额外点明它绑定的那段剧情或关系，让读者一看就知道来龙去脉。
+宁可信息少写，也不要编造与设定冲突的细节；但至少要让人明白「这天该发生什么、和谁有关、怎么过」。
+
 【输出格式（严格遵守，只输出下面结构，不要任何多余解释）】
 <almanac_widget>
-Item: 名称|type|month|day|days|displayDate|一句话说明这个日子的意义或习俗
-Item: 名称|type|month|day|days|displayDate|说明
+Item: 名称|type|month|day|days|displayDate|说明（由来+涉及人物+习俗活动，写全关键信息，单行不换行）
+Item: 名称|type|month|day|days|displayDate|说明（同上）
 </almanac_widget>
 按 month、day 从小到大排列。type 只能是 festival / birthday / anniversary / custom。所有文字用中文（专有名词可保留原文）。`;
 }
@@ -8725,6 +8927,7 @@ function toggleSettings() {
         $overlay.stop(true).css({ display: 'flex', opacity: 0 }).animate({ opacity: 1 }, 180);
     } else {
         $overlay.stop(true).animate({ opacity: 0 }, 150, function () { $(this).css('display', 'none'); });
+        stSaveSettings();   // 关面板即把面板内所有改动立即写盘：兜底防抖未 flush 的字段（customPrompt 等），根治重启丢失
     }
     $(`#${MODAL_ID} .sp-settings-btn`).toggleClass('sp-btn-active', settingsOpen);
     syncMobileViewport();
@@ -8737,6 +8940,9 @@ function renderMemorySection() {
     const useAnima = !!s.useAnima;
     $('#sp-mem-source-bbb').prop('checked', useBbb);
     $('#sp-mem-source-anima').prop('checked', useAnima);
+    // 自定义提示词是全局设置、与记忆源无关，必须在下面按源分支的 early-return 之前回填，
+    // 否则用户选 Anima/柏宝书时函数提前 return，重开面板这框会空白（值其实已存盘）。
+    $('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
     if (useBbb) {
         $('#sp-mem-internal').hide();
         $('#sp-mem-anima-status').hide();
@@ -8772,7 +8978,6 @@ function renderMemorySection() {
     $('#sp-mem-maxtokens').val(Number.isFinite(+s.memMaxTokens) ? +s.memMaxTokens : 60000);
     $('#sp-mem-keeptags').val(typeof s.keepTags  === 'string' ? s.keepTags  : 'content');
     $('#sp-mem-extratags').val(typeof s.extraTags === 'string' ? s.extraTags : '');
-    $('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
     refreshMemoryStatus();
 }
 
@@ -8953,6 +9158,9 @@ function bindMemoryHandlers() {
     $('#sp-custom-prompt').on('input', function () {
         getSettings().customPrompt = this.value;
         saveSettingsDebounced();
+    }).on('blur', function () {
+        getSettings().customPrompt = this.value;
+        stSaveSettings();   // 失焦即落盘，覆盖"填完没关面板就直接刷新"的场景
     });
     $('#sp-mem-check').on('click', function () {
         refreshMemoryStatus();
