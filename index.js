@@ -91,8 +91,9 @@ const DEFAULT_SETTINGS = {
     // 坐标（收藏楼层）
     anchorInlineBtn      : true,               // 楼层头部显示「收藏此楼」入口（关掉则只能从别处收藏，暂无）
     anchorSizeWarnBytes  : 8 * 1024 * 1024,    // 坐标收藏占用预警阈值（快照带样式偏大，给足余量）
-    // 历法模板只保存可复用的描述符；角色绑定由后续独立能力负责。
+    // 历法模板保存可复用描述符；绑定表以角色 avatar 精确映射模板 id。
     calendarTemplates    : [],
+    calendarTemplateBindings: {},
 };
 
 // 内置默认破限提示词：不在 UI 展示。「自定义提示词」框留空 → 注入此默认；填了内容 → 整体替换。
@@ -424,6 +425,10 @@ jQuery(async () => {
         setTimeout(checkMemoryMigrationNotice, 500);
         // 跨设备冲突：本机和云端各有一份不同的点线面间 → 弹窗二选一（延后到面板/主题就绪）
         if (_mig.status === 'conflict') setTimeout(() => showStoreConflictDialog(_mig), 700);
+        maybeApplyBoundCalendarTemplate().catch(error => {
+            console.error('[SP calendar] 角色默认历法自动应用失败', error);
+            if (getSettings().notifyMode === 'full') showToast('角色默认历法没有自动应用成功', null, true);
+        });
         // 切进来立即按新 chat 的大纲+游标重设注入（关着或无大纲时内部自清）。
         refreshOutlineInjection();
     };
@@ -433,6 +438,10 @@ jQuery(async () => {
     try {
         const _mig0 = store.migrateChatFromLocalStorage(getContext().chatId);
         if (_mig0.status === 'conflict') setTimeout(() => showStoreConflictDialog(_mig0), 900);
+        if (pluginEnabled()) maybeApplyBoundCalendarTemplate().catch(error => {
+            console.error('[SP calendar] 首屏角色默认历法自动应用失败', error);
+            if (getSettings().notifyMode === 'full') showToast('角色默认历法没有自动应用成功', null, true);
+        });
     } catch (err) { console.warn('[SP store] 首屏迁移失败:', err); }
     // Auto-advance storylines, then append inline block to every AI message.
     // NOTE: shouldAdvance triggers generation BEFORE appending the current block,
@@ -661,6 +670,7 @@ function getSettings() {
     for (const k in DEFAULT_SETTINGS) if (!(k in s)) s[k] = DEFAULT_SETTINGS[k];
     // 展开默认对象时数组仍会共享引用；设置层必须持有自己的容器。
     if (s.calendarTemplates === DEFAULT_SETTINGS.calendarTemplates) s.calendarTemplates = [];
+    if (s.calendarTemplateBindings === DEFAULT_SETTINGS.calendarTemplateBindings) s.calendarTemplateBindings = {};
     return s;
 }
 
@@ -798,6 +808,10 @@ function applyPluginEnabled(on) {
         try { refreshOutlineInjection(); } catch {}       // 重设大纲潜伏注入
         try { scanAnchorButtons(); } catch {}             // 补回锚点收藏入口
         try { refreshInlineWindow(true); } catch {}
+        maybeApplyBoundCalendarTemplate().catch(error => {
+            console.error('[SP calendar] 重新启用后角色默认历法自动应用失败', error);
+            if (getSettings().notifyMode === 'full') showToast('角色默认历法没有自动应用成功', null, true);
+        });
     } else {
         $(`#${FAB_ID}`).css('display', 'none');
         try { _clearAllInlineBoxes(); } catch {}
@@ -3659,6 +3673,8 @@ function injectModal() {
     });
     $almanac.on('click', '.sp-alm-manager-template-head', function () {
         _almanacManager.templatesOpen = !_almanacManager.templatesOpen;
+        _almanacManager.bindTemplateId = null;
+        _almanacManager.bindQuery = '';
         renderAlmanacPanel({ focus: { selector: '.sp-alm-manager-template-head' } });
     });
     $almanac.on('click', '.sp-alm-manager-template-save-current', async function () {
@@ -3719,9 +3735,35 @@ function injectModal() {
         const id = $(this).attr('data-id');
         const template = loadCalendarTemplates().find(item => item.id === id);
         if (!template) { showToast('模板已不存在', null, true); renderAlmanacPanel(); return; }
-        if (!await customDialog.confirm({ title: '删除历法模板', body: `确定删除「${template.name}」吗？`, confirmText: '删除', cancelText: '取消' })) return;
+        if (!await customDialog.confirm({ title: '删除历法模板', body: `确定删除「${template.name}」吗？角色卡绑定也会一并解除。`, confirmText: '删除', cancelText: '取消' })) return;
+        const bindings = { ...calendarTemplateBindings() };
+        for (const avatar of Object.keys(bindings)) if (bindings[avatar] === id) delete bindings[avatar];
+        getSettings().calendarTemplateBindings = bindings;
         saveCalendarTemplates(loadCalendarTemplates().filter(item => item.id !== id));
-        if (_almanacManager) renderAlmanacPanel({ focus: { selector: '.sp-alm-manager-template-head' } });
+        if (_almanacManager) { _almanacManager.bindTemplateId = null; renderAlmanacPanel({ focus: { selector: '.sp-alm-manager-template-head' } }); }
+    });
+    $almanac.on('click', '.sp-alm-manager-template-bind', function () {
+        const id = $(this).attr('data-id');
+        const opening = _almanacManager.bindTemplateId !== id;
+        _almanacManager.bindTemplateId = opening ? id : null;
+        _almanacManager.bindQuery = '';
+        renderAlmanacPanel({
+            reveal: { kind: 'template', id, selector: opening ? '.sp-alm-manager-bind-search' : '.sp-alm-manager-template-bind' },
+            focusBindingId: opening ? id : null,
+            focus: opening ? null : { kind: 'template', id, selector: '.sp-alm-manager-template-bind' },
+        });
+    });
+    $almanac.on('input', '.sp-alm-manager-bind-search', function () {
+        if (!_almanacManager) return;
+        _almanacManager.bindQuery = String($(this).val() ?? '');
+        const id = $(this).attr('data-template-id');
+        $(this).closest('.sp-alm-manager-bind-panel').find('.sp-alm-manager-bind-results').html(renderCalendarBindingOptions(id));
+    });
+    $almanac.on('click', '.sp-alm-manager-bind-option', async function () {
+        await updateCalendarTemplateBinding($(this).attr('data-avatar'), $(this).attr('data-template-id'));
+    });
+    $almanac.on('click', '.sp-alm-manager-bind-chip-remove', async function () {
+        await updateCalendarTemplateBinding($(this).attr('data-avatar'), null, $(this).attr('data-template-id'));
     });
 
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
@@ -8753,9 +8795,62 @@ function renameCalendarTemplate(list, id, name) {
     return list.map(item => item.id === id ? { ...item, name, updatedAt: Date.now() } : item);
 }
 
+function calendarTemplateBindings() {
+    const settings = getSettings();
+    if (!settings.calendarTemplateBindings || typeof settings.calendarTemplateBindings !== 'object' || Array.isArray(settings.calendarTemplateBindings)) settings.calendarTemplateBindings = {};
+    return settings.calendarTemplateBindings;
+}
+
+function currentCharacterCards() {
+    const ctx = getContext();
+    const characters = Array.isArray(ctx?.characters) ? ctx.characters : [];
+    const currentAvatar = charStableKey(ctx);
+    const seen = new Set();
+    return characters.map(character => {
+        const avatar = String(character?.avatar ?? '');
+        if (!avatar || seen.has(avatar)) return null;
+        seen.add(avatar);
+        const rawName = character?.name == null ? '' : String(character.name);
+        return { avatar, name: rawName === '' ? avatar : rawName, current: avatar === currentAvatar };
+    }).filter(Boolean).sort((a, b) => Number(b.current) - Number(a.current) || a.name.localeCompare(b.name, 'zh-CN'));
+}
+
+// 早期 WIP 曾裁剪 avatar；精确键优先，只有不存在同名精确角色时才兼容旧裁剪键。
+function calendarBindingKey(bindings, avatar, cards = currentCharacterCards()) {
+    if (Object.prototype.hasOwnProperty.call(bindings, avatar)) return avatar;
+    const legacy = avatar.trim();
+    if (legacy !== avatar && Object.prototype.hasOwnProperty.call(bindings, legacy) && !cards.some(card => card.avatar === legacy)) return legacy;
+    return avatar;
+}
+
+function calendarBoundTemplateId(bindings, avatar, cards = currentCharacterCards()) {
+    return bindings[calendarBindingKey(bindings, avatar, cards)] || '';
+}
+
+function setCalendarBinding(bindings, avatar, templateId, cards = currentCharacterCards()) {
+    const oldKey = calendarBindingKey(bindings, avatar, cards);
+    delete bindings[oldKey];
+    delete bindings[avatar];
+    if (templateId) bindings[avatar] = templateId;
+}
+
+function calendarBindingCandidates(cards, bindings, templateId, query = '') {
+    const normalizedQuery = String(query ?? '').toLocaleLowerCase();
+    return cards.filter(card => {
+        if (calendarBoundTemplateId(bindings, card.avatar, cards) === templateId) return false;
+        return !normalizedQuery || card.name.toLocaleLowerCase().includes(normalizedQuery) || card.avatar.toLocaleLowerCase().includes(normalizedQuery);
+    });
+}
+
+function sortCalendarTemplatesForCurrent(list, currentTemplateId) {
+    return list.map((template, index) => ({ template, index }))
+        .sort((a, b) => Number(b.template.id === currentTemplateId) - Number(a.template.id === currentTemplateId) || a.index - b.index)
+        .map(item => item.template);
+}
+
 function openCalendarManager() {
     _almanacEditor = null;
-    _almanacManager = { editing: false, draft: cloneCalDesc(loadCalDesc()), error: '', templatesOpen: false };
+    _almanacManager = { editing: false, draft: cloneCalDesc(loadCalDesc()), error: '', templatesOpen: false, bindTemplateId: null, bindQuery: '' };
     if (almanacMode) renderAlmanacPanel();
 }
 
@@ -8820,18 +8915,55 @@ function renderCalendarCard() {
     </div></section>`;
 }
 
+function renderCalendarBindingOptions(templateId) {
+    const manager = _almanacManager;
+    if (!manager) return '';
+    const cards = currentCharacterCards();
+    const bindings = calendarTemplateBindings();
+    const query = String(manager.bindQuery ?? '');
+    const shown = calendarBindingCandidates(cards, bindings, templateId, query);
+    if (!shown.length) return `<div class="sp-alm-manager-bind-empty">${query ? '没有匹配的角色卡' : '没有更多可添加的角色卡'}</div>`;
+    return shown.map(card => `<button type="button" class="sp-alm-manager-bind-option${card.current ? ' sp-alm-manager-bind-option-current' : ''}" role="option" aria-selected="false" data-template-id="${escapeAttr(templateId)}" data-avatar="${escapeAttr(card.avatar)}" title="${escapeAttr(card.avatar)}">
+        <i class="fa-solid fa-user" aria-hidden="true"></i><span class="sp-alm-manager-bind-option-label"><span class="sp-alm-manager-bind-option-name">${escapeHtml(card.name)}</span>${card.current ? '<small class="sp-alm-manager-bind-option-hint">(当前角色卡)</small>' : ''}</span>
+    </button>`).join('');
+}
+
+function renderCalendarBindingEditor(templateId, cards, bindings) {
+    const selected = cards.filter(card => calendarBoundTemplateId(bindings, card.avatar, cards) === templateId);
+    const chips = selected.map(card => `<button type="button" class="sp-alm-manager-bind-chip-remove${card.current ? ' sp-alm-manager-bind-chip-current' : ''}" data-template-id="${escapeAttr(templateId)}" data-avatar="${escapeAttr(card.avatar)}" aria-label="解除角色卡 ${escapeAttr(card.name)} 的模板绑定" title="解除绑定">
+        <span>${escapeHtml(card.name)}</span><i class="fa-solid fa-xmark" aria-hidden="true"></i>
+    </button>`).join('');
+    return `<div class="sp-alm-manager-bind-panel">
+        <div class="sp-alm-manager-bind-chips">${chips || '<span class="sp-alm-manager-bind-empty">尚未绑定角色卡 · 当绑定角色的当前聊天既没有历法，也没有纪念日时，将自动采用此历法</span>'}</div>
+        <input type="text" class="sp-input sp-alm-manager-bind-search" role="combobox" aria-expanded="true" aria-controls="sp-alm-manager-bind-results-${escapeAttr(templateId)}" data-template-id="${escapeAttr(templateId)}" value="${escapeAttr(_almanacManager.bindQuery)}" placeholder="搜索角色卡名称…" autocomplete="off">
+        <div id="sp-alm-manager-bind-results-${escapeAttr(templateId)}" class="sp-alm-manager-bind-results" role="listbox">${renderCalendarBindingOptions(templateId)}</div>
+    </div>`;
+}
+
 function renderCalendarTemplates() {
     const manager = _almanacManager;
-    const rows = loadCalendarTemplates().map(template => `<div class="sp-alm-manager-template-entry" data-template-id="${escapeAttr(template.id)}">
-        <div class="sp-alm-manager-template-row">
-            <div class="sp-alm-manager-template-name">${escapeHtml(template.name)}</div>
-            <span class="sp-alm-manager-template-actions">
+    const cards = currentCharacterCards();
+    const bindings = calendarTemplateBindings();
+    const currentAvatar = charStableKey(getContext());
+    const currentTemplateId = currentAvatar ? calendarBoundTemplateId(bindings, currentAvatar, cards) : '';
+    const countFor = id => Object.values(bindings).filter(value => value === id).length;
+    const rows = sortCalendarTemplatesForCurrent(loadCalendarTemplates(), currentTemplateId).map(template => {
+        const bindOpen = manager.bindTemplateId === template.id;
+        const isCurrent = template.id === currentTemplateId;
+        const bindTitle = isCurrent ? '当前角色已绑定此模板' : '绑定角色卡';
+        return `<div class="sp-alm-manager-template-entry${isCurrent ? ' sp-alm-manager-template-current' : ''}" data-template-id="${escapeAttr(template.id)}">
+            <div class="sp-alm-manager-template-row"><div class="sp-alm-manager-template-main">
+                <div class="sp-alm-manager-template-name">${escapeHtml(template.name)}</div>
+                <div class="sp-alm-manager-template-meta">已绑定 ${countFor(template.id)} 张角色卡</div>
+            </div><span class="sp-alm-manager-template-actions">
                 <button class="sp-icon-btn sp-alm-manager-template-rename" data-id="${escapeAttr(template.id)}" title="重命名模板" aria-label="重命名模板"><i class="fa-solid fa-i-cursor"></i></button>
                 <button class="sp-icon-btn sp-alm-manager-template-apply" data-id="${escapeAttr(template.id)}" title="应用此模板" aria-label="应用此模板"><i class="fa-solid fa-file-import"></i></button>
+                <button class="sp-icon-btn sp-alm-manager-template-bind${isCurrent ? ' sp-btn-active' : ''}" data-id="${escapeAttr(template.id)}" title="${bindTitle}" aria-label="${bindTitle}" aria-expanded="${bindOpen}"><i class="fa-solid fa-link"></i></button>
                 <button class="sp-icon-btn sp-alm-manager-template-delete" data-id="${escapeAttr(template.id)}" title="删除模板" aria-label="删除模板"><i class="fa-solid fa-trash"></i></button>
-            </span>
-        </div>
-    </div>`).join('');
+            </span></div>
+            ${bindOpen ? renderCalendarBindingEditor(template.id, cards, bindings) : ''}
+        </div>`;
+    }).join('');
     return `<section class="sp-alm-manager-templates">
         <button class="sp-alm-manager-template-head" type="button" aria-expanded="${manager.templatesOpen}"><span>模板管理</span><i class="fa-solid fa-chevron-${manager.templatesOpen ? 'up' : 'down'}"></i></button>
         ${manager.templatesOpen ? `<div class="sp-alm-manager-template-body">
@@ -8839,6 +8971,44 @@ function renderCalendarTemplates() {
             <div class="sp-alm-manager-template-list">${rows || '<div class="sp-alm-manager-empty-templates">还没有历法模板</div>'}</div>
         </div>` : ''}
     </section>`;
+}
+
+// 绑定写入设置唯一状态源后立即局部重绘；ST 设置保存没有可靠的逐次成功回执，因此不显示成功提示。
+async function updateCalendarTemplateBinding(avatar, nextTemplateId, expectedTemplateId = null) {
+    const manager = _almanacManager;
+    if (!manager || !avatar) return false;
+    const cards = currentCharacterCards();
+    const bindings = { ...calendarTemplateBindings() };
+    const currentId = calendarBoundTemplateId(bindings, avatar, cards);
+    if (expectedTemplateId != null && currentId !== expectedTemplateId) return false;
+    if (currentId === (nextTemplateId || '')) return true;
+
+    const chatIdSnap = getContext().chatId;
+    const currentAvatarSnap = charStableKey(getContext());
+    setCalendarBinding(bindings, avatar, nextTemplateId, cards);
+    getSettings().calendarTemplateBindings = bindings;
+    manager.bindQuery = '';
+    refreshCalendarManager({ scope: 'templates', reveal: { kind: 'template', id: manager.bindTemplateId, selector: '.sp-alm-manager-bind-search' }, focusBindingId: manager.bindTemplateId });
+    saveSettingsDebounced();
+
+    if (nextTemplateId && avatar === currentAvatarSnap && getContext().chatId === chatIdSnap) {
+        // 先让移动端绘制绑定结果；连续改绑时，只有仍然生效的最后一次操作可以应用默认历法。
+        await new Promise(resolve => (globalThis.requestAnimationFrame || (callback => setTimeout(callback, 0)))(resolve));
+        const latestCards = currentCharacterCards();
+        const stillCurrent = getContext().chatId === chatIdSnap
+            && charStableKey(getContext()) === currentAvatarSnap
+            && calendarBoundTemplateId(calendarTemplateBindings(), avatar, latestCards) === nextTemplateId;
+        if (stillCurrent) {
+            try {
+                const applied = await maybeApplyBoundCalendarTemplate({ render: false });
+                if (applied && _almanacManager) refreshCalendarManager({ scope: 'card' });
+            } catch (error) {
+                console.error('[SP calendar] 角色默认历法应用失败', error);
+                showToast('角色绑定已更新，但默认历法没有应用成功，请稍后重试', null, true);
+            }
+        }
+    }
+    return true;
 }
 
 function renderCalendarManagerBody() { return renderCalendarCard() + renderCalendarTemplates(); }
@@ -8877,8 +9047,47 @@ function refreshCalendarManager(options = {}) {
     const $scroller = $wrap.find('.sp-alm-body').first();
     const $content = $scroller.children('.sp-alm-editor-body').first();
     if (!$wrap.find('.sp-alm-manager-hint').length || !$content.length) return false;
-    $content.html(renderCalendarManagerBody());
-    if (options.focus) focusCalendarManagerTarget(calendarManagerTarget(options.focus, $content));
+
+    const scope = options.scope || 'body';
+    const $oldSearch = $content.find('.sp-alm-manager-bind-search').first();
+    const oldBindingView = $oldSearch.length ? {
+        id: $oldSearch.attr('data-template-id'),
+        query: String($oldSearch.val() ?? ''),
+        active: document.activeElement === $oldSearch.get(0),
+        selectionStart: $oldSearch.get(0).selectionStart,
+        selectionEnd: $oldSearch.get(0).selectionEnd,
+        resultsScrollTop: $oldSearch.closest('.sp-alm-manager-bind-panel').find('.sp-alm-manager-bind-results').scrollTop() || 0,
+    } : null;
+
+    if (scope === 'templates') {
+        const $templates = $content.children('.sp-alm-manager-templates').first();
+        if (!$templates.length) return false;
+        $templates.replaceWith(renderCalendarTemplates());
+    } else if (scope === 'card') {
+        const $card = $content.children('.sp-alm-manager-card').first();
+        if (!$card.length) return false;
+        $card.replaceWith(renderCalendarCard());
+    } else {
+        $content.html(renderCalendarManagerBody());
+    }
+
+    const focusBindingId = options.focusBindingId || (oldBindingView?.active ? oldBindingView.id : null);
+    if (oldBindingView) {
+        const $newSearch = $content.find('.sp-alm-manager-bind-search').filter(function () { return $(this).attr('data-template-id') === oldBindingView.id; }).first();
+        if ($newSearch.length && String($newSearch.val() ?? '') === oldBindingView.query) {
+            $newSearch.closest('.sp-alm-manager-bind-panel').find('.sp-alm-manager-bind-results').scrollTop(oldBindingView.resultsScrollTop);
+            if (oldBindingView.active) {
+                focusCalendarManagerTarget($newSearch);
+                $newSearch.get(0).setSelectionRange(oldBindingView.selectionStart, oldBindingView.selectionEnd);
+            }
+        }
+    }
+    if (focusBindingId) {
+        const $search = $content.find('.sp-alm-manager-bind-search').filter(function () { return $(this).attr('data-template-id') === focusBindingId; }).first();
+        focusCalendarManagerTarget($search);
+    } else if (options.focus) {
+        focusCalendarManagerTarget(calendarManagerTarget(options.focus, $content));
+    }
     revealCalendarManagerTarget(calendarManagerTarget(options.reveal, $content), $scroller);
     return true;
 }
@@ -8956,6 +9165,41 @@ async function commitCalendarDesc(cal) {
     syncLatestAlmanacBlock();
     syncLatestScheduleBlock();
     return { ok: true, cal };
+}
+
+async function maybeApplyBoundCalendarTemplate({ notify = true, render = true } = {}) {
+    if (!pluginEnabled() || !getContext().chatId) return false;
+    const charKey = charStableKey(getContext());
+    if (!charKey || readStore(getCalDescKey()) != null) return false;
+    const rawItems = readStore(getAlmanacKey())?.items;
+    if (Array.isArray(rawItems) && rawItems.length) return false; // 已有日期时完全静默，避免打扰和隐式迁移。
+    const bindings = calendarTemplateBindings();
+    const bindingKey = calendarBindingKey(bindings, charKey, currentCharacterCards());
+    const templateId = bindings[bindingKey] || '';
+    if (!templateId) return false;
+    const template = loadCalendarTemplates().find(item => item.id === templateId);
+    if (!template) {
+        delete bindings[bindingKey];
+        saveSettingsDebounced();
+        return false;
+    }
+    const cal = cloneCalDesc(template);
+    const chatIdSnap = getContext().chatId;
+    if (getContext().chatId !== chatIdSnap) return false;
+    if (!saveCalDesc(cal)) throw new Error('当前聊天无法写入角色默认历法');
+    const rawAnchor = getSettings().dateAnchor?.[charKey];
+    if (rawAnchor) {
+        const month = Math.min(Math.max(Number(rawAnchor.month) || 1, 1), calMonthCount(cal));
+        const day = Math.min(Math.max(Number(rawAnchor.day) || 1, 1), calMonthDays(cal, month));
+        setDateAnchor(charKey, month, day);
+    }
+    _almanacCalMonth = null;
+    _almanacCalDay = null;
+    syncLatestAlmanacBlock(chatIdSnap);
+    syncLatestScheduleBlock(chatIdSnap);
+    if (render && almanacMode) renderAlmanacPanel();
+    if (notify && getSettings().notifyMode === 'full') showToast(`已采用角色默认历法：${template.name}`);
+    return true;
 }
 
 function almCalMonth() {

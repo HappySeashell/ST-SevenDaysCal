@@ -4393,10 +4393,57 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-alm-manager-template-save-current:hover i, .sp-alm-manager-add-month:hover i { color: var(--sp-primary); }
 .sp-alm-manager-template-list { display: flex; flex-direction: column; gap: 6px; }
 .sp-alm-manager-template-entry { overflow: hidden; border: 1px solid var(--sp-divider); border-radius: 8px; background: var(--sp-sheet-bg); }
+.sp-alm-manager-template-entry.sp-alm-manager-template-current { border-color: var(--sp-primary); background: var(--sp-hover-bg); }
 .sp-alm-manager-template-row { padding: 7px 8px; }
-.sp-alm-manager-template-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sp-on-surface); font-size: 0.78rem; font-weight: 600; }
+.sp-alm-manager-template-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sp-alm-manager-template-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sp-on-surface); font-size: 0.78rem; font-weight: 600; }
+.sp-alm-manager-template-meta { color: var(--sp-subtle); font-size: 0.68rem; }
 .sp-alm-manager-template-actions { display: inline-flex; flex-shrink: 0; gap: 0; }
 .sp-alm-manager-template-actions .sp-icon-btn { width: 26px; height: 26px; font-size: 0.72rem; }
+.sp-alm-manager-bind-panel { display: flex; flex-direction: column; gap: 7px; padding: 8px; border-top: 1px solid var(--sp-divider); background: var(--sp-surface); }
+.sp-alm-manager-bind-chips { display: flex; flex-wrap: wrap; gap: 5px; min-height: 24px; align-items: center; }
+.sp-alm-manager-bind-chip-remove {
+    display      : inline-flex;
+    align-items  : center;
+    gap          : 5px;
+    max-width    : 100%;
+    padding      : 3px 7px 3px 8px;
+    border       : 1px solid var(--sp-divider);
+    border-radius: 99px;
+    background   : var(--sp-sheet-bg);
+    color        : var(--sp-on-surface);
+    font         : 0.72rem var(--sp-font);
+    cursor       : pointer;
+}
+.sp-alm-manager-bind-chip-remove:hover, .sp-alm-manager-bind-chip-current { border-color: var(--sp-primary); }
+.sp-alm-manager-bind-chip-remove span { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.sp-alm-manager-bind-chip-remove i { flex-shrink: 0; color: var(--sp-subtle); }
+.sp-alm-manager-bind-search { width: 100%; box-sizing: border-box; font-size: 0.82rem; }
+.sp-alm-manager-bind-results { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+.sp-alm-manager-bind-results::-webkit-scrollbar { width: 4px; }
+.sp-alm-manager-bind-results::-webkit-scrollbar-thumb { background: var(--sp-divider); border-radius: 2px; }
+.sp-alm-manager-bind-option {
+    width        : 100%;
+    display      : flex;
+    align-items  : center;
+    gap          : 8px;
+    padding      : 7px 9px;
+    border       : 1px solid transparent;
+    border-radius: 6px;
+    background   : transparent;
+    color        : var(--sp-on-surface);
+    font         : 0.8rem var(--sp-font);
+    text-align   : left;
+    cursor       : pointer;
+}
+.sp-alm-manager-bind-option:hover { border-color: var(--sp-primary); background: var(--sp-hover-bg); }
+.sp-alm-manager-bind-option i { width: 16px; flex: 0 0 16px; text-align: center; color: var(--sp-subtle); }
+.sp-alm-manager-bind-option-label { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 4px; }
+.sp-alm-manager-bind-option-name { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.sp-alm-manager-bind-option-hint { flex: 0 0 auto; color: var(--sp-subtle); font-size: 0.68rem; font-weight: 400; white-space: nowrap; }
+.sp-alm-manager-bind-option-current > i, .sp-alm-manager-bind-option-current .sp-alm-manager-bind-option-name { color: var(--sp-primary); }
+.sp-alm-manager-bind-option:disabled, .sp-alm-manager-bind-chip-remove:disabled { cursor: default; opacity: 0.55; }
+.sp-alm-manager-bind-empty { color: var(--sp-subtle); font-size: 0.74rem; padding: 5px 2px; }
 .sp-alm-manager-empty-templates { padding: 6px 2px; color: var(--sp-subtle); font-size: 0.72rem; font-style: italic; }
 
 /* ── 历·楼内七天条（注入聊天流，只读；扁扁一条，与线块共存于最新 AI 楼）──
