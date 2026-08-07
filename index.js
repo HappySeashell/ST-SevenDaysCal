@@ -255,6 +255,14 @@ let viewportSyncBound   = false;
 
 const isMobile = () => window.innerWidth <= 640;
 
+// 通用操作菜单只描述动作；具体页面决定何时显示、如何处理动作。
+const ACTION_MENU_CONFIGS = Object.freeze({
+    almanac: Object.freeze([
+        Object.freeze({ action: 'generate-almanac', icon: 'fa-wand-magic-sparkles', label: '生成节日', title: 'AI 按世界观铺满一整年' }),
+        Object.freeze({ action: 'manage-calendar', icon: 'fa-calendar-days', label: '历法管理', title: '查看、编辑和管理历法模板' }),
+    ]),
+});
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 // Module-level handles so hot-reload / re-init doesn't double-register.
@@ -3500,6 +3508,20 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-add', function () { openAlmanacEditor(null); });
     $almanac.on('click', '.sp-alm-gen', triggerGenerateAlmanac);
     $almanac.on('click', '.sp-alm-manage', openCalendarManager);
+    $almanac.on('click', '.sp-action-menu-toggle', function (event) {
+        event.stopPropagation();
+        const menu = $(this).closest('.sp-action-menu')[0];
+        const willOpen = !$(menu).hasClass('sp-action-menu-open');
+        closeActionMenus(menu);
+        $(menu).toggleClass('sp-action-menu-open', willOpen).find('.sp-action-menu-list').attr('hidden', !willOpen);
+        $(this).attr('aria-expanded', String(willOpen));
+    });
+    $almanac.on('click', '.sp-action-menu-item', function () {
+        const action = $(this).attr('data-action');
+        closeActionMenus();
+        if (action === 'generate-almanac') triggerGenerateAlmanac();
+        else if (action === 'manage-calendar') openCalendarManager();
+    });
     $almanac.on('click', '.sp-alm-pin', function () { toggleAlmanacPin($(this).attr('data-id')); });
     $almanac.on('click', '.sp-alm-edit', function () { openAlmanacEditor($(this).attr('data-id')); });
     $almanac.on('click', '.sp-alm-del', function () { deleteAlmanacItem($(this).attr('data-id')); });
@@ -3764,6 +3786,13 @@ function injectModal() {
     });
     $almanac.on('click', '.sp-alm-manager-bind-chip-remove', async function () {
         await updateCalendarTemplateBinding($(this).attr('data-avatar'), null, $(this).attr('data-template-id'));
+    });
+
+    $(document).off('click.spActionMenu').on('click.spActionMenu', function (event) {
+        if (!$(event.target).closest('.sp-action-menu').length) closeActionMenus();
+    });
+    $(document).off('keydown.spActionMenu').on('keydown.spActionMenu', function (event) {
+        if (event.key === 'Escape') closeActionMenus();
     });
 
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
@@ -8539,6 +8568,25 @@ function mergeAlmanac(oldItems, aiItems) {
 }
 
 // ── 渲染 ──
+function closeActionMenus(except = null) {
+    $('.sp-action-menu-open').each(function () {
+        if (except && this === except) return;
+        $(this).removeClass('sp-action-menu-open').find('.sp-action-menu-list').attr('hidden', true);
+        $(this).find('.sp-action-menu-toggle').attr('aria-expanded', 'false');
+    });
+}
+
+function actionMenuHtml(menuId) {
+    const items = ACTION_MENU_CONFIGS[menuId] || [];
+    const rows = items.map(item => `<button type="button" class="sp-action-menu-item" data-action="${escapeAttr(item.action)}" title="${escapeAttr(item.title)}">
+        <i class="fa-solid ${escapeAttr(item.icon)}" aria-hidden="true"></i><span>${escapeHtml(item.label)}</span>
+    </button>`).join('');
+    return `<div class="sp-action-menu" data-menu-id="${escapeAttr(menuId)}">
+        <button type="button" class="sp-icon-btn sp-action-menu-toggle" title="更多操作" aria-label="更多操作" aria-expanded="false"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+        <div class="sp-action-menu-list" hidden>${rows}</div>
+    </div>`;
+}
+
 function almToolbarHtml() {
     return `<div class="sp-alm-toolbar">
         <div class="sp-alm-sheet-toggle">
@@ -8547,8 +8595,11 @@ function almToolbarHtml() {
         </div>
         <div class="sp-alm-tools">
             <button class="sp-icon-btn sp-alm-add" title="手动添加日期" aria-label="手动添加日期"><i class="fa-solid fa-plus"></i></button>
-            <button class="sp-icon-btn sp-alm-gen" title="生成节日（AI 按世界观铺满一整年）" aria-label="生成节日"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
-            <button class="sp-icon-btn sp-alm-manage" title="历法管理" aria-label="历法管理"><i class="fa-solid fa-calendar-days"></i></button>
+            <div class="sp-alm-wide-tools">
+                <button class="sp-icon-btn sp-alm-gen" title="生成节日（AI 按世界观铺满一整年）" aria-label="生成节日"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+                <button class="sp-icon-btn sp-alm-manage" title="历法管理" aria-label="历法管理"><i class="fa-solid fa-calendar-days"></i></button>
+            </div>
+            <div class="sp-alm-narrow-tools">${actionMenuHtml('almanac')}</div>
         </div>
     </div>`;
 }
