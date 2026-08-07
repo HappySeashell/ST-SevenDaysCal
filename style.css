@@ -2564,6 +2564,80 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-confirm-ok:hover { opacity: 0.88; }
 
+/* ─── 通用决策弹窗：独立于作者 sp-confirm 生命周期 ─────────────────────────── */
+.sp-dialog-overlay {
+    position       : fixed;
+    inset          : 0;
+    z-index        : 2000002;
+    pointer-events : auto;
+    background     : rgba(0,0,0,0.55);
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    padding        : 20px;
+    animation      : sp-wi-fullview-in 0.15s ease-out;
+}
+.sp-dialog-sheet {
+    background-color: var(--sp-sheet-bg-legacy);
+    background-image: linear-gradient(var(--sp-sheet-bg), var(--sp-sheet-bg));
+    border-radius : 12px;
+    width         : min(400px, calc(100vw - 40px));
+    max-width     : 100%;
+    padding       : 16px 18px 14px;
+    box-shadow    : var(--sp-shadow);
+    display       : flex;
+    flex-direction: column;
+    gap           : 10px;
+}
+.sp-dialog-head {
+    font-size  : 0.95rem;
+    font-weight: 600;
+    color      : var(--sp-on-surface);
+}
+.sp-dialog-body {
+    font-size  : 0.85rem;
+    line-height: 1.65;
+    color      : var(--sp-on-surface);
+    white-space: pre-wrap;
+    word-break : break-word;
+}
+.sp-dialog-note {
+    font-size   : 0.75rem;
+    color       : var(--sp-subtle);
+    line-height : 1.55;
+    padding     : 8px 10px;
+    background  : var(--sp-hover-bg);
+    border-radius: 6px;
+    border-left : 2px solid var(--sp-divider);
+}
+.sp-dialog-actions {
+    display        : flex;
+    justify-content: flex-end;
+    flex-wrap      : wrap;
+    gap            : 8px;
+    margin-top     : 4px;
+}
+.sp-dialog-button {
+    padding      : 6px 16px;
+    border-radius: 8px;
+    border       : none;
+    font-size    : 0.83rem;
+    cursor       : pointer;
+    font-weight  : 500;
+    transition   : opacity 0.15s;
+}
+.sp-dialog-button-secondary {
+    background: transparent;
+    color     : var(--sp-subtle);
+    border    : 1px solid var(--sp-divider);
+}
+.sp-dialog-button-secondary:hover { color: var(--sp-on-surface); border-color: var(--sp-surface-high); }
+.sp-dialog-button-primary {
+    background: var(--sp-primary);
+    color     : var(--sp-on-primary);
+}
+.sp-dialog-button-primary:hover { opacity: 0.88; }
+
 /* ─── Memory section ─────────────────────────────────────────────────────────── */
 .sp-mem-status {
     display       : grid;

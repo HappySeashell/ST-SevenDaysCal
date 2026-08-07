@@ -12,6 +12,7 @@ import * as theater from './theater.js';
 import * as anchor from './anchor.js';
 import * as store from './store.js';
 import * as snapshot from './snapshot.js';
+import { createDialogManager } from './modal.js';
 
 const PLUGIN_ID  = 'schedule-planner';
 const MODAL_ID   = 'sp-modal-root';
@@ -178,6 +179,18 @@ function getEffectiveTheme() {
 }
 
 let currentTheme   = detectSTTheme();
+
+// 历法冲突决策使用独立弹窗；作者原有 spConfirm 与既有调用保持不变。
+const customDialog = createDialogManager({
+    $: jQuery,
+    mount: document.documentElement,
+    getRootClass: () => `sp-root sp-${currentTheme}`,
+    subscribeContextChange: handler => {
+        eventSource.on(event_types.CHAT_CHANGED, handler);
+        return () => eventSource.removeListener?.(event_types.CHAT_CHANGED, handler);
+    },
+});
+
 let cachedSchedule = null;
 let isGenerating   = false;
 let settingsOpen   = false;
@@ -4119,6 +4132,7 @@ function closePanel() {
     // will get its CHAT_CHANGED escape hatch on next chat switch. If user reopens
     // without switching, they'll see the confirm was gone and click again.
     $('#sp-confirm .sp-confirm-cancel').trigger('click');
+    customDialog.cancelActive();
     $(`#${MODAL_ID}`).stop(true).animate({ opacity: 0 }, 150, function () {
         $(this).css('display', 'none');
     });
@@ -5759,17 +5773,18 @@ function applyAlmanacWidget(body, $btn, idx) {
 
 // 应用间落地的历法描述符：写入全局 caldesc（单例，非追加），整个历的月数/月名/月长随之改变。
 // 换历法后月历选中态可能越界 → 清 _almanacCalMonth/_almanacCalDay 回落当前锚点月；刷新历面板 + 楼内历条/今头纪年名。
-function applyEraWidget(body, $btn) {
+async function applyEraWidget(body, $btn) {
     const desc = parseEraWidget(body);
     if (!desc) { showToast('历法卡片格式不完整，无法应用', null, true); return; }
     if (!getCalDescKey()) { showToast('当前 chat 没有可写入的历法缓存', null, true); return; }
-    if (!saveCalDesc(desc)) { showToast('历法保存失败', null, true); return; }
-    _almanacCalMonth = null;
-    _almanacCalDay = null;
+    const result = await commitCalendarDesc(desc);
+    if (!result.ok) {
+        if (!result.cancelled) showToast(result.error || '历法保存失败', null, true);
+        return;
+    }
     if (almanacMode) renderAlmanacPanel();
-    syncLatestAlmanacBlock();
     $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 历法已应用`);
-    showToast(`历法已更新：${desc.era ? desc.era + '·' : ''}一年 ${calMonthCount(desc)} 个月、共 ${calYearLen(desc)} 天`);
+    if (getSettings().notifyMode !== 'off') showToast(`历法已更新：${result.cal.era ? result.cal.era + '·' : ''}一年 ${calMonthCount(result.cal)} 个月、共 ${calYearLen(result.cal)} 天`);
 }
 
 function appendChatMsg(role, content, historyIndex = null) {
@@ -8477,6 +8492,73 @@ function calMonthCount(cal)  { return _cal(cal).months.length; }
 function calMonthDays(cal, m){ const M = _cal(cal).months; return M[almClampInt(m, 1, M.length, 1) - 1].days; }
 function calMonthName(cal, m){ const M = _cal(cal).months; const i = almClampInt(m, 1, M.length, 1) - 1; return M[i].name || `${i + 1}月`; }
 function calHasEra(cal)      { return !!String(_cal(cal).era || '').trim(); }
+
+function calendarConflicts(items, cal) {
+    return items.map(item => {
+        const month = Number(item.month), day = Number(item.day), days = Number(item.days || 1);
+        const invalid = month < 1 || month > calMonthCount(cal) || day < 1 || day > calMonthDays(cal, Math.min(Math.max(month, 1), calMonthCount(cal))) || days < 1 || days > calYearLen(cal);
+        if (!invalid) return null;
+        const fixedMonth = Math.min(Math.max(Number.isFinite(month) ? month : 1, 1), calMonthCount(cal));
+        const fixedDay = Math.min(Math.max(Number.isFinite(day) ? day : 1, 1), calMonthDays(cal, fixedMonth));
+        const fixedDays = Math.min(Math.max(Number.isFinite(days) ? days : 1, 1), calYearLen(cal));
+        return { item, fixed: { ...item, month: fixedMonth, day: fixedDay, days: fixedDays, displayDate: (fixedMonth !== month || fixedDay !== day) ? '' : item.displayDate } };
+    }).filter(Boolean);
+}
+
+// 调用方负责传入已规范化的历法；本函数只处理日期冲突、统一写入和消费者刷新。
+async function commitCalendarDesc(cal) {
+    const chatIdSnap = getContext().chatId;
+    const items = loadAlmanac();
+    const conflicts = calendarConflicts(items, cal);
+    const charKey = charStableKey(getContext());
+    const rawAnchor = charKey ? getSettings().dateAnchor?.[charKey] : null;
+    const anchorConflict = rawAnchor && !(Number(rawAnchor.month) >= 1 && Number(rawAnchor.month) <= calMonthCount(cal) && Number(rawAnchor.day) >= 1 && Number(rawAnchor.day) <= calMonthDays(cal, Number(rawAnchor.month)));
+    let action = 'keep';
+    if (conflicts.length || anchorConflict) {
+        const shown = conflicts.slice(0, 12).map(conflict => `• ${conflict.item.name}：${conflict.item.month}/${conflict.item.day} → ${conflict.fixed.month}/${conflict.fixed.day}`);
+        if (conflicts.length > shown.length) shown.push(`• 另有 ${conflicts.length - shown.length} 条`);
+        if (anchorConflict) {
+            const fixedMonth = Math.min(Math.max(Number(rawAnchor.month) || 1, 1), calMonthCount(cal));
+            const fixedDay = Math.min(Math.max(Number(rawAnchor.day) || 1, 1), calMonthDays(cal, fixedMonth));
+            shown.push(`• 当前剧情日期：${rawAnchor.month}/${rawAnchor.day} → ${fixedMonth}/${fixedDay}`);
+        }
+        action = await customDialog.choose({
+            title: '有日期不适用于新历法',
+            body: shown.join('\n'),
+            note: '自动修改会保留条目并夹取到有效日期；删除只删除上面列出的日期。',
+            choices: [
+                { value: 'cancel', label: '取消' },
+                { value: 'delete', label: '删除这些日期' },
+                { value: 'fix', label: '自动修改', primary: true },
+            ],
+        });
+        if (!action || action === 'cancel' || getContext().chatId !== chatIdSnap) return { ok: false, cancelled: true };
+    }
+    const conflictIds = new Set(conflicts.map(conflict => conflict.item.id));
+    const fixedById = new Map(conflicts.map(conflict => [conflict.item.id, conflict.fixed]));
+    const nextItems = action === 'delete' ? items.filter(item => !conflictIds.has(item.id)) : items.map(item => fixedById.get(item.id) || item);
+    if (getContext().chatId !== chatIdSnap) return { ok: false, cancelled: true };
+    const ts = Date.now();
+    const ok = store.writeBatch([
+        { kind: 'caldesc', view: 'user', charName: '', value: { ...cal, ts } },
+        { kind: 'almanac', view: 'user', charName: '', value: { items: nextItems, ts } },
+    ]);
+    if (!ok) return { ok: false, error: '当前聊天无法写入历法' };
+    if (anchorConflict && charKey) {
+        if (action === 'delete') setDateAnchor(charKey, null);
+        else {
+            const fixedMonth = Math.min(Math.max(Number(rawAnchor.month) || 1, 1), calMonthCount(cal));
+            const fixedDay = Math.min(Math.max(Number(rawAnchor.day) || 1, 1), calMonthDays(cal, fixedMonth));
+            setDateAnchor(charKey, fixedMonth, fixedDay);
+        }
+    }
+    _almanacCalMonth = null;
+    _almanacCalDay = null;
+    _almTodayEditing = false;
+    syncLatestAlmanacBlock();
+    syncLatestScheduleBlock();
+    return { ok: true, cal };
+}
 
 function almCalMonth() {
     if (Number.isFinite(_almanacCalMonth)) return _almanacCalMonth;
