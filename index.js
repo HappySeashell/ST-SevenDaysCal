@@ -91,6 +91,8 @@ const DEFAULT_SETTINGS = {
     // 坐标（收藏楼层）
     anchorInlineBtn      : true,               // 楼层头部显示「收藏此楼」入口（关掉则只能从别处收藏，暂无）
     anchorSizeWarnBytes  : 8 * 1024 * 1024,    // 坐标收藏占用预警阈值（快照带样式偏大，给足余量）
+    // 历法模板只保存可复用的描述符；角色绑定由后续独立能力负责。
+    calendarTemplates    : [],
 };
 
 // 内置默认破限提示词：不在 UI 展示。「自定义提示词」框留空 → 注入此默认；填了内容 → 整体替换。
@@ -657,6 +659,8 @@ function getSettings() {
     const s = extension_settings[PLUGIN_ID] ??= { ...DEFAULT_SETTINGS };
     // 老用户的设置段可能缺后加字段（如 customPrompt）：逐一补默认值，只补缺失、不覆盖已有值。
     for (const k in DEFAULT_SETTINGS) if (!(k in s)) s[k] = DEFAULT_SETTINGS[k];
+    // 展开默认对象时数组仍会共享引用；设置层必须持有自己的容器。
+    if (s.calendarTemplates === DEFAULT_SETTINGS.calendarTemplates) s.calendarTemplates = [];
     return s;
 }
 
@@ -3652,6 +3656,72 @@ function injectModal() {
             renderAlmanacPanel();
         }
         if (getSettings().notifyMode !== 'off') showToast(`历法已更新：${calendarSummary(result.cal)}`);
+    });
+    $almanac.on('click', '.sp-alm-manager-template-head', function () {
+        _almanacManager.templatesOpen = !_almanacManager.templatesOpen;
+        renderAlmanacPanel({ focus: { selector: '.sp-alm-manager-template-head' } });
+    });
+    $almanac.on('click', '.sp-alm-manager-template-save-current', async function () {
+        const list = loadCalendarTemplates();
+        const name = await customDialog.prompt({
+            title: '保存当前历法为模板',
+            body: '为当前历法填写一个便于识别的模板名称。',
+            initialValue: loadCalDesc().era || '',
+            placeholder: '模板名称',
+            maxLength: CALENDAR_TEMPLATE_NAME_LENGTH,
+            validate: value => !value ? '请填写模板名称' : (list.some(template => template.name === value) ? '模板名称已存在，请换一个名称' : ''),
+        });
+        if (name == null || !_almanacManager) return;
+        const latest = loadCalendarTemplates();
+        if (latest.some(template => template.name === name)) {
+            showToast('模板名称已存在，请换一个名称', null, true);
+            return;
+        }
+        const now = Date.now();
+        const id = calendarTemplateId();
+        latest.push({ ...cloneCalDesc(loadCalDesc()), id, name, createdAt: now, updatedAt: now });
+        saveCalendarTemplates(latest);
+        renderAlmanacPanel({ reveal: { kind: 'template', id } });
+    });
+    $almanac.on('click', '.sp-alm-manager-template-rename', async function () {
+        const id = $(this).attr('data-id');
+        const list = loadCalendarTemplates();
+        const template = list.find(item => item.id === id);
+        if (!template) { showToast('模板已不存在', null, true); renderAlmanacPanel(); return; }
+        const name = await customDialog.prompt({
+            title: '重命名历法模板',
+            body: '填写一个便于识别的新名称。',
+            initialValue: template.name,
+            placeholder: '模板名称',
+            maxLength: CALENDAR_TEMPLATE_NAME_LENGTH,
+            validate: value => !value ? '请填写模板名称' : (list.some(item => item.id !== id && item.name === value) ? '模板名称已存在，请换一个名称' : ''),
+        });
+        if (name == null || !_almanacManager || name === template.name) return;
+        const latest = loadCalendarTemplates();
+        if (latest.some(item => item.id !== id && item.name === name)) { showToast('模板名称已存在，请换一个名称', null, true); return; }
+        if (!latest.some(item => item.id === id)) { showToast('模板已不存在', null, true); renderAlmanacPanel(); return; }
+        saveCalendarTemplates(renameCalendarTemplate(latest, id, name));
+        if (_almanacManager) renderAlmanacPanel({ reveal: { kind: 'template', id }, focus: { kind: 'template', id, selector: '.sp-alm-manager-template-rename' } });
+    });
+    $almanac.on('click', '.sp-alm-manager-template-apply', async function () {
+        const template = loadCalendarTemplates().find(item => item.id === $(this).attr('data-id'));
+        if (!template) { showToast('模板已不存在', null, true); renderAlmanacPanel(); return; }
+        const ok = await customDialog.confirm({ title: '应用历法模板', body: `确定用「${template.name}」覆盖当前历法吗？`, confirmText: '应用', cancelText: '取消' });
+        if (!ok || !_almanacManager) return;
+        const result = await commitCalendarDesc(template);
+        if (!result.ok) { if (!result.cancelled) showToast(result.error || '模板应用失败', null, true); return; }
+        _almanacManager.draft = cloneCalDesc(result.cal);
+        _almanacManager.editing = false;
+        renderAlmanacPanel({ reveal: { kind: 'template', id: template.id }, focus: { kind: 'template', id: template.id, selector: '.sp-alm-manager-template-apply' } });
+        if (getSettings().notifyMode !== 'off') showToast(`已应用历法模板：${template.name}`);
+    });
+    $almanac.on('click', '.sp-alm-manager-template-delete', async function () {
+        const id = $(this).attr('data-id');
+        const template = loadCalendarTemplates().find(item => item.id === id);
+        if (!template) { showToast('模板已不存在', null, true); renderAlmanacPanel(); return; }
+        if (!await customDialog.confirm({ title: '删除历法模板', body: `确定删除「${template.name}」吗？`, confirmText: '删除', cancelText: '取消' })) return;
+        saveCalendarTemplates(loadCalendarTemplates().filter(item => item.id !== id));
+        if (_almanacManager) renderAlmanacPanel({ focus: { selector: '.sp-alm-manager-template-head' } });
     });
 
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
@@ -8630,6 +8700,8 @@ const CALENDAR_LIMITS = Object.freeze({
     defaultMonthDays: 30,
 });
 
+const CALENDAR_TEMPLATE_NAME_LENGTH = 40;
+
 function cloneCalDesc(cal) {
     return { era: String(cal.era || ''), months: cal.months.map(month => ({ name: String(month.name), days: Number(month.days) })) };
 }
@@ -8653,9 +8725,37 @@ function validateCalendarDesc(raw) {
     return { value: { era, months: out } };
 }
 
+function calendarTemplateId() { return 'ct' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+function loadCalendarTemplates() {
+    const list = Array.isArray(getSettings().calendarTemplates) ? getSettings().calendarTemplates : [];
+    return list.map(item => {
+        const cal = validateCalendarDesc(item).value;
+        const id = String(item?.id || '');
+        const name = String(item?.name || '').trim();
+        return cal && id && name ? { ...cal, id, name, createdAt: Number(item.createdAt) || 0, updatedAt: Number(item.updatedAt) || 0 } : null;
+    }).filter(Boolean);
+}
+
+function saveCalendarTemplates(list) {
+    getSettings().calendarTemplates = list.map(item => ({
+        id: item.id,
+        name: item.name,
+        era: item.era,
+        months: item.months.map(month => ({ name: month.name, days: month.days })),
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+    }));
+    saveSettingsDebounced();
+}
+
+function renameCalendarTemplate(list, id, name) {
+    return list.map(item => item.id === id ? { ...item, name, updatedAt: Date.now() } : item);
+}
+
 function openCalendarManager() {
     _almanacEditor = null;
-    _almanacManager = { editing: false, draft: cloneCalDesc(loadCalDesc()), error: '' };
+    _almanacManager = { editing: false, draft: cloneCalDesc(loadCalDesc()), error: '', templatesOpen: false };
     if (almanacMode) renderAlmanacPanel();
 }
 
@@ -8720,11 +8820,38 @@ function renderCalendarCard() {
     </div></section>`;
 }
 
+function renderCalendarTemplates() {
+    const manager = _almanacManager;
+    const rows = loadCalendarTemplates().map(template => `<div class="sp-alm-manager-template-entry" data-template-id="${escapeAttr(template.id)}">
+        <div class="sp-alm-manager-template-row">
+            <div class="sp-alm-manager-template-name">${escapeHtml(template.name)}</div>
+            <span class="sp-alm-manager-template-actions">
+                <button class="sp-icon-btn sp-alm-manager-template-rename" data-id="${escapeAttr(template.id)}" title="重命名模板" aria-label="重命名模板"><i class="fa-solid fa-i-cursor"></i></button>
+                <button class="sp-icon-btn sp-alm-manager-template-apply" data-id="${escapeAttr(template.id)}" title="应用此模板" aria-label="应用此模板"><i class="fa-solid fa-file-import"></i></button>
+                <button class="sp-icon-btn sp-alm-manager-template-delete" data-id="${escapeAttr(template.id)}" title="删除模板" aria-label="删除模板"><i class="fa-solid fa-trash"></i></button>
+            </span>
+        </div>
+    </div>`).join('');
+    return `<section class="sp-alm-manager-templates">
+        <button class="sp-alm-manager-template-head" type="button" aria-expanded="${manager.templatesOpen}"><span>模板管理</span><i class="fa-solid fa-chevron-${manager.templatesOpen ? 'up' : 'down'}"></i></button>
+        ${manager.templatesOpen ? `<div class="sp-alm-manager-template-body">
+            <button type="button" class="sp-alm-manager-template-save-current"><i class="fa-solid fa-floppy-disk" aria-hidden="true"></i><span>保存当前历法为模板</span></button>
+            <div class="sp-alm-manager-template-list">${rows || '<div class="sp-alm-manager-empty-templates">还没有历法模板</div>'}</div>
+        </div>` : ''}
+    </section>`;
+}
+
+function renderCalendarManagerBody() { return renderCalendarCard() + renderCalendarTemplates(); }
+
 function calendarManagerTarget(target, $content) {
     if (!target) return $();
     if (target.kind === 'month') {
         const $row = $content.find('.sp-alm-manager-month-row').filter(function () { return Number($(this).attr('data-index')) === target.index; }).first();
         return target.selector ? $row.find(target.selector).first() : $row;
+    }
+    if (target.kind === 'template') {
+        const $entry = $content.find('.sp-alm-manager-template-entry').filter(function () { return $(this).attr('data-template-id') === target.id; }).first();
+        return target.selector ? $entry.find(target.selector).first() : $entry;
     }
     return target.selector ? $content.find(target.selector).first() : $();
 }
@@ -8750,7 +8877,7 @@ function refreshCalendarManager(options = {}) {
     const $scroller = $wrap.find('.sp-alm-body').first();
     const $content = $scroller.children('.sp-alm-editor-body').first();
     if (!$wrap.find('.sp-alm-manager-hint').length || !$content.length) return false;
-    $content.html(renderCalendarCard());
+    $content.html(renderCalendarManagerBody());
     if (options.focus) focusCalendarManagerTarget(calendarManagerTarget(options.focus, $content));
     revealCalendarManagerTarget(calendarManagerTarget(options.reveal, $content), $scroller);
     return true;
@@ -8761,7 +8888,7 @@ function renderCalendarManager() {
         <button class="sp-icon-btn sp-alm-manager-back" title="返回" aria-label="返回"><i class="fa-solid fa-arrow-left"></i></button>
         <span class="sp-alm-editor-title">历法管理</span>
     </div><div class="sp-alm-manager-hint">不想自己填？<button type="button" class="sp-alm-manager-chat-link">和间聊聊吧 →</button></div>
-    <div class="sp-alm-body"><div class="sp-alm-editor-body">${renderCalendarCard()}</div></div>`;
+    <div class="sp-alm-body"><div class="sp-alm-editor-body">${renderCalendarManagerBody()}</div></div>`;
 }
 
 function calendarConflicts(items, cal) {

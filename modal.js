@@ -75,5 +75,58 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
         }).then(value => value === 'confirm');
     }
 
-    return Object.freeze({ confirm, choose, cancelActive });
+    function prompt({ title = '', body = '', initialValue = '', placeholder = '', maxLength = 40, confirmText = '保存', cancelText = '取消', validate } = {}) {
+        return new Promise(resolve => {
+            cancelActive();
+            $(`#${OVERLAY_ID}`).remove();
+            let done = false;
+            let unsubscribe = () => {};
+            const limit = Number(maxLength) > 0 ? Number(maxLength) : 40;
+            const $overlay = $(`<div id="${OVERLAY_ID}" class="sp-dialog-overlay">
+                <div class="sp-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
+                    <div id="sp-dialog-title" class="sp-dialog-head">${escapeHtml(title)}</div>
+                    ${body ? `<div class="sp-dialog-body">${escapeHtml(body)}</div>` : ''}
+                    <input type="text" class="sp-dialog-input" value="${escapeHtml(initialValue)}" placeholder="${escapeHtml(placeholder)}" maxlength="${limit}" autocomplete="off">
+                    <div class="sp-dialog-input-error" aria-live="polite"></div>
+                    <div class="sp-dialog-actions">
+                        <button class="sp-dialog-button sp-dialog-button-secondary sp-dialog-cancel" type="button">${escapeHtml(cancelText)}</button>
+                        <button class="sp-dialog-button sp-dialog-button-primary sp-dialog-submit" type="button">${escapeHtml(confirmText)}</button>
+                    </div>
+                </div>
+            </div>`);
+            const finish = value => {
+                if (done) return;
+                done = true;
+                if (activeCancel === onExternalClose) activeCancel = null;
+                unsubscribe();
+                $overlay.remove();
+                resolve(value);
+            };
+            const onExternalClose = () => finish(null);
+            const submit = () => {
+                const value = String($overlay.find('.sp-dialog-input').val() ?? '').trim();
+                const error = typeof validate === 'function' ? String(validate(value) || '') : '';
+                if (error) {
+                    $overlay.find('.sp-dialog-input-error').html(`<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${escapeHtml(error)}`);
+                    $overlay.find('.sp-dialog-input').trigger('focus');
+                    return;
+                }
+                finish(value);
+            };
+            activeCancel = onExternalClose;
+            $overlay.find('.sp-dialog-submit').on('click', submit);
+            $overlay.find('.sp-dialog-cancel').on('click', () => finish(null));
+            $overlay.find('.sp-dialog-input').on('input', () => $overlay.find('.sp-dialog-input-error').empty()).on('keydown', event => {
+                if (event.key === 'Enter') { event.preventDefault(); submit(); }
+                else if (event.key === 'Escape') { event.preventDefault(); finish(null); }
+            });
+            $overlay.on('click', function (event) { if (event.target === this) finish(null); });
+            $overlay.addClass(String(getRootClass() || ''));
+            mount.appendChild($overlay[0]);
+            unsubscribe = subscribeContextChange(onExternalClose) || (() => {});
+            setTimeout(() => $overlay.find('.sp-dialog-input').trigger('focus').trigger('select'), 0);
+        });
+    }
+
+    return Object.freeze({ confirm, choose, prompt, cancelActive });
 }
