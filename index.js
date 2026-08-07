@@ -180,7 +180,7 @@ function getEffectiveTheme() {
 
 let currentTheme   = detectSTTheme();
 
-// 历法冲突决策使用独立弹窗；作者原有 spConfirm 与既有调用保持不变。
+// 新历法编辑使用独立决策弹窗；作者原有 spConfirm 与既有调用保持不变。
 const customDialog = createDialogManager({
     $: jQuery,
     mount: document.documentElement,
@@ -242,6 +242,7 @@ let _almanacSheet        = 'upcoming';   // 历子视图：'upcoming'（即将�
 let _almanacCalMonth     = null;   // 月历当前月份（0-11）；null → 首次渲染取真实今天所在月。历不挂年，只按月/日
 let _almanacCalDay       = null;   // 月历里选中的某天（1-31）；null → 详情区显示整月
 let _almanacEditor       = null;   // 内联添加/编辑态：{ id, prefill } 或 null（历的表单走内联窗，不用弹窗）
+let _almanacManager      = null;   // 历法管理子页：编辑草稿与局部错误状态
 let _almTodayEditing     = false;  // 历面板「今天」栏的内联改日期态：true → 显示月/日输入框 + ✓/✗（同样不弹窗）
 let _almSyncingPoint     = false;  // 历面板「同步到点」进行态：true → 今天条按钮显示「同步中…」并禁用（后台正把点重生成到今天）
 let _almSyncPending      = false;  // 同步在飞时又有新的「今天」推进被丢 → 置真，同步收尾时自对账补一轮（都开态·快聊防丢，见 syncPointToToday finally）
@@ -374,6 +375,7 @@ jQuery(async () => {
         _almanacCalMonth = null;
         _almanacCalDay = null;
         _almanacEditor = null;
+        _almanacManager = null;
         _almTodayEditing = false;
         _almSyncingPoint = false;
         _almSyncPending = false;
@@ -2258,6 +2260,23 @@ function openAnchorAtChat(chatId) {
     else $('.sp-view-btn[data-view="anchor"]').trigger('click');
 }
 
+// 跨模块跳转只复用现有侧栏切换，并在目标 DOM 就绪后做可选预填；它不发送消息，也不建立第二套路由状态。
+function openPluginViewWithPrefill(view, inputSelector = '', prefill = '') {
+    showPanel();
+    const $tab = $(`.sp-side-tab.sp-view-btn[data-view="${view}"]`);
+    if (!$tab.hasClass('sp-view-active')) $tab.trigger('click');
+    if (!inputSelector || !prefill) return Promise.resolve(true);
+    return new Promise(resolve => setTimeout(() => {
+        const $input = $(inputSelector);
+        if (!$input.length) { resolve(false); return; }
+        const old = String($input.val() || '').trimEnd();
+        if (!old.includes(prefill)) $input.val(old ? `${old}\n\n${prefill}` : prefill);
+        autoGrowTextarea($input[0]);
+        $input.trigger('focus');
+        resolve(true);
+    }, 0));
+}
+
 // #chat 变动（swipe/编辑/重渲染会抹掉注入的按钮）→ 防抖补齐
 let _anchorObserver  = null;
 let _anchorScanTimer = null;
@@ -3462,6 +3481,7 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-sheet-btn', function () { almSetSheet($(this).attr('data-sheet')); });
     $almanac.on('click', '.sp-alm-add', function () { openAlmanacEditor(null); });
     $almanac.on('click', '.sp-alm-gen', triggerGenerateAlmanac);
+    $almanac.on('click', '.sp-alm-manage', openCalendarManager);
     $almanac.on('click', '.sp-alm-pin', function () { toggleAlmanacPin($(this).attr('data-id')); });
     $almanac.on('click', '.sp-alm-edit', function () { openAlmanacEditor($(this).attr('data-id')); });
     $almanac.on('click', '.sp-alm-del', function () { deleteAlmanacItem($(this).attr('data-id')); });
@@ -3533,6 +3553,106 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-editor-save', saveAlmanacEditor);
     $almanac.on('click', '.sp-alm-editor-cancel, .sp-alm-editor-back', closeAlmanacEditor);
     $almanac.on('input', '#sp-alm-f-month, #sp-alm-f-day, #sp-alm-f-days', almRenderWdHint);
+    // 历法管理使用同一内联容器；所有正式写入只从 commitCalendarDesc 汇流。
+    $almanac.on('click', '.sp-alm-manager-back', closeCalendarManager);
+    $almanac.on('click', '.sp-alm-manager-chat-link', async function () {
+        const filled = await openPluginViewWithPrefill('space', '#sp-space-input', '我想为当前世界设计一套自定义历法。请结合世界观和我讨论纪年名、月份数量、每个月的名称与天数，并在确认后给出完整历法。');
+        if (!filled) showToast('已经打开间，但没有找到输入框，请手动填写历法需求', null, true);
+        else if (getSettings().notifyMode !== 'off') showToast('已把历法需求预填到间');
+    });
+    $almanac.on('click', '.sp-alm-manager-edit-start', function () {
+        _almanacManager.editing = true;
+        _almanacManager.draft = cloneCalDesc(loadCalDesc());
+        _almanacManager.error = '';
+        renderAlmanacPanel();
+    });
+    $almanac.on('click', '.sp-alm-manager-edit-cancel', function () {
+        _almanacManager.editing = false;
+        _almanacManager.draft = cloneCalDesc(loadCalDesc());
+        _almanacManager.error = '';
+        renderAlmanacPanel();
+    });
+    $almanac.on('click', '.sp-alm-manager-add-month', function () {
+        captureCalendarDraft();
+        if (_almanacManager.draft.months.length >= CALENDAR_LIMITS.monthCount) {
+            _almanacManager.error = `最多只能有 ${CALENDAR_LIMITS.monthCount} 个月份`;
+            renderAlmanacPanel();
+            return;
+        }
+        const index = _almanacManager.draft.months.length;
+        _almanacManager.draft.months.push({ name: `${index + 1}月`, days: CALENDAR_LIMITS.defaultMonthDays });
+        _almanacManager.error = '';
+        renderAlmanacPanel({ reveal: { kind: 'month', index }, focus: { kind: 'month', index, selector: '.sp-alm-manager-month-name' } });
+    });
+    $almanac.on('click', '.sp-alm-manager-month-delete', async function () {
+        captureCalendarDraft();
+        if (_almanacManager.draft.months.length <= 1) { _almanacManager.error = '至少保留一个月份'; renderAlmanacPanel(); return; }
+        const manager = _almanacManager;
+        const chatIdSnap = getContext().chatId;
+        const index = Number($(this).closest('.sp-alm-manager-month-row').attr('data-index'));
+        const month = manager.draft.months[index];
+        if (!month) return;
+        const ok = await customDialog.confirm({
+            title: '删除月份',
+            body: `确定删除月份「${month.name}」吗？保存历法时会继续检查受影响的纪念日。`,
+            confirmText: '删除',
+            cancelText: '取消',
+        });
+        if (!ok || _almanacManager !== manager || getContext().chatId !== chatIdSnap || manager.draft.months[index] !== month) return;
+        manager.draft.months.splice(index, 1);
+        manager.error = '';
+        const nextIndex = Math.min(index, manager.draft.months.length - 1);
+        renderAlmanacPanel({ reveal: { kind: 'month', index: nextIndex }, focus: { kind: 'month', index: nextIndex, selector: '.sp-alm-manager-month-delete' } });
+    });
+    $almanac.on('click', '.sp-alm-manager-month-copy', function () {
+        captureCalendarDraft();
+        const index = Number($(this).closest('.sp-alm-manager-month-row').attr('data-index'));
+        if (!copyCalendarMonth(_almanacManager.draft.months, index, CALENDAR_LIMITS.monthCount)) {
+            _almanacManager.error = _almanacManager.draft.months.length >= CALENDAR_LIMITS.monthCount ? `最多只能有 ${CALENDAR_LIMITS.monthCount} 个月份` : '找不到要复制的月份';
+            renderAlmanacPanel();
+            return;
+        }
+        _almanacManager.error = '';
+        renderAlmanacPanel({ reveal: { kind: 'month', index: index + 1 }, focus: { kind: 'month', index: index + 1, selector: '.sp-alm-manager-month-name' } });
+    });
+    $almanac.on('click', '.sp-alm-manager-month-up, .sp-alm-manager-month-down', function () {
+        captureCalendarDraft();
+        const index = Number($(this).closest('.sp-alm-manager-month-row').attr('data-index'));
+        const movingUp = $(this).hasClass('sp-alm-manager-month-up');
+        const nextIndex = index + (movingUp ? -1 : 1);
+        if (nextIndex < 0 || nextIndex >= _almanacManager.draft.months.length) return;
+        [_almanacManager.draft.months[index], _almanacManager.draft.months[nextIndex]] = [_almanacManager.draft.months[nextIndex], _almanacManager.draft.months[index]];
+        renderAlmanacPanel({ reveal: { kind: 'month', index: nextIndex }, focus: { kind: 'month', index: nextIndex, selector: movingUp ? '.sp-alm-manager-month-up' : '.sp-alm-manager-month-down' } });
+    });
+    $almanac.on('input', '.sp-alm-manager-edit-fields input', function () {
+        if (!_almanacManager?.error) return;
+        _almanacManager.error = '';
+        $('#sp-almanac-wrap .sp-alm-manager-error').remove();
+    });
+    $almanac.on('click', '.sp-alm-manager-edit-save', async function () {
+        _almanacManager.draft = readCalendarDraftForm();
+        _almanacManager.error = '';
+        $('#sp-almanac-wrap .sp-alm-manager-error').remove();
+        const checked = validateCalendarDesc(_almanacManager.draft);
+        if (!checked.value) {
+            showToast(checked.error, null, true);
+            return;
+        }
+        const result = await commitCalendarDesc(checked.value);
+        if (!result.ok) {
+            if (result.cancelled) return;
+            const message = result.error || '历法保存失败';
+            showToast(message, null, true);
+            return;
+        }
+        if (_almanacManager) {
+            _almanacManager.editing = false;
+            _almanacManager.draft = cloneCalDesc(result.cal);
+            _almanacManager.error = '';
+            renderAlmanacPanel();
+        }
+        if (getSettings().notifyMode !== 'off') showToast(`历法已更新：${calendarSummary(result.cal)}`);
+    });
 
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
     $(`#${MODAL_ID}`).on('click', '.sp-view-btn', function () {
@@ -4080,6 +4200,7 @@ function resetPanelToScheduleHome() {
     $('#sp-anchor-wrap').hide();
     $('#sp-almanac-wrap').hide();
     _almanacEditor = null;
+    _almanacManager = null;
     $('#sp-body').show();
     $('#sp-sub-toggle').show();
     $('#sp-content-title').text('点');
@@ -5784,7 +5905,7 @@ async function applyEraWidget(body, $btn) {
     }
     if (almanacMode) renderAlmanacPanel();
     $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 历法已应用`);
-    if (getSettings().notifyMode !== 'off') showToast(`历法已更新：${result.cal.era ? result.cal.era + '·' : ''}一年 ${calMonthCount(result.cal)} 个月、共 ${calYearLen(result.cal)} 天`);
+    if (getSettings().notifyMode !== 'off') showToast(`历法已更新：${result.cal.era ? result.cal.era + '·' : ''}${calendarSummary(result.cal)}`);
 }
 
 function appendChatMsg(role, content, historyIndex = null) {
@@ -8313,8 +8434,9 @@ function almToolbarHtml() {
             <button class="sp-alm-sheet-btn${_almanacSheet === 'calendar' ? ' sp-alm-sheet-active' : ''}" data-sheet="calendar">日历</button>
         </div>
         <div class="sp-alm-tools">
-            <button class="sp-icon-btn sp-alm-add" title="手动添加日期"><i class="fa-solid fa-plus"></i></button>
-            <button class="sp-icon-btn sp-alm-gen" title="生成节日（AI 按世界观铺满一整年）"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+            <button class="sp-icon-btn sp-alm-add" title="手动添加日期" aria-label="手动添加日期"><i class="fa-solid fa-plus"></i></button>
+            <button class="sp-icon-btn sp-alm-gen" title="生成节日（AI 按世界观铺满一整年）" aria-label="生成节日"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+            <button class="sp-icon-btn sp-alm-manage" title="历法管理" aria-label="历法管理"><i class="fa-solid fa-calendar-days"></i></button>
         </div>
     </div>`;
 }
@@ -8380,9 +8502,14 @@ function almNudgeToday(delta) {
     setDateAnchor(key, nd.month, nd.day);
     runAnchorAftermath();
 }
-function renderAlmanacPanel() {
+function renderAlmanacPanel(options = {}) {
     if (!almanacMode) return;
     const $wrap = $('#sp-almanac-wrap');
+    if (_almanacManager) {
+        if (refreshCalendarManager(options)) return;
+        $wrap.html(renderCalendarManager());
+        return;
+    }
     if (_almanacEditor) {
         $wrap.html(renderAlmanacEditor());
         almRenderWdHint();
@@ -8492,6 +8619,150 @@ function calMonthCount(cal)  { return _cal(cal).months.length; }
 function calMonthDays(cal, m){ const M = _cal(cal).months; return M[almClampInt(m, 1, M.length, 1) - 1].days; }
 function calMonthName(cal, m){ const M = _cal(cal).months; const i = almClampInt(m, 1, M.length, 1) - 1; return M[i].name || `${i + 1}月`; }
 function calHasEra(cal)      { return !!String(_cal(cal).era || '').trim(); }
+
+const CALENDAR_LIMITS = Object.freeze({
+    eraNameLength: 24,
+    monthNameLength: 12,
+    monthCount: 60,
+    monthDaysMin: 1,
+    monthDaysMax: 60,
+    yearDays: 2000,
+    defaultMonthDays: 30,
+});
+
+function cloneCalDesc(cal) {
+    return { era: String(cal.era || ''), months: cal.months.map(month => ({ name: String(month.name), days: Number(month.days) })) };
+}
+
+function validateCalendarDesc(raw) {
+    const era = String(raw?.era || '').trim();
+    if (era.length > CALENDAR_LIMITS.eraNameLength) return { error: `纪年名最多 ${CALENDAR_LIMITS.eraNameLength} 个字` };
+    const months = Array.isArray(raw?.months) ? raw.months : [];
+    if (!months.length) return { error: '至少需要一个月份' };
+    if (months.length > CALENDAR_LIMITS.monthCount) return { error: `最多只能有 ${CALENDAR_LIMITS.monthCount} 个月份` };
+    const out = [];
+    for (let index = 0; index < months.length; index++) {
+        const name = String(months[index]?.name || '').trim();
+        const days = Number(months[index]?.days);
+        if (!name) return { error: `第 ${index + 1} 个月需要填写名称` };
+        if (name.length > CALENDAR_LIMITS.monthNameLength) return { error: `第 ${index + 1} 个月名称最多 ${CALENDAR_LIMITS.monthNameLength} 个字` };
+        if (!Number.isInteger(days) || days < CALENDAR_LIMITS.monthDaysMin || days > CALENDAR_LIMITS.monthDaysMax) return { error: `${name}的天数必须是 ${CALENDAR_LIMITS.monthDaysMin}–${CALENDAR_LIMITS.monthDaysMax} 的整数` };
+        out.push({ name, days });
+    }
+    if (out.reduce((sum, month) => sum + month.days, 0) > CALENDAR_LIMITS.yearDays) return { error: `全年总天数不能超过 ${CALENDAR_LIMITS.yearDays} 天` };
+    return { value: { era, months: out } };
+}
+
+function openCalendarManager() {
+    _almanacEditor = null;
+    _almanacManager = { editing: false, draft: cloneCalDesc(loadCalDesc()), error: '' };
+    if (almanacMode) renderAlmanacPanel();
+}
+
+function closeCalendarManager() {
+    _almanacManager = null;
+    if (almanacMode) renderAlmanacPanel();
+}
+
+function readCalendarDraftForm() {
+    if (!_almanacManager?.editing) return _almanacManager?.draft;
+    return {
+        era: String($('#sp-alm-manager-era').val() || ''),
+        months: $('#sp-almanac-wrap .sp-alm-manager-month-row').map(function () {
+            return { name: String($(this).find('.sp-alm-manager-month-name').val() || ''), days: $(this).find('.sp-alm-manager-month-days').val() };
+        }).get(),
+    };
+}
+
+function captureCalendarDraft() {
+    if (_almanacManager?.editing) _almanacManager.draft = readCalendarDraftForm();
+}
+
+function copyCalendarMonth(months, index, maxMonths) {
+    if (!Array.isArray(months) || months.length >= maxMonths || !months[index]) return false;
+    const source = months[index];
+    months.splice(index + 1, 0, { name: source.name, days: source.days });
+    return true;
+}
+
+function calendarSummary(cal) { return `一年 ${calMonthCount(cal)} 个月、共 ${calYearLen(cal)} 天`; }
+
+function renderCalendarCard() {
+    const manager = _almanacManager;
+    const cal = manager.editing ? manager.draft : cloneCalDesc(loadCalDesc());
+    const actionButtons = manager.editing
+        ? `<button class="sp-icon-btn sp-alm-manager-edit-cancel" title="取消编辑" aria-label="取消编辑"><i class="fa-solid fa-xmark"></i></button>
+           <button class="sp-icon-btn sp-alm-manager-edit-save" title="保存历法" aria-label="保存历法"><i class="fa-solid fa-check"></i></button>`
+        : `<button class="sp-icon-btn sp-alm-manager-edit-start" title="编辑历法" aria-label="编辑历法"><i class="fa-solid fa-pen"></i></button>`;
+    const actions = `<span class="sp-alm-manager-card-actions">${actionButtons}</span>`;
+    if (!manager.editing) {
+        const months = cal.months.map(month => `<span class="sp-alm-manager-month-chip">${escapeHtml(month.name)} · ${month.days}天</span>`).join('');
+        return `<section class="sp-alm-manager-card"><div class="sp-alm-manager-card-head">
+            <div class="sp-alm-manager-card-title">当前历法</div>${actions}
+        </div><div class="sp-alm-manager-card-body">${cal.era ? `<div class="sp-alm-manager-current-name">${escapeHtml(cal.era)}</div>` : ''}<div class="sp-alm-manager-months">${months}</div></div></section>`;
+    }
+    const rows = cal.months.map((month, index) => `<div class="sp-alm-manager-month-row" data-index="${index}">
+        <label class="sp-alm-manager-month-field sp-alm-manager-month-field-name"><span>月份名称</span><input class="sp-input sp-alm-manager-month-name" maxlength="${CALENDAR_LIMITS.monthNameLength}" value="${escapeAttr(month.name)}" aria-label="第 ${index + 1} 月名称"></label>
+        <label class="sp-alm-manager-month-field sp-alm-manager-month-field-days"><span>天数</span><input class="sp-input sp-alm-manager-month-days" type="number" min="${CALENDAR_LIMITS.monthDaysMin}" max="${CALENDAR_LIMITS.monthDaysMax}" value="${escapeAttr(month.days)}" aria-label="第 ${index + 1} 月天数"></label>
+        <span class="sp-alm-manager-month-actions">
+            <button class="sp-icon-btn sp-alm-manager-month-up" title="上移月份" aria-label="上移月份"${index === 0 ? ' disabled' : ''}><i class="fa-solid fa-chevron-up"></i></button>
+            <button class="sp-icon-btn sp-alm-manager-month-down" title="下移月份" aria-label="下移月份"${index === cal.months.length - 1 ? ' disabled' : ''}><i class="fa-solid fa-chevron-down"></i></button>
+            <button class="sp-icon-btn sp-alm-manager-month-copy" title="复制月份" aria-label="复制月份"><i class="fa-solid fa-copy"></i></button>
+            <button class="sp-icon-btn sp-alm-manager-month-delete" title="删除月份" aria-label="删除月份"><i class="fa-solid fa-trash"></i></button>
+        </span>
+    </div>`).join('');
+    return `<section class="sp-alm-manager-card"><div class="sp-alm-manager-card-head">
+        <div class="sp-alm-manager-card-title">编辑当前历法</div>${actions}
+    </div><div class="sp-alm-manager-edit-fields">
+        ${manager.error ? `<div class="sp-alm-manager-error" role="alert"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${escapeHtml(manager.error)}</div>` : ''}
+        <label class="sp-alm-field"><span>纪年名 <small>选填</small></span><input id="sp-alm-manager-era" maxlength="${CALENDAR_LIMITS.eraNameLength}" value="${escapeAttr(cal.era)}"></label>
+        ${rows}<button class="sp-alm-manager-add-month" type="button"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>添加月份</span></button>
+    </div></section>`;
+}
+
+function calendarManagerTarget(target, $content) {
+    if (!target) return $();
+    if (target.kind === 'month') {
+        const $row = $content.find('.sp-alm-manager-month-row').filter(function () { return Number($(this).attr('data-index')) === target.index; }).first();
+        return target.selector ? $row.find(target.selector).first() : $row;
+    }
+    return target.selector ? $content.find(target.selector).first() : $();
+}
+
+function focusCalendarManagerTarget($target) {
+    const element = $target?.get?.(0);
+    if (!element || typeof element.focus !== 'function' || element.disabled) return;
+    try { element.focus({ preventScroll: true }); }
+    catch (_) { element.focus(); }
+}
+
+function revealCalendarManagerTarget($target, $scroller) {
+    const element = $target?.get?.(0), scroller = $scroller?.get?.(0);
+    if (!element || !scroller) return;
+    const targetRect = element.getBoundingClientRect(), scrollRect = scroller.getBoundingClientRect();
+    if (targetRect.top < scrollRect.top) scroller.scrollTop += targetRect.top - scrollRect.top - 6;
+    else if (targetRect.bottom > scrollRect.bottom) scroller.scrollTop += targetRect.bottom - scrollRect.bottom + 6;
+}
+
+// 管理页内部只替换业务内容，保留真正的滚动容器；否则每次操作都会重建 scrollTop 和焦点。
+function refreshCalendarManager(options = {}) {
+    const $wrap = $('#sp-almanac-wrap');
+    const $scroller = $wrap.find('.sp-alm-body').first();
+    const $content = $scroller.children('.sp-alm-editor-body').first();
+    if (!$wrap.find('.sp-alm-manager-hint').length || !$content.length) return false;
+    $content.html(renderCalendarCard());
+    if (options.focus) focusCalendarManagerTarget(calendarManagerTarget(options.focus, $content));
+    revealCalendarManagerTarget(calendarManagerTarget(options.reveal, $content), $scroller);
+    return true;
+}
+
+function renderCalendarManager() {
+    return `<div class="sp-alm-editor-head">
+        <button class="sp-icon-btn sp-alm-manager-back" title="返回" aria-label="返回"><i class="fa-solid fa-arrow-left"></i></button>
+        <span class="sp-alm-editor-title">历法管理</span>
+    </div><div class="sp-alm-manager-hint">不想自己填？<button type="button" class="sp-alm-manager-chat-link">和间聊聊吧 →</button></div>
+    <div class="sp-alm-body"><div class="sp-alm-editor-body">${renderCalendarCard()}</div></div>`;
+}
 
 function calendarConflicts(items, cal) {
     return items.map(item => {

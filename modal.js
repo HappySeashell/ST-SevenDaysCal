@@ -63,5 +63,17 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
         });
     }
 
-    return Object.freeze({ choose, cancelActive });
+    function confirm({ title, body, note, confirmText = '确定', cancelText = '取消' } = {}) {
+        return choose({
+            title,
+            body,
+            note,
+            choices: [
+                { value: 'cancel', label: cancelText },
+                { value: 'confirm', label: confirmText, primary: true },
+            ],
+        }).then(value => value === 'confirm');
+    }
+
+    return Object.freeze({ confirm, choose, cancelActive });
 }
