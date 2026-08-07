@@ -4822,3 +4822,8 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-sch-drawer-item:hover .sp-sch-del-one { opacity: 1; }
 .sp-sch-del-one:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); opacity: 1; }
 
+/* 点/线面板 header 下方另起一行的「和间聊聊」引导；纯文字区（不自己画线，下方 tab-bar 已有分隔线），padding 上下对称、不与 header 下 padding 叠太厚 */
+.sp-jump-hint { padding: 2px 16px 8px; font-size: 0.75rem; color: var(--sp-subtle); flex-shrink: 0; }
+.sp-jump-link { border: 0; padding: 0; background: transparent; color: var(--sp-primary); cursor: pointer; font: inherit; }
+.sp-jump-link:hover { text-decoration: underline; }
+

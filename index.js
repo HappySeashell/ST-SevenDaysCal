@@ -3250,6 +3250,9 @@ function injectModal() {
         if (text) injectToST(text);
     });
 
+    // 点/线面板底部「和间聊聊」引导 → 一键切到间（间能把讨论落地成点/线）
+    $('#sp-body, #sp-lines-list').on('click', '.sp-jump-link', () => $('.sp-view-btn[data-view="space"]').trigger('click'));
+
     // Abort buttons (event delegation) — 即时撤下 UI，见 abort*Gen
     $('#sp-body').on('click', '#sp-abort-generate', abortScheduleGen);
     $('#sp-outline-beats').on('click', '#sp-abort-outline', abortOutlineGen);
@@ -8069,6 +8072,10 @@ const STAGE_COLORS = {
 // 虚线区块占位容器（附在线面板尾部）。内容由 renderDashedSection() 异步/条件填充；
 // dashedEnabled 关时它自行清空，故容器常驻无害。
 const DASHED_CONTAINER = '<div id="sp-dashed-section" class="sp-dashed-section"></div>';
+// 点/线面板 header 下方另起一行的「去间改」引导，视觉对齐历法管理页的 .sp-alm-manager-hint。
+// 「间」能把讨论落地成点/线，想调整时一键跳过去（handler 见 injectModal 委托）。
+const SP_JUMP_HINT_POINT = `<div class="sp-jump-hint">想调整这些点？<button type="button" class="sp-jump-link">和「间」聊聊 →</button></div>`;
+const SP_JUMP_HINT_LINES = `<div class="sp-jump-hint">想调整这些线？<button type="button" class="sp-jump-link">和「间」聊聊 →</button></div>`;
 
 function renderLines(raw) {
     const lines = parseLines(raw);
@@ -8076,7 +8083,7 @@ function renderLines(raw) {
         <span class="sp-user-chip">平行事件</span>
         <button class="sp-panel-refresh sp-refresh-lines" title="重新生成线"><i class="fa-solid fa-rotate-right"></i></button>
         <button class="sp-panel-refresh sp-advance-lines" title="推进事件线（在已有线基础上继续推演）"><i class="fa-solid fa-forward"></i></button>
-    </div>`;
+    </div>` + SP_JUMP_HINT_LINES;
     if (lines.length === 0) return toolbar + `<div class="sp-raw">${escapeHtml(raw).replace(/\n/g, '<br>')}</div>` + DASHED_CONTAINER;
     const cards = lines.map((l, i) => {
         const levelNum  = parseInt(l.level, 10);
@@ -10859,7 +10866,7 @@ function renderSchedule(raw, userName, perspective = 'user') {
         <span class="${chipCls}">${escapeHtml(userName)}</span>
         <span class="sp-schedule-label">的点</span>
         <button class="sp-panel-refresh sp-refresh-schedule${refreshBusy}" title="${_almSyncingPoint ? '点正在同步中，稍候…' : '重新生成点'}"><i class="fa-solid fa-rotate-right"></i></button>
-    </div>`;
+    </div>` + SP_JUMP_HINT_POINT;
 
     // Parse failed (AI leaked prompt / malformed output) — still render header
     // so the user has a refresh button to reroll. Otherwise they get stuck
