@@ -11,6 +11,7 @@ import * as memory from './memory.js';
 import * as theater from './theater.js';
 import * as anchor from './anchor.js';
 import * as store from './store.js';
+import * as ledger from './ledger.js';
 import * as snapshot from './snapshot.js';
 import { createDialogManager } from './modal.js';
 
@@ -7425,6 +7426,7 @@ const STORAGE_KIND_LABELS = {
 const STORAGE_OWNKEY_LABELS = {
     'sp-memory' : '记忆',
     'sp-theater': '棱永久层',
+    'sp-ledger' : '暗账',
 };
 
 function storageRow(label, bytesText, btnHtml = '', extraClass = '') {
@@ -7443,7 +7445,7 @@ async function renderStorageUsage() {
 
     // ① 本聊天 chat_metadata
     let chatHtml;
-    if (!store.hasStore() && !store.ownKeyBytes('sp-memory') && !store.ownKeyBytes('sp-theater')) {
+    if (!store.hasStore() && !store.ownKeyBytes('sp-memory') && !store.ownKeyBytes('sp-theater') && !store.ownKeyBytes('sp-ledger')) {
         chatHtml = `<div class="sp-cfg-hint" style="padding:4px 0">当前聊天暂无构画数据</div>`;
     } else {
         const usage = store.usageByKind();
@@ -7457,7 +7459,7 @@ async function renderStorageUsage() {
                 `<button class="sp-storage-del sp-mini-btn" data-scope="kind" data-kind="${kind}">清除</button>`,
             ));
         }
-        for (const key of ['sp-memory', 'sp-theater']) {
+        for (const key of ['sp-memory', 'sp-theater', 'sp-ledger']) {
             const b = store.ownKeyBytes(key);
             if (!b) continue;
             rows.push(storageRow(
