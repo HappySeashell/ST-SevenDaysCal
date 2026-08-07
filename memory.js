@@ -234,6 +234,22 @@ function groupHash(group) {
     return hashStr(group.floors.map(f => f.text).join('\x1f'));
 }
 
+// 这组楼的楼层区间是否已被某个 L1 章节完整吸收 = 已在 L1 层记忆。
+// 关键：真编辑/重roll/删楼会连带把覆盖该区间的 L1 一并作废（onMessageMutated / del 监听），
+// 所以「L1 仍在」就等价于「这段内容自压缩后没变过」。据此可安全跳过重复 L0 总结——
+// 这正是切档/重启时几十次冗余总结的根因：L0 一旦滚进 L1，其 hash 在重载时偶发对不上就被判「未记忆」，
+// 而检测侧不认 L1、把老楼一律重排。注入侧 getMemoryContext 早已认 L1，此处只是把检测侧拉齐。
+function isCoveredByL1(group, m) {
+    if (!m.L1 || !m.L1.length) return false;
+    const s = parseInt(group.floors[0].mesid, 10);
+    const e = parseInt(group.floors[group.floors.length - 1].mesid, 10);
+    return m.L1.some(l1 => {
+        const ls = parseInt(l1.range[0], 10);
+        const le = parseInt(l1.range[1], 10);
+        return s >= ls && e <= le;
+    });
+}
+
 // 判定「这组楼有实打实的原文、但净化后几乎空了」——典型是卡片把正文全裹在自定义标签里
 // （如 <gametxt>），而保留标签默认只留 content，导致净化后正文被清空、摘要生不出来。
 // 与「模型没返回」区分开：这是确定性的净化结果，不该白白重试/让人去调模型。
@@ -493,6 +509,7 @@ export function getHealthReport() {
     let withL0 = 0, permaFailed = 0, pending = 0, strippedEmpty = 0;
     for (const g of groups) {
         if (m.L0[g.key] && m.L0[g.key].hash === groupHash(g)) withL0++;
+        else if (isCoveredByL1(g, m)) withL0++;   // 已被 L1 章节吸收 = 已记忆，别再算 pending（否则老楼被反复判「待总结」）
         else if (m.failed[g.key]?.stripped) strippedEmpty++;
         else if (m.failed[g.key]?.count >= 3) permaFailed++;
         else pending++;
@@ -571,6 +588,7 @@ export async function fillMissing(onProgress) {
     for (const g of groups) {
         const cur = m.L0[g.key];
         if (cur && cur.hash === groupHash(g)) continue;
+        if (isCoveredByL1(g, m)) continue;   // 已滚进 L1 的老楼别再补总结（切档/重启冗余调用的根因）
         if (m.failed[g.key]?.count >= 3) delete m.failed[g.key];
         targets.push(g.key);
     }
@@ -665,6 +683,7 @@ function onCharacterMessageRendered() {
     for (const g of groups) {
         const cur = m.L0[g.key];
         if (cur && cur.hash === groupHash(g)) continue;
+        if (isCoveredByL1(g, m)) continue;   // 已被 L1 吸收的老楼别重排 L0（切档/重启不再触发几十次冗余总结）
         if (m.failed[g.key]?.count >= 3) continue;
         enqueue({ type: 'L0', groupKey: g.key });
     }

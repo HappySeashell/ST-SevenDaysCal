@@ -3081,7 +3081,12 @@ select.sp-input { appearance: none; cursor: pointer; }
     line-height: 1.5;
     font-family: var(--sp-font);
 }
-.sp-theater-input-area .sp-theater-generate { align-self: flex-end; }
+.sp-theater-input-area .sp-theater-btn-row {
+    display        : flex;
+    gap            : 8px;
+    justify-content: flex-end;
+    align-items    : center;
+}
 
 /* ── Result region (sanitized beautify HTML) ── */
 .sp-theater-result {

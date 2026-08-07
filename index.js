@@ -52,7 +52,7 @@ const DEFAULT_SETTINGS = {
     linesInterval: 2,
     linesMode: 'turns',  // 'turns' | 'days'
     linesInject: false,  // 潜伏注入：活跃线隐形注入主楼 AI（IN_CHAT/SYSTEM）；默认关（改 AI 行为+token 成本，opt-in）
-    dashedEnabled: false, // 虚线·冷知识：跟线同触发多生成 1~2 条冷知识（纯展示、绝不注入）。多一次 API 调用，默认关 opt-in
+    dashedEnabled: false, // 虚线·冷知识：跟线同触发多生成两条冷知识（纯展示、绝不注入）。多一次 API 调用，默认关 opt-in
     outlineInject: false,       // 大纲自动注入：开启后每 N 楼独立判定剧情推进到哪个节点，把当前/下个节点隐形注入主楼 AI。多判定 API 调用，默认关 opt-in
     outlineJudgeInterval: 3,    // 大纲推进判定节奏：每几条 AI 回复跑一次推进判定（独立于线的 linesInterval，不耦合）
     almanacInlineEnabled: true, // 历·日程块：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是未来七天（周X+日期，有节日可点开看当天安排）；只读，独立于线主开关；默认开，关掉即不注入聊天
@@ -409,6 +409,10 @@ jQuery(async () => {
         if (_mig.status === 'conflict') setTimeout(() => showStoreConflictDialog(_mig), 700);
         // 切进来立即按新 chat 的大纲+游标重设注入（关着或无大纲时内部自清）。
         refreshOutlineInjection();
+        // 线注入同步一并重设：楼内块靠上面 300ms 的 backfill 补挂（要等 DOM），但注入不能等——
+        // 否则这 300ms 窗口内若触发生成，上一个 chat 的线注入会残留污染新 chat 首楼。
+        // refreshLinesInjection 幂等（关/无活跃线时内部自清），与 backfill 内那次重复无副作用。
+        refreshLinesInjection();
     };
     eventSource.on(event_types.CHAT_CHANGED, _stListeners.chat);
     // 首屏补迁移：扩展初始化时当前 chat 往往已 ready（CHAT_CHANGED 早已错过），
@@ -812,13 +816,14 @@ function saveLinesMode(mode) {
 
 function maskKey(k) { return k.length <= 8 ? '•'.repeat(k.length) : '•'.repeat(k.length - 4) + k.slice(-4); }
 
-// ─── In-game day-change detection (via 柏宝书 API) ─────────────────────────────
-// Reads authoritative in-game time from 柏宝书 (ST-BaiBai-Book) instead of
-// grepping message text — the old regex heuristic false-positived on every
-// mention of 今天/明天/周X. Extracts a canonical day key from state.time and
-// signals advance only when it actually changes.
+// ─── In-game day-change detection (桥接到历·almTodayAnchor) ───────────────────
+// days 模式（跟随局内时间）的推进检测：从历的权威「今天」取 {月-日}，变化即推进。
+// 历史上这里读柏宝书 state.time（见 detectInGameDayChange 内注释），已改为桥接 almTodayAnchor
+// 六层兜底源——柏宝书没装也能靠记忆/线/点/正文推进，且与历共用同一个「今天」。
+// extractDayFromTime / _cnToNumber / _CN_* 仍被 almTodayAnchor、parseJudgedDate 复用，保留。
 let _lastDetectedDay = null;
-let _bbbWarned       = false;
+let _bbbWarned       = false;   // 现已无读取点（旧 days 检测的唯一读者随桥接删除）；仅剩 622 处复位，留着不动柏宝书就绪handler
+
 
 // 中文数字 → 阿拉伯数字（覆盖 0–99，足以处理古代年月日）。
 const _CN_NUM_MAP = { 零:0, 〇:0, 一:1, 二:2, 两:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9, 十:10 };
@@ -863,37 +868,17 @@ function extractDayFromTime(timeStr) {
     return null;
 }
 
+// days 模式（设置里的「跟随局内时间」自动推进）：桥接到历的权威「今天」almTodayAnchor()。
+// 旧实现硬依赖外部柏宝书快照、且只读上一条 AI 楼 —— 柏宝书没装就静默永不推进（days 模式等于废的）。
+// almTodayAnchor 是六层兜底（①柏宝书→②记忆→③线→④点→⑤正文扫描→⑥兜底）：柏宝书在时答案一致、
+// 不在时靠记忆/线/点/正文继续推进；其⑤正文层直接读本楼原文，天然吸收「正文已跳日、慢源没跟上」的相位差。
+// 变更键取 {月-日}，与上次检测到的不同即算「过了一天」→ 推进一次。
+// 注：almTodayAnchor 读当前最新态、不接受楼层参数，故 messageId/excludeCurrent 仅为兼容旧签名保留、不再使用。
 function detectInGameDayChange(messageId, excludeCurrent = false) {
-    const api = globalThis.STBaiBaiBook;
-    if (!api || typeof api.getSnapshot !== 'function') {
-        if (!_bbbWarned) {
-            _bbbWarned = true;
-            console.info('[7dayscal] STBaiBaiBook 未就绪，days 模式不自动推进');
-        }
-        return false;
-    }
-
-    const msgs = getContext().chat || [];
-    const aiFloors = [];
-    for (let i = 0; i < msgs.length; i++) if (!msgs[i].is_user) aiFloors.push(i);
-    if (aiFloors.length < (excludeCurrent ? 2 : 1)) return false;
-
-    // 与旧实现一致：excludeCurrent=true 时读上一条 AI 楼的状态，避开
-    // 刚渲染完的这一条（"advance BEFORE current message enters context"）。
-    const targetFloor = excludeCurrent
-        ? aiFloors[aiFloors.length - 2]
-        : aiFloors[aiFloors.length - 1];
-
-    let snapshot;
-    try {
-        snapshot = api.getSnapshot({ floor: targetFloor, at: 'after' });
-    } catch {
-        return false;
-    }
-
-    const day = extractDayFromTime(snapshot?.state?.time);
-    if (!day) return false;
-
+    let md;
+    try { md = almTodayAnchor(); } catch { return false; }
+    if (!md || !Number.isFinite(+md.month) || !Number.isFinite(+md.day)) return false;
+    const day = `${+md.month}-${+md.day}`;
     if (day !== _lastDetectedDay) {
         _lastDetectedDay = day;
         return true;
@@ -1843,16 +1828,42 @@ const DATE_JUDGE_PROMPT =
 若最近对话中并无明确日期线索、无法确定具体月日，就只回答「未知」。
 不要解释，不要输出任何多余文字。`;
 
+// 自定义历法下，正文用的是自定义月名（如「霜月」），公历式发问会答非所问。带上历法描述、
+// 并允许 AI 用「第M月D日」或月名作答；内置公历返回上面的原版 prompt（零行为变化）。
+function buildDateJudgePrompt() {
+    const calDesc = getCalDescInjectText();
+    if (!calDesc) return DATE_JUDGE_PROMPT;
+    return `请暂停角色扮演，作为剧情分析助手，只做一件事：判断以上最近的对话里，故事此刻发生在哪一天。
+本世界观使用自定义历法（非公历）——${calDesc}
+只回答「当前剧情日期」，格式为「第M月D日」（M=第几个月的序号，D=该月第几日，例如第3月15日），或直接用上面列出的月名，如「霜月15日」；年份不重要、无需回答。
+若最近对话中并无明确日期线索、无法确定具体月日，就只回答「未知」。
+不要解释，不要输出任何多余文字。`;
+}
+
 // 从 judge 回答里抠出 {month, day}。先认「M月D日」，再兜底走 extractDayFromTime（认 3/15、
 // 2024-3-15、三月十五 等格式）。认不出 / 明确「未知」→ 返回 null（＝保持上次锚点不动）。
 function parseJudgedDate(ans) {
     const s = String(ans || '').trim();
     if (!s || /未知|无法|不确定|不清楚|没有|无明确/.test(s)) return null;
-    const m = s.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日?/);
+    const cal = loadCalDesc();
+    // 「第M月D日」（自定义历序号式）或「M月D日」（公历/序号式）：M 一律当「第几个月」序号。
+    let m = s.match(/第?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?/);
     if (m) {
-        const mo = +m[1], da = +m[2];
-        const cal = loadCalDesc();
-        if (mo >= 1 && mo <= calMonthCount(cal) && da >= 1 && da <= calMonthDays(cal, mo)) return { month: mo, day: da };
+        const md = almValidMonthDay({ month: +m[1], day: +m[2] }, cal);
+        if (md) return md;
+    }
+    // 自定义月名式（如「霜月15日」）：在历法月名里找匹配，取其序号。仅自定义历需要（公历月名即「N月」，上面已covered）。
+    if (cal !== DEFAULT_CAL) {
+        for (let i = 0; i < cal.months.length; i++) {
+            const nm = String(cal.months[i].name || '').trim();
+            if (!nm) continue;
+            const nmEsc = nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const mm = s.match(new RegExp(nmEsc + '\\s*(\\d{1,2})\\s*日?'));
+            if (mm) {
+                const md = almValidMonthDay({ month: i + 1, day: +mm[1] }, cal);
+                if (md) return md;
+            }
+        }
     }
     return monthDayFromDayKey(extractDayFromTime(s));
 }
@@ -1876,7 +1887,7 @@ async function runJudgeDateStep(mode) {
     try {
         const userName = ctx.name1 || '用户', charName = ctx.name2 || '角色';
         // historyLimit=4：只需最近几楼就能读出剧情内日期，省 token（与历生成同量级）。
-        const raw = await callCustomApi(ctx, DATE_JUDGE_PROMPT, cfg, userName, charName, myCtrl.signal, 4);
+        const raw = await callCustomApi(ctx, buildDateJudgePrompt(), cfg, userName, charName, myCtrl.signal, 4);
         if (getAbort() !== myCtrl) return;                                  // 被更新的判定取代
         if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃结果
         done();
@@ -2499,8 +2510,8 @@ function injectModal() {
                                 <summary class="sp-settings-layer-title">基础设置</summary>
                                 <div class="sp-settings-layer-body">
 
-                            <!-- 全局设置 1：API -->
-                            <details class="sp-settings-section" open>
+                            <!-- 全局设置 1：API（默认折叠：首次配置后基本不再动，无需默认展开） -->
+                            <details class="sp-settings-section">
                                 <summary class="sp-settings-section-title">API</summary>
                                 <div class="sp-settings-section-body">
                                     <div class="sp-api-notice ${hasCustomApi ? 'sp-notice-ok' : 'sp-notice-warn'}">
@@ -2752,7 +2763,7 @@ function injectModal() {
                                         <input type="checkbox" id="sp-dashed-enabled" ${getSettings().dashedEnabled === true ? 'checked' : ''}>
                                         <span>虚线 · 冷知识（跟随线生成）</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">每次线生成 / 推进额外抽 1~2 条角色 / 你 / 世界观的冷知识，显示在线面板下方。<b>纯娱乐、不注入任何地方</b>。多一次 API，默认关。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">每次线生成 / 推进额外抽两条角色 / 你 / 世界观的冷知识，显示在线面板下方。<b>纯娱乐、不注入任何地方</b>。多一次 API，默认关。</p>
 
                                     <hr class="sp-mem-divider">
 
@@ -3204,6 +3215,22 @@ function injectModal() {
         const input = String($('#sp-theater-input').val() || '').trim();
         if (!input) { showToast('请先填写小剧场需求', null, true); return; }
         runGenerateTheater(input);
+    });
+    // 随机起草：从模板库随机抽一个直接生成（模板 text 即需求）。缓存空则临时拉一次，仍空则友好提示。
+    $theater.on('click', '.sp-theater-random', async function () {
+        if (isGeneratingTheater) return;
+        let pool = _theaterTemplateCache;
+        if (!pool || !pool.length) {
+            try { await refreshTheaterTemplates(); } catch { /* 读取失败按空库处理 */ }
+            pool = _theaterTemplateCache;
+        }
+        if (!pool || !pool.length) { showToast('模板库为空，先去设置 · 棱新增模板', null, true); return; }
+        const pick = pool[Math.floor(Math.random() * pool.length)];
+        const text = String(pick?.text || '').trim();
+        if (!text) { showToast('随机到的模板内容为空，去设置补一下内容', null, true); return; }
+        $('#sp-theater-input').val(text);               // 让用户看到抽中了什么，也便于中止后二次编辑
+        $('#sp-theater-tpl-picker').removeAttr('open'); // 收起模板选择器
+        runGenerateTheater(text);
     });
     $theater.on('click', '.sp-theater-regen', function () {
         if (isGeneratingTheater) return;
@@ -6282,7 +6309,10 @@ function renderTheaterPanel() {
                 </div>
             </details>
             <textarea id="sp-theater-input" class="sp-input sp-theater-textarea" placeholder="描述这段小剧场：场景、人物状态、想看的走向、字数等…"></textarea>
-            <button class="sp-btn sp-btn-primary sp-theater-generate">生成小剧场</button>
+            <div class="sp-theater-btn-row">
+                <button class="sp-btn sp-theater-random" title="从模板库随机抽一个模板直接生成"><i class="fa-solid fa-shuffle"></i> 随机</button>
+                <button class="sp-btn sp-btn-primary sp-theater-generate">生成小剧场</button>
+            </div>
         </div>
         <hr class="sp-theater-divider">
         ${resultBlock}
@@ -7394,8 +7424,8 @@ function triggerToggleLinePin(idx) {
 // 只留最新一版、随聊天文件跨设备。默认关（dashedEnabled），开了才在线生成时跟着抽一次。
 const DASHED_PROMPT = `请暂停角色扮演，跳出正文叙事，以设定考据者的身份回答。这是设定考据、不是续写正文：不要输出任何剧情场景、对话、动作或第一/第二人称叙述，不要推进故事，也不要复述记忆库/世界书里已发生的事件经过。                                                                                                                   
   请无视上文里的状态栏、数值面板、表格等格式化内容，绝对不要复述或模仿它们。
-  完全遵循char与{{user}}的设定和世界观，列出一到两个关于char、{{user}}或这个世界的"冷知识"。可以是人物设定里的小细节、隐藏的性格侧写、习惯癖好、过往经历，也可以是世界观设定、势力/地点/物品的隐藏特性、未被明说的规则或因果。每一条都要展开讲清来龙去脉、给出背景和细节，不要只丢一句干巴巴的结论。绝对禁止ooc和脱离当前背景。               
-  直接从第一条冷知识写起，不要任何开场白或旁白。每行一条冷知识，每条控制在50到100字之间，把细节讲透，纯中文叙述，条与条之间换行分隔，不要序号、不要状态栏或任何格式符号。`;
+  完全遵循这个世界的设定与世界观，列出恰好两条关于这个世界的"冷知识"。取材面要开阔——世界观设定、历史与传说、势力/组织、地点/风物、物品/造物的隐藏特性、未被明说的规则或因果、习俗与禁忌，都可以写；char、{{user}} 只是这个世界里的成员之一，可以偶尔涉及，但不要每条都围着他们转，更不要只盯着 {{user}}。优先挖那些容易被忽略、却让世界更立体的角落。每一条都要展开讲清来龙去脉、给出背景和细节，不要只丢一句干巴巴的结论。绝对禁止ooc和脱离当前背景。
+  直接从第一条冷知识写起，不要任何开场白或旁白。只写两条，每行一条冷知识，每条控制在50到100字之间，把细节讲透，纯中文叙述，两条之间换行分隔，不要序号、不要状态栏或任何格式符号。`;
 
 function getDashedCacheKey() { return keyDesc('dashed', 'user', ''); }  // 固定 user scope = 不分视角
 
@@ -7939,12 +7969,20 @@ function monthDayFromDayKey(key, cal = loadCalDesc()) {
     if (!key) return null;
     let m;
     if ((m = String(key).match(/^(\d+)-(\d+)-(\d+)$/)) || (m = String(key).match(/^cn-(\d+)-(\d+)-(\d+)$/))) {
-        const mo = +m[2], da = +m[3];
-        const mc = calMonthCount(cal);
-        const maxDim = Math.max(...cal.months.map(x => x.days));   // 宽松上界；公历下 mc=12/maxDim=31，与旧的 12/31 等价
-        if (mo >= 1 && mo <= mc && da >= 1 && da <= maxDim) return { month: mo, day: da };
+        return almValidMonthDay({ month: +m[2], day: +m[3] }, cal);   // 严格按当前历校验；越界=不可信来源，返回 null 让链继续
     }
     return null;
+}
+// 严格校验 {month,day} 是否落在当前历法有效范围（月 1..月数、日 1..该月天数）。
+// 越界返回 null（＝此来源不可信，交回 almTodayAnchor 链往下找），绝不 clamp 成错误日期。
+// 公历(DEFAULT_CAL)下 12 月 / 各月足长，真实 Date 与 cn- 日期恒通过，与旧行为等价；仅自定义历会拒。
+function almValidMonthDay(md, cal = loadCalDesc()) {
+    if (!md) return null;
+    const mo = md.month, da = md.day;
+    if (!Number.isFinite(mo) || !Number.isFinite(da)) return null;
+    if (mo < 1 || mo > calMonthCount(cal)) return null;
+    if (da < 1 || da > calMonthDays(cal, mo)) return null;
+    return { month: mo, day: da };
 }
 // 扫最近若干 AI 楼取剧情正文里写明的绝对日期。返回 { month, day, date }：
 //   date 只在阿拉伯「YYYY-M-D」（带真实年份）时构造成 JS Date（用于取现实周几）；古代历(cn-)/相对天数无现实年，date=null。
@@ -8018,7 +8056,10 @@ function almTodayAnchor() {
         if (saved?.raw) {
             const { startDate } = parseCalendar(saved.raw);
             if (startDate instanceof Date && !isNaN(startDate)) {
-                return { month: startDate.getMonth() + 1, day: startDate.getDate() };
+                // 按当前历校验：自定义历（月数≠12/月长更短）下公历派生的月日可能越界，
+                // 越界即跳过让链往下走，绝不放行一个会被下游 clamp 成错误「今天」的月日。
+                const md = almValidMonthDay({ month: startDate.getMonth() + 1, day: startDate.getDate() });
+                if (md) return md;
             }
         }
     } catch { /* 往下走 */ }
