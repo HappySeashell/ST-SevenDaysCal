@@ -2564,6 +2564,94 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-confirm-ok:hover { opacity: 0.88; }
 
+/* ─── 通用决策弹窗：独立于作者 sp-confirm 生命周期 ─────────────────────────── */
+.sp-dialog-overlay {
+    position       : fixed;
+    inset          : 0;
+    z-index        : 2000002;
+    pointer-events : auto;
+    background     : rgba(0,0,0,0.55);
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    padding        : 20px;
+    animation      : sp-wi-fullview-in 0.15s ease-out;
+}
+.sp-dialog-sheet {
+    background-color: var(--sp-sheet-bg-legacy);
+    background-image: linear-gradient(var(--sp-sheet-bg), var(--sp-sheet-bg));
+    border-radius : 12px;
+    width         : min(400px, calc(100vw - 40px));
+    max-width     : 100%;
+    padding       : 16px 18px 14px;
+    box-shadow    : var(--sp-shadow);
+    display       : flex;
+    flex-direction: column;
+    gap           : 10px;
+}
+.sp-dialog-head {
+    font-size  : 0.95rem;
+    font-weight: 600;
+    color      : var(--sp-on-surface);
+}
+.sp-dialog-body {
+    font-size  : 0.85rem;
+    line-height: 1.65;
+    color      : var(--sp-on-surface);
+    white-space: pre-wrap;
+    word-break : break-word;
+}
+.sp-dialog-note {
+    font-size   : 0.75rem;
+    color       : var(--sp-subtle);
+    line-height : 1.55;
+    padding     : 8px 10px;
+    background  : var(--sp-hover-bg);
+    border-radius: 6px;
+    border-left : 2px solid var(--sp-divider);
+}
+.sp-dialog-actions {
+    display        : flex;
+    justify-content: flex-end;
+    flex-wrap      : wrap;
+    gap            : 8px;
+    margin-top     : 4px;
+}
+.sp-dialog-button {
+    padding      : 6px 16px;
+    border-radius: 8px;
+    border       : none;
+    font-size    : 0.83rem;
+    cursor       : pointer;
+    font-weight  : 500;
+    transition   : opacity 0.15s;
+}
+.sp-dialog-button-secondary {
+    background: transparent;
+    color     : var(--sp-subtle);
+    border    : 1px solid var(--sp-divider);
+}
+.sp-dialog-button-secondary:hover { color: var(--sp-on-surface); border-color: var(--sp-surface-high); }
+.sp-dialog-button-primary {
+    background: var(--sp-primary);
+    color     : var(--sp-on-primary);
+}
+.sp-dialog-button-primary:hover { opacity: 0.88; }
+.sp-dialog-input {
+    width        : 100%;
+    padding      : 7px 11px;
+    box-sizing   : border-box;
+    background   : var(--sp-sheet-bg);
+    border       : 1px solid var(--sp-divider);
+    border-radius: 8px;
+    color        : var(--sp-on-surface);
+    font         : 0.85rem var(--sp-font);
+    outline      : none;
+}
+.sp-dialog-input:focus { border-color: var(--sp-primary); }
+.sp-dialog-input-error { min-height: 1em; color: var(--sp-on-surface); font-size: 0.72rem; line-height: 1.4; }
+.sp-dialog-input-error i { color: var(--sp-subtle); margin-right: 3px; }
+
 /* ─── Memory section ─────────────────────────────────────────────────────────── */
 .sp-mem-status {
     display       : grid;
@@ -3951,7 +4039,57 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     background: color-mix(in oklab, var(--sp-primary) 16%, transparent);
     color     : var(--sp-on-surface);
 }
-.sp-alm-tools { display: inline-flex; gap: 2px; }
+.sp-almanac-wrap { container-name: sp-almanac; container-type: inline-size; }
+.sp-alm-tools, .sp-alm-wide-tools { display: inline-flex; align-items: center; gap: 2px; }
+.sp-alm-narrow-tools { display: none; }
+
+/* 通用操作菜单：菜单项由静态配置生成；固定图标列保证不同图标后的文字严格对齐。 */
+.sp-action-menu { position: relative; }
+.sp-action-menu-list {
+    position     : absolute;
+    z-index      : 40;
+    top          : calc(100% + 5px);
+    right        : 0;
+    width        : max-content;
+    max-width    : calc(100vw - 24px);
+    padding      : 5px;
+    background   : var(--sp-sheet-bg);
+    border       : 1px solid var(--sp-divider);
+    border-radius: 8px;
+    box-shadow   : var(--sp-shadow);
+}
+.sp-action-menu-list[hidden] { display: none; }
+.sp-action-menu-item {
+    width        : 100%;
+    display      : flex;
+    align-items  : center;
+    gap          : 8px;
+    padding      : 7px 9px;
+    border       : 0;
+    border-radius: 6px;
+    background   : transparent;
+    color        : var(--sp-on-surface);
+    font         : 500 0.78rem/1.2 var(--sp-font);
+    text-align   : left;
+    white-space  : nowrap;
+    cursor       : pointer;
+}
+.sp-action-menu-item i { width: 16px; flex: 0 0 16px; text-align: center; color: var(--sp-subtle); }
+.sp-action-menu-item:hover { background: var(--sp-hover-bg); color: var(--sp-primary); }
+.sp-action-menu-item:hover i { color: var(--sp-primary); }
+
+@container sp-almanac (max-width: 300px) {
+    .sp-alm-wide-tools { display: none; }
+    .sp-alm-narrow-tools { display: inline-flex; }
+}
+
+/* 旧内核不支持容器查询时退回视口断点；现代环境始终按历内容区自身宽度切换。 */
+@supports not (container-type: inline-size) {
+    @media (max-width: 640px) {
+        .sp-alm-wide-tools { display: none; }
+        .sp-alm-narrow-tools { display: inline-flex; }
+    }
+}
 
 /* 历面板「今天」栏：工具条下方一条紧凑的今天显示 + ±1天/改/自动 控制 */
 .sp-alm-today {
@@ -4260,6 +4398,108 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     gap            : 10px;
     margin-top     : 16px;
 }
+
+/* ── 历法管理：沿用现有设置列表的中性表面语言 ── */
+.sp-alm-manager-hint { padding: 8px 14px 4px; font-size: 0.75rem; color: var(--sp-subtle); }
+.sp-alm-manager-hint button { border: 0; padding: 0; background: transparent; color: var(--sp-primary); cursor: pointer; font: inherit; }
+.sp-alm-manager-card, .sp-alm-manager-templates { border: 1px solid var(--sp-divider); border-radius: 8px; background: var(--sp-surface); overflow: hidden; }
+.sp-alm-manager-card-head, .sp-alm-manager-template-head, .sp-alm-manager-template-row { display: flex; align-items: center; gap: 8px; }
+.sp-alm-manager-card-head, .sp-alm-manager-template-head { padding: 4px 8px 4px 12px; }
+.sp-alm-manager-card-head .sp-icon-btn { width: 26px; height: 26px; font-size: 0.72rem; }
+.sp-alm-manager-card-title { flex: 1; min-width: 0; font-size: 0.8rem; font-weight: 600; color: var(--sp-on-surface); }
+.sp-alm-manager-card-actions { display: inline-flex; align-items: center; flex-shrink: 0; gap: 2px; }
+.sp-alm-manager-card-body, .sp-alm-manager-edit-fields { border-top: 1px solid var(--sp-divider); }
+.sp-alm-manager-current-name { padding: 10px 12px 0; color: var(--sp-on-surface); font-size: 0.78rem; font-weight: 600; overflow-wrap: anywhere; }
+.sp-alm-manager-current-name + .sp-alm-manager-months { padding-top: 7px; }
+.sp-alm-manager-months { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; }
+.sp-alm-manager-month-chip { padding: 3px 8px; border: 1px solid var(--sp-divider); border-radius: 8px; background: var(--sp-sheet-bg); color: var(--sp-subtle); font-size: 0.72rem; }
+.sp-alm-manager-edit-fields { display: flex; flex-direction: column; gap: 9px; padding: 10px 12px; }
+.sp-alm-manager-month-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; }
+.sp-alm-manager-month-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sp-alm-manager-month-field-name { flex: 1 1 150px; min-width: 140px; }
+.sp-alm-manager-month-field-days { flex: 0 1 74px; min-width: 64px; }
+.sp-alm-manager-month-field > span { color: var(--sp-subtle); font-size: 0.7rem; font-weight: 500; }
+.sp-alm-manager-month-field input { width: 100%; min-width: 0; box-sizing: border-box; }
+.sp-alm-manager-month-actions { display: inline-flex; flex: 0 0 auto; align-items: center; align-self: flex-end; min-height: 32px; margin-left: auto; gap: 0; }
+.sp-alm-manager-month-actions .sp-icon-btn { width: 23px; height: 23px; font-size: 0.7rem; }
+.sp-alm-manager-error { color: var(--sp-on-surface); font-size: 0.72rem; line-height: 1.4; }
+.sp-alm-manager-error i { color: var(--sp-subtle); margin-right: 3px; }
+.sp-alm-manager-template-head { width: 100%; border: 0; background: transparent; color: var(--sp-on-surface); cursor: pointer; text-align: left; }
+.sp-alm-manager-template-head:hover { background: var(--sp-hover-bg); }
+.sp-alm-manager-template-head span { flex: 1; font-size: 0.8rem; font-weight: 600; }
+.sp-alm-manager-template-head > i { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; }
+.sp-alm-manager-template-body { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; border-top: 1px solid var(--sp-divider); }
+.sp-alm-manager-template-save-current, .sp-alm-manager-add-month {
+    width        : 100%;
+    display      : flex;
+    align-items  : center;
+    justify-content: center;
+    gap          : 8px;
+    padding      : 8px 10px;
+    border       : 1px solid var(--sp-divider);
+    border-radius: 6px;
+    background   : transparent;
+    color        : var(--sp-on-surface);
+    font         : 0.8rem var(--sp-font);
+    cursor       : pointer;
+}
+.sp-alm-manager-template-save-current:hover, .sp-alm-manager-add-month:hover { border-color: var(--sp-primary); background: var(--sp-hover-bg); color: var(--sp-primary); }
+.sp-alm-manager-template-save-current i, .sp-alm-manager-add-month i { width: 16px; text-align: center; color: var(--sp-subtle); }
+.sp-alm-manager-template-save-current:hover i, .sp-alm-manager-add-month:hover i { color: var(--sp-primary); }
+.sp-alm-manager-template-list { display: flex; flex-direction: column; gap: 6px; }
+.sp-alm-manager-template-entry { overflow: hidden; border: 1px solid var(--sp-divider); border-radius: 8px; background: var(--sp-sheet-bg); }
+.sp-alm-manager-template-entry.sp-alm-manager-template-current { border-color: var(--sp-primary); background: var(--sp-hover-bg); }
+.sp-alm-manager-template-row { padding: 7px 8px; }
+.sp-alm-manager-template-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sp-alm-manager-template-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sp-on-surface); font-size: 0.78rem; font-weight: 600; }
+.sp-alm-manager-template-meta { color: var(--sp-subtle); font-size: 0.68rem; }
+.sp-alm-manager-template-actions { display: inline-flex; flex-shrink: 0; gap: 0; }
+.sp-alm-manager-template-actions .sp-icon-btn { width: 26px; height: 26px; font-size: 0.72rem; }
+.sp-alm-manager-bind-panel { display: flex; flex-direction: column; gap: 7px; padding: 8px; border-top: 1px solid var(--sp-divider); background: var(--sp-surface); }
+.sp-alm-manager-bind-chips { display: flex; flex-wrap: wrap; gap: 5px; min-height: 24px; align-items: center; }
+.sp-alm-manager-bind-chip-remove {
+    display      : inline-flex;
+    align-items  : center;
+    gap          : 5px;
+    max-width    : 100%;
+    padding      : 3px 7px 3px 8px;
+    border       : 1px solid var(--sp-divider);
+    border-radius: 99px;
+    background   : var(--sp-sheet-bg);
+    color        : var(--sp-on-surface);
+    font         : 0.72rem var(--sp-font);
+    cursor       : pointer;
+}
+.sp-alm-manager-bind-chip-remove:hover, .sp-alm-manager-bind-chip-current { border-color: var(--sp-primary); }
+.sp-alm-manager-bind-chip-remove span { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.sp-alm-manager-bind-chip-remove i { flex-shrink: 0; color: var(--sp-subtle); }
+.sp-alm-manager-bind-search { width: 100%; box-sizing: border-box; font-size: 0.82rem; }
+.sp-alm-manager-bind-results { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+.sp-alm-manager-bind-results::-webkit-scrollbar { width: 4px; }
+.sp-alm-manager-bind-results::-webkit-scrollbar-thumb { background: var(--sp-divider); border-radius: 2px; }
+.sp-alm-manager-bind-option {
+    width        : 100%;
+    display      : flex;
+    align-items  : center;
+    gap          : 8px;
+    padding      : 7px 9px;
+    border       : 1px solid transparent;
+    border-radius: 6px;
+    background   : transparent;
+    color        : var(--sp-on-surface);
+    font         : 0.8rem var(--sp-font);
+    text-align   : left;
+    cursor       : pointer;
+}
+.sp-alm-manager-bind-option:hover { border-color: var(--sp-primary); background: var(--sp-hover-bg); }
+.sp-alm-manager-bind-option i { width: 16px; flex: 0 0 16px; text-align: center; color: var(--sp-subtle); }
+.sp-alm-manager-bind-option-label { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 4px; }
+.sp-alm-manager-bind-option-name { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.sp-alm-manager-bind-option-hint { flex: 0 0 auto; color: var(--sp-subtle); font-size: 0.68rem; font-weight: 400; white-space: nowrap; }
+.sp-alm-manager-bind-option-current > i, .sp-alm-manager-bind-option-current .sp-alm-manager-bind-option-name { color: var(--sp-primary); }
+.sp-alm-manager-bind-option:disabled, .sp-alm-manager-bind-chip-remove:disabled { cursor: default; opacity: 0.55; }
+.sp-alm-manager-bind-empty { color: var(--sp-subtle); font-size: 0.74rem; padding: 5px 2px; }
+.sp-alm-manager-empty-templates { padding: 6px 2px; color: var(--sp-subtle); font-size: 0.72rem; font-style: italic; }
 
 /* ── 历·楼内七天条（注入聊天流，只读；扁扁一条，与线块共存于最新 AI 楼）──
    注意：注入到 #chat（在 .sp-root 之外），--sp-primary/--sp-subtle 等作用域变量取不到，

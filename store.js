@@ -133,6 +133,22 @@ export function writeData(kind, view, charName, value) {
     return true;
 }
 
+// 同一业务需要同时更新多份子数据时，只改一次内存对象并统一落盘，避免两次 saveMetadata
+// 之间切档造成“只写成功一半”。entries: [{ kind, view, charName, value }]。
+export function writeBatch(entries) {
+    const list = Array.isArray(entries) ? entries.filter(it => it?.kind) : [];
+    if (!list.length) return false;
+    const s = store(true);
+    if (!s) return false;
+    for (const it of list) {
+        const key = subKey(it.kind, it.view, it.charName);
+        if (it.value == null) delete s.data[key];
+        else s.data[key] = it.value;
+    }
+    persist();
+    return true;
+}
+
 export function removeData(kind, view = 'user', charName = '') {
     const s = store();
     if (!s) return;

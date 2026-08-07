@@ -1,0 +1,132 @@
+const OVERLAY_ID = 'sp-addon-dialog';
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// 通用决策弹窗只管理自身遮罩和 Promise 生命周期；业务判断与持久化留给调用方。
+export function createDialogManager({ $, mount, getRootClass = () => '', subscribeContextChange = () => () => {} } = {}) {
+    if (typeof $ !== 'function' || !mount?.appendChild) throw new TypeError('弹窗管理器缺少 DOM 依赖');
+
+    let activeCancel = null;
+
+    function cancelActive() {
+        if (!activeCancel) return false;
+        activeCancel();
+        return true;
+    }
+
+    function choose({ title = '', body = '', note = '', choices = [] } = {}) {
+        if (!Array.isArray(choices) || !choices.length) return Promise.resolve(null);
+        return new Promise(resolve => {
+            cancelActive();
+            $(`#${OVERLAY_ID}`).remove();
+            let done = false;
+            let unsubscribe = () => {};
+            const buttons = choices.map((choice, index) => {
+                const tone = choice.primary ? 'primary' : 'secondary';
+                return `<button class="sp-dialog-button sp-dialog-button-${tone}" type="button" data-dialog-choice="${index}">${escapeHtml(choice.label)}</button>`;
+            }).join('');
+            const $overlay = $(`<div id="${OVERLAY_ID}" class="sp-dialog-overlay">
+                <div class="sp-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
+                    <div id="sp-dialog-title" class="sp-dialog-head">${escapeHtml(title)}</div>
+                    <div class="sp-dialog-body">${escapeHtml(body)}</div>
+                    ${note ? `<div class="sp-dialog-note">${escapeHtml(note)}</div>` : ''}
+                    <div class="sp-dialog-actions">${buttons}</div>
+                </div>
+            </div>`);
+            const finish = value => {
+                if (done) return;
+                done = true;
+                if (activeCancel === onExternalClose) activeCancel = null;
+                unsubscribe();
+                $overlay.remove();
+                resolve(value);
+            };
+            const onExternalClose = () => finish(null);
+            activeCancel = onExternalClose;
+            $overlay.find('[data-dialog-choice]').on('click', function () {
+                const choice = choices[Number($(this).attr('data-dialog-choice'))];
+                finish(choice?.value ?? null);
+            });
+            $overlay.on('click', function (event) { if (event.target === this) finish(null); });
+            $overlay.on('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); finish(null); } });
+            $overlay.addClass(String(getRootClass() || ''));
+            mount.appendChild($overlay[0]);
+            unsubscribe = subscribeContextChange(onExternalClose) || (() => {});
+            setTimeout(() => $overlay.find('[data-dialog-choice]').last().trigger('focus'), 0);
+        });
+    }
+
+    function confirm({ title, body, note, confirmText = '确定', cancelText = '取消' } = {}) {
+        return choose({
+            title,
+            body,
+            note,
+            choices: [
+                { value: 'cancel', label: cancelText },
+                { value: 'confirm', label: confirmText, primary: true },
+            ],
+        }).then(value => value === 'confirm');
+    }
+
+    function prompt({ title = '', body = '', initialValue = '', placeholder = '', maxLength = 40, confirmText = '保存', cancelText = '取消', validate } = {}) {
+        return new Promise(resolve => {
+            cancelActive();
+            $(`#${OVERLAY_ID}`).remove();
+            let done = false;
+            let unsubscribe = () => {};
+            const limit = Number(maxLength) > 0 ? Number(maxLength) : 40;
+            const $overlay = $(`<div id="${OVERLAY_ID}" class="sp-dialog-overlay">
+                <div class="sp-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
+                    <div id="sp-dialog-title" class="sp-dialog-head">${escapeHtml(title)}</div>
+                    ${body ? `<div class="sp-dialog-body">${escapeHtml(body)}</div>` : ''}
+                    <input type="text" class="sp-dialog-input" value="${escapeHtml(initialValue)}" placeholder="${escapeHtml(placeholder)}" maxlength="${limit}" autocomplete="off">
+                    <div class="sp-dialog-input-error" aria-live="polite"></div>
+                    <div class="sp-dialog-actions">
+                        <button class="sp-dialog-button sp-dialog-button-secondary sp-dialog-cancel" type="button">${escapeHtml(cancelText)}</button>
+                        <button class="sp-dialog-button sp-dialog-button-primary sp-dialog-submit" type="button">${escapeHtml(confirmText)}</button>
+                    </div>
+                </div>
+            </div>`);
+            const finish = value => {
+                if (done) return;
+                done = true;
+                if (activeCancel === onExternalClose) activeCancel = null;
+                unsubscribe();
+                $overlay.remove();
+                resolve(value);
+            };
+            const onExternalClose = () => finish(null);
+            const submit = () => {
+                const value = String($overlay.find('.sp-dialog-input').val() ?? '').trim();
+                const error = typeof validate === 'function' ? String(validate(value) || '') : '';
+                if (error) {
+                    $overlay.find('.sp-dialog-input-error').html(`<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${escapeHtml(error)}`);
+                    $overlay.find('.sp-dialog-input').trigger('focus');
+                    return;
+                }
+                finish(value);
+            };
+            activeCancel = onExternalClose;
+            $overlay.find('.sp-dialog-submit').on('click', submit);
+            $overlay.find('.sp-dialog-cancel').on('click', () => finish(null));
+            $overlay.find('.sp-dialog-input').on('input', () => $overlay.find('.sp-dialog-input-error').empty()).on('keydown', event => {
+                if (event.key === 'Enter') { event.preventDefault(); submit(); }
+                else if (event.key === 'Escape') { event.preventDefault(); finish(null); }
+            });
+            $overlay.on('click', function (event) { if (event.target === this) finish(null); });
+            $overlay.addClass(String(getRootClass() || ''));
+            mount.appendChild($overlay[0]);
+            unsubscribe = subscribeContextChange(onExternalClose) || (() => {});
+            setTimeout(() => $overlay.find('.sp-dialog-input').trigger('focus').trigger('select'), 0);
+        });
+    }
+
+    return Object.freeze({ confirm, choose, prompt, cancelActive });
+}
