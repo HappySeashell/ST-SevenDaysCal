@@ -1806,6 +1806,25 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-beat:hover .sp-beat-setcur   { opacity: 1; }
 .sp-beat-setcur:hover            { color: var(--sp-primary); background: var(--sp-surface-high); }
 .sp-beat-setcur-on               { opacity: 1; color: var(--sp-primary); }
+/* 面·逐 step 复制钮：仿 .sp-beat-setcur/.sp-inject-btn，hover 节点卡片才显形 */
+.sp-beat-copy {
+    width          : 22px;
+    height         : 22px;
+    border         : none;
+    background     : transparent;
+    color          : var(--sp-subtle);
+    cursor         : pointer;
+    border-radius  : 4px;
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : 0.68rem;
+    flex-shrink    : 0;
+    opacity        : 0;
+    transition     : opacity 0.15s, color 0.15s, background 0.15s;
+}
+.sp-beat:hover .sp-beat-copy { opacity: 1; }
+.sp-beat-copy:hover          { color: var(--sp-primary); background: var(--sp-surface-high); }
 .sp-beat-index {
     width          : 20px;
     height         : 20px;
@@ -4108,6 +4127,20 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-alm-today-acts { display: inline-flex; gap: 2px; margin-left: auto; }
 .sp-alm-today-acts .sp-icon-btn { width: 26px; height: 26px; font-size: 0.72rem; }
 .sp-alm-today-input { width: 44px !important; text-align: center; }
+ /* 时间戳·只读行：今天条下方一行，回显主楼 AI 每楼隐形时间戳（起→止），比今天条更素 */
+.sp-alm-clock {
+    display      : flex;
+    align-items  : center;
+    gap          : 6px;
+    padding      : 5px 12px;
+    border-bottom: 1px solid var(--sp-divider);
+    flex-shrink  : 0;
+    font-size    : 0.76rem;
+}
+.sp-alm-clock-lbl   { display: inline-flex; align-items: center; gap: 4px; color: var(--sp-subtle); flex-shrink: 0; }
+.sp-alm-clock-val   { color: var(--sp-on-surface); font-weight: 600; word-break: break-all; }
+.sp-alm-clock-arrow { color: var(--sp-subtle); font-weight: 400; margin: 0 1px; }
+.sp-alm-clock-wait  { color: var(--sp-subtle); font-weight: 400; font-size: 0.72rem; }
 /* 「同步到点」CTA：改了今天后点落后时在今天条冒出的醒目胶囊；点一下后台把点重生成到今天。busy 态换成静默灰胶囊 */
 .sp-alm-today-sync {
     display      : inline-flex;
@@ -4631,6 +4664,9 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-dash-sum-wx    { margin-left: 4px; opacity: 0.9; }   /* 折叠条里的天气图标，紧跟日期 */
 .sp-dash-sum-chips { display: inline-flex; gap: 6px; opacity: 0.6; }
 .sp-dash-sum-chip  { font-size: 0.7rem; }
+/* 时间戳·时刻尾巴：数字戳解析出的「时」贴在天气之后（今 …年…月…日 周X ☀ 15:10）；日期本身已抬进
+   .sp-dash-sum-today。极窄屏时它先让位、超长截断留省略号，绝不撑破窄条或挤掉右侧箭头；无「时」/古风戳时整段不出现。 */
+.sp-dash-sum-time { font-size: 0.72rem; opacity: 0.82; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 .sp-dash-sum-caret { margin-left: auto; font-size: 0.62rem; opacity: 0.45; transition: transform 0.18s; }
 .sp-dash[open] > .sp-dash-summary .sp-dash-sum-caret { transform: rotate(180deg); }
 .sp-dash[open] > .sp-dash-summary { border-bottom: 1px solid rgba(128,128,128,0.13); }
@@ -4821,6 +4857,10 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 }
 .sp-sch-drawer-item:hover .sp-sch-del-one { opacity: 1; }
 .sp-sch-del-one:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); opacity: 1; }
+/* 点·删除钮进主面板（renderEvent 的 .sp-event）：仿 .sp-point-pin-toggle —— 平时藏、hover 点卡片才浮现；
+   楼内块抽屉里的 0.55 常显行为(.sp-sch-drawer-item)不受影响。 */
+.sp-event .sp-sch-del-one       { opacity: 0; color: var(--sp-subtle); }
+.sp-event:hover .sp-sch-del-one { opacity: 1; }
 
 /* 点/线面板 header 下方另起一行的「和间聊聊」引导；纯文字区（不自己画线，下方 tab-bar 已有分隔线），padding 上下对称、不与 header 下 padding 叠太厚 */
 .sp-jump-hint { padding: 2px 16px 8px; font-size: 0.75rem; color: var(--sp-subtle); flex-shrink: 0; }

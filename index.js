@@ -47,6 +47,10 @@ const DEFAULT_SETTINGS = {
     pluginEnabled: true,
     // 潜伏注入总闸（受 pluginEnabled 统辖）：false = 线 / 面一律不注入主楼 AI（不影响楼内展示与手动生成）。默认开。
     injectEnabled: true,
+    // 时间戳·时间锚点体系（只受 pluginEnabled + 自身开关统辖，独立于线/面注入闸）：强制主楼 AI 每楼正文首尾打时间戳
+    // <!-- SDC-start … --> / <!-- SDC-end … -->，构画回读作时间源。默认开——全插件时间地基。
+    storyClockEnabled: true,
+    storyClockPrompt : '',       // 时间戳·强注词二改：空=用内置默认（随插件更新走）；非空=整段替换。用户自负 SDC 标签结构，改坏只是时间戳读空、不影响历/点兜底
     themeMode: 'auto',   // 'auto' | 'day' | 'night' — 'auto' follows ST theme; day/night force
     notifyMode: 'lite',  // 通知提醒档：'off'=全静音 / 'lite'(默认)=仅你手动生成·刷新时提示 / 'full'=另在后台自动改动点线面历时提示（真改动才弹）
     linesEnabled : true, // master switch: false disables both auto-advance AND inline block rendering
@@ -203,6 +207,7 @@ let resizeRAF      = null;
 let fabDragged     = false;
 let fabDragState   = null;
 let currentView        = 'user';  // 'user' | 'char'
+let _lastMainView      = 'schedule';  // 记住上次打开的模块视图（点/历/线/面/间/棱/坐标），同 chat 内跨开关面板保留；切 chat 复位成 schedule（第一页），见 CHAT_CHANGED
 let charViewName       = null;    // confirmed char name; preserved when switching to user view
 let outlineMode         = false;
 let isGeneratingOutline = false;
@@ -390,6 +395,7 @@ jQuery(async () => {
         _almTodayEditing = false;
         _almSyncingPoint = false;
         _almSyncPending = false;
+        _lastMainView = 'schedule';   // 跨 chat：下次打开面板默认回到点（第一页）
         $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
         $(`.sp-side-tab.sp-view-btn[data-view="schedule"]`).addClass('sp-view-active');
         $('.sp-sub-btn').removeClass('sp-view-active');
@@ -443,6 +449,7 @@ jQuery(async () => {
         // 否则这 300ms 窗口内若触发生成，上一个 chat 的线注入会残留污染新 chat 首楼。
         // refreshLinesInjection 幂等（关/无活跃线时内部自清），与 backfill 内那次重复无副作用。
         refreshLinesInjection();
+        refreshStoryClockInjection();   // 时间戳：切 chat 重设常驻注入（ST 切 chat 会清 extensionPrompt）
     };
     eventSource.on(event_types.CHAT_CHANGED, _stListeners.chat);
     // 首屏补迁移：扩展初始化时当前 chat 往往已 ready（CHAT_CHANGED 早已错过），
@@ -818,6 +825,7 @@ function applyPluginEnabled(on) {
         $(`#${FAB_ID}`).css('display', fabEnabled() ? '' : 'none');
         try { backfillLinesInlineBlocks(); } catch {}   // 重挂线/历/点楼内块 + 重设线潜伏注入
         try { refreshOutlineInjection(); } catch {}       // 重设大纲潜伏注入
+        try { refreshStoryClockInjection(); } catch {}    // 重设时间戳注入
         try { scanAnchorButtons(); } catch {}             // 补回锚点收藏入口
         try { refreshInlineWindow(true); } catch {}
         maybeApplyBoundCalendarTemplate().catch(error => {
@@ -830,6 +838,7 @@ function applyPluginEnabled(on) {
         _abortAllBackground();
         try { ctx.setExtensionPrompt?.(LINES_INJECT_KEY, ''); } catch {}
         try { ctx.setExtensionPrompt?.(OUTLINE_INJECT_KEY, ''); } catch {}
+        try { ctx.setExtensionPrompt?.(SDC_CLOCK_INJECT_KEY, ''); } catch {}
     }
 }
 
@@ -1061,6 +1070,7 @@ async function appendLinesInlineBlock(messageId, shouldAdvance) {
 // Back-fill：切聊天/初始化/主开关切换时的入口。渲染交给窗口控制器；保留潜伏注入 refresh 真副作用。
 async function backfillLinesInlineBlocks() {
     refreshLinesInjection();   // chat 切换/初始化/主开关切换 → 重设潜伏注入（关闭时内部会清空）
+    refreshStoryClockInjection();   // 时间戳：首屏/切 chat/主开关一并重设常驻注入
     refreshInlineWindow(true);
 }
 
@@ -1257,10 +1267,11 @@ function _buildScheduleBlockHtml(rawArg = null, readOnly = false) {
 // readOnly=true 时 drawer 去掉注入/删除按钮（历史楼只读）。
 function _scheduleStripDayHtml(dayKey, rawArg = null, readOnly = false) {
     const { days, future, startDate } = parseCalendar(rawArg != null ? rawArg : readCacheRaw(getCacheKey()));
-    let evs = [], headLabel = '', wx = '', tp = '';
+    let evs = [], headLabel = '', dateLabel = '', wx = '', tp = '';
     if (dayKey === 'future') {
         evs = future?.events || [];
         headLabel = '未来';
+        dateLabel = '未来';
     } else {
         const di  = Number(dayKey);
         const day = days[di];
@@ -1274,6 +1285,7 @@ function _scheduleStripDayHtml(dayKey, rawArg = null, readOnly = false) {
         } else {
             headLabel = `第${di + 1}天`;
         }
+        dateLabel = headLabel;   // 注入用干净日期（不含天气）；天气随后另拼进 headLabel 仅供显示
         if (wx || tp) headLabel += ` · ${weatherGlyph(wx)}${wx}${tp ? ' ' + tp : ''}`;
     }
     const head = `<div class="sp-sch-sday-head">${escapeHtml(headLabel)}</div>`;
@@ -1282,7 +1294,7 @@ function _scheduleStripDayHtml(dayKey, rawArg = null, readOnly = false) {
     const rows = evs.map((ev, ei) => {
         const meta = TYPE_META[ev.type] || TYPE_META.main;
         const actions = readOnly ? '' : `<span class="sp-sch-drawer-actions">
-                    ${makeInjectBtn(buildPointInjectText(ev, wx, tp))}
+                    ${makeInjectBtn(buildPointInjectText(ev, wx, tp, dateLabel))}
                     <button class="sp-sch-del-one" data-day="${escapeAttr(String(dayKey))}" data-ev="${ei}" title="删除这个点"><i class="fa-solid fa-xmark"></i></button>
                 </span>`;
         return `<div class="sp-sch-drawer-item${ev.pin ? ' sp-sch-drawer-pinned' : ''}">
@@ -1402,7 +1414,49 @@ function _dashMastheadHtml(snap) {
 // （子开关只管展开面板里那几个区显不显，日期/天气来自剧情锚点+点数据，与显示开关无关）。
 // chips 则跟着子开关走：只给「开着且有内容」的区计数（关掉的区不该在摘要里冒计数）。
 // flat=true：整框只剩这一条（点线历都关但有日期）→ 用 <div> 包、无折叠箭头、不可展开。
-function _dashSummaryHtml(snap, hasDate, almOn, schOn, linesOn, flat = false) {
+// 时间戳·窄条抬戳：最新楼扫到戳时，戳「抬」成当天身份（end 优先）——
+//   数字戳（2024-10-08 15:10 / 10月8日 …）→ 解析成规整「年月日 周几」，把「时」挪到天气之后；
+//   古风/无法解析（谷雨亥时 / 霜月初三）→ 原样抬（无周几）；完全无戳/关/历史楼 → 锚点兜底日期。
+//   周几：有年且公历按真年算(JS Date)，否则用与锚点同源的年-free 周几（自定义历法也走这条）。
+//   与展开区 storyClockBarHtml（带标签+起→止）互补。
+// 从戳原文抠数字日期/时刻。返回 {year?,month,day,time?}；抠不出数字日期 → null（交回原样抬）。
+function parseStampDate(stamp) {
+    const s = String(stamp || '');
+    let year = null, month = null, day = null, time = '';
+    let m;
+    if ((m = s.match(/(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})/))) {
+        year = +m[1]; month = +m[2]; day = +m[3];
+    } else if ((m = s.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日?/))) {
+        month = +m[1]; day = +m[2];
+    }
+    if (!month || !day || month < 1 || month > 12 || day < 1 || day > 31) return null;   // 非数字日期 → 原样抬
+    if ((m = s.match(/(\d{1,2})\s*[:：]\s*(\d{2})/)))   time = `${+m[1]}:${m[2]}`;
+    else if ((m = s.match(/(\d{1,2})\s*[时點点]/)))     time = `${+m[1]}时`;
+    return { year, month, day, time };
+}
+// 组窄条「今 …」那截：{ todayHtml(含 .sp-dash-sum-today 壳), timeHtml(时刻尾巴，贴天气后) }。
+function storyClockHeadParts(isLatest, a, anchorWd) {
+    const today = (inner, tip) => `<span class="sp-dash-sum-today"${tip ? ` title="${tip}"` : ''}>${inner}</span>`;
+    const fallback = { todayHtml: today(`今 ${a.month}月${a.day}日${anchorWd ? ' ' + anchorWd : ''}`), timeHtml: '' };
+    if (!isLatest || !storyClockEnabled()) return fallback;
+    let clk = null;
+    try { clk = latestStoryClock(); } catch { clk = null; }
+    const stamp = clk && (clk.end || clk.start);
+    if (!stamp) return fallback;
+    const tip = '时间戳·主楼 AI 每楼隐形打点读回';
+    const p = parseStampDate(stamp);
+    if (!p) return { todayHtml: today(`今 ${escapeHtml(stamp)}`, tip), timeHtml: '' };   // 古风/无法解析 → 原样抬
+    let swd = '';
+    try {
+        swd = (p.year && loadCalDesc() === DEFAULT_CAL)
+            ? (ALM_WEEKDAYS[new Date(p.year, p.month - 1, p.day).getDay()] || '')
+            : (ALM_WEEKDAYS[almWeekdayFor(p.month, p.day)] || '');
+    } catch { swd = ''; }
+    const ymd = `${p.year ? p.year + '年' : ''}${p.month}月${p.day}日`;
+    const timeHtml = p.time ? `<span class="sp-dash-sum-time">${escapeHtml(p.time)}</span>` : '';
+    return { todayHtml: today(`今 ${ymd}${swd ? ' ' + swd : ''}`, tip), timeHtml };
+}
+function _dashSummaryHtml(snap, hasDate, almOn, schOn, linesOn, flat = false, isLatest = false) {
     let head = '';
     if (hasDate) {
         const a = _dashAnchor(snap);
@@ -1417,7 +1471,8 @@ function _dashSummaryHtml(snap, hasDate, almOn, schOn, linesOn, flat = false) {
                 if (wx) wxHtml = `<span class="sp-dash-sum-wx">${weatherGlyph(wx)}</span>`;
             }
         } catch { /* 天气拿不到就不显 */ }
-        head = `<span class="sp-dash-sum-today">今 ${a.month}/${a.day}${wd ? ' ' + wd : ''}</span>${wxHtml}`;
+        const parts = storyClockHeadParts(isLatest, a, wd);
+        head = `${parts.todayHtml}${wxHtml}${parts.timeHtml}`;
     }
     const chips = [];
     if (almOn) {
@@ -1442,6 +1497,7 @@ function _dashSummaryHtml(snap, hasDate, almOn, schOn, linesOn, flat = false) {
         chips.push(`<span class="sp-dash-sum-chip">线${n}</span>`);
     }
     const chipsHtml = chips.length ? `<span class="sp-dash-sum-chips">${chips.join('')}</span>` : '';
+    // 时间戳已抬进 head 的「今 …」那截（见 storyClockHeadParts），此处不再单列一段。
     const inner = `${head}${chipsHtml}`;
     // 只有日期没有任何区 → 纯日期条：<div> 包、无箭头、不可折叠（点了也没东西展开）。
     if (flat) return `<div class="sp-dash-summary sp-dash-summary-flat">${inner}</div>`;
@@ -1490,12 +1546,12 @@ function _buildInlineBoxHtml(snap, isLatest) {
     const body = `${top}${almStripRow}${schRegion}${linesRegion}`;
     // 面板体为空但有日期数据（三区都关，只剩日期）→ 纯日期扁条：不可折叠，只显今头缩写。
     if (!body) {
-        const flatBar = _dashSummaryHtml(snap, true, false, false, false, true);
+        const flatBar = _dashSummaryHtml(snap, true, false, false, false, true, isLatest);
         const cls = 'sp-inline-box sp-dash sp-dash-flat' + (readOnly ? ' sp-inline-box-ro' : '');
         return `<div class="${cls}">${flatBar}</div>`;
     }
 
-    const summary = _dashSummaryHtml(snap, hasDateData, !!alm, !!schInner, !!linesInner);
+    const summary = _dashSummaryHtml(snap, hasDateData, !!alm, !!schInner, !!linesInner, false, isLatest);
     const cls = 'sp-inline-box sp-dash' + (readOnly ? ' sp-inline-box-ro' : '');
     // 默认折叠成一小条（不带 open）：只显摘要「今 M/D 周X ☀ · 历N 点N 线N」，点开才展开完整面板。
     return `<details class="${cls}">${summary}<div class="sp-dash-body">${body}</div></details>`;
@@ -1806,6 +1862,85 @@ function refreshOutlineInjection() {
     const pt = ctx.constants?.promptTypes?.IN_CHAT ?? 1;
     const pr = ctx.constants?.promptRoles?.SYSTEM  ?? 0;
     ctx.setExtensionPrompt(OUTLINE_INJECT_KEY, buildOutlineInjectionText(beats, cursor), pt, OUTLINE_INJECT_DEPTH, false, pr);
+}
+
+// ─── 时间戳·时间锚点体系（第一片：注入 + 回读 + 只读显示）─────────────────────────
+// 目标：给整个构画一个「跟着剧情走」的坚固时间源。做法＝强制注入一段提示词，让主楼 AI
+// 每楼正文首尾各打一个 HTML 注释时间戳（<!-- SDC-start … --> / <!-- SDC-end … -->），
+// 我们再从 chat 末尾往回扫读回。HTML 注释酒馆天然不渲染，无需像柏宝书那样加隐藏正则；
+// 但注释必须留在 message.mes 里，下楼主模型才看得见上楼 end、以它为基准往前推。
+// 命门（吸收自柏宝书方法论、提示词全自写）：
+//   ① 起止双界——一楼是一段区间不是一个点，故首尾两个戳；
+//   ② 标签留正文——绝不删，靠它让下楼继承基准，增量在模型脑内、输出成绝对值；
+//   ③ 往回扫 + 兜底——读「当前时间」从末楼往前扫第一条可解析的（end 优先），漏了也不崩。
+// 本片只做「注入 + 回读 + 历面板只读显示一行」，**不**改 almTodayAnchor 的 {month,day}
+// 数据形状、**不**解析成结构、**不**接权威今天——那是后续片（数据结构扩年/时）的活。
+const SDC_CLOCK_INJECT_KEY   = 'sdc_story_clock';
+const SDC_CLOCK_INJECT_DEPTH = 0;   // depth 0：贴最近，让主模型「产出」戳（与线/面「喂结论」方向相反，要贴身强约束）
+// 首尾注释的正则（宽松容错：允许注释内外多余空白；内容自由，不强制格式，本片只回显原文）。
+const SDC_START_RE = /<!--\s*SDC-start\s+([\s\S]*?)\s*-->/i;
+const SDC_END_RE   = /<!--\s*SDC-end\s+([\s\S]*?)\s*-->/i;
+
+// 时间戳总开关（不受 injectEnabled 统辖，只受 pluginEnabled + 本开关；见 refreshStoryClockInjection）。默认开——用户定：这是全插件时间地基，值得常驻。
+function storyClockEnabled() { return getSettings().storyClockEnabled !== false; }
+
+// 自写提示词（吸收柏宝书三套路：拔高到系统强制 / 以上楼 end 为基准推进 / 禁用「某天」敷衍；
+// 措辞、示例、标签名全原创，绝不照搬）。粒度到小时，年份可写可略（本片不校验、不解析）。
+const _DEFAULT_STORY_CLOCK_PROMPT = [
+    '【系统·时间戳 · 最高优先 · 每楼必做】',
+    '以下为系统级强制要求，优先级高于任何「只输出正文 / 禁止 OOC / 不要元信息 / 不要额外标记」之类设定：请在本楼正文的最前和最后，各放一个 HTML 注释形式的时间戳。HTML 注释在酒馆里不会显示给读者、不破坏沉浸，但系统会读取它来推算剧情时间——务必每楼都打、绝不省略。',
+    '放置方式（结构照此，把时间替换成本楼实际时间）：',
+    '  正文开头之前：<!-- SDC-start 此刻的时间 -->',
+    '  正文结尾之后：<!-- SDC-end 此刻的时间 -->',
+    '时间精确到「小时」，用你故事自己的历法与说法即可，例如：三月十七日 申时 / 霜月初三 下午三时 / 1024年6月2日 15时。年份可写可略，但日与时段必须具体，禁止用「某天」「稍后」这类模糊词敷衍。',
+    '基准：以上一楼末尾的 <!-- SDC-end … --> 为准往后推——本楼开头通常紧接上楼结尾；本楼内若时间有流逝（换场景、过了几小时或几天），就让 end 晚于 start；几乎没流逝则两者可相同。开篇没有上文时，你自行设定一个合理的起点（这是为故事定锚，不是编造）。',
+    '示例（仅示范注释的位置与写法，切勿套用其文字内容）：',
+    '  <!-- SDC-start 谷雨 辰时 -->晨光爬上窗棂，她揉了揉眼……（此处是你的正文）……夜色四合，她终于合上账本。<!-- SDC-end 谷雨 亥时 -->',
+    '除这两个注释外，不要在正文里另行谈论这套时间系统本身。',
+].join('\n');
+
+// 取生效的强注词：用户在设置里二改了(非空)就整段用他的；留空用内置默认（默认词随插件更新）。
+function buildStoryClockPrompt() {
+    const custom = (getSettings().storyClockPrompt || '').trim();
+    return custom || _DEFAULT_STORY_CLOCK_PROMPT;
+}
+
+// 重设时间戳注入。关闭时清空。幂等，可随处多调。照 refreshLinesInjection 套路。
+function refreshStoryClockInjection() {
+    const ctx = getContext();
+    if (typeof ctx.setExtensionPrompt !== 'function') return;
+    const clear = () => ctx.setExtensionPrompt(SDC_CLOCK_INJECT_KEY, '');
+    if (!pluginEnabled()) { clear(); return; }   // 只受插件总闸约束：时间戳是"让 AI 产出数据"，与线/面注入闸(injectEnabled)语义相反，不挂其下
+    if (!storyClockEnabled()) { clear(); return; }
+    const pt = ctx.constants?.promptTypes?.IN_CHAT ?? 1;
+    const pr = ctx.constants?.promptRoles?.SYSTEM  ?? 0;
+    ctx.setExtensionPrompt(SDC_CLOCK_INJECT_KEY, buildStoryClockPrompt(), pt, SDC_CLOCK_INJECT_DEPTH, false, pr);
+}
+
+// 从单楼正文解析首尾戳。返回 { start, end }（各为去空白后的原文字符串，缺失=null）。本片不解析成结构。
+function parseStoryClock(mes) {
+    const s = String(mes || '');
+    const sm = SDC_START_RE.exec(s);
+    const em = SDC_END_RE.exec(s);
+    return {
+        start: sm ? sm[1].trim() : null,
+        end:   em ? em[1].trim() : null,
+    };
+}
+
+// 从 chat 末尾往回扫，取最近一楼「可解析出至少一个戳」的 AI 楼。end 优先作「当前时间」。
+// 漏了/坏了不崩：某楼无戳就继续往上找；全无 → 返回 null（显示层据此不显示这一行）。
+function latestStoryClock() {
+    const msgs = getContext().chat || [];
+    let scanned = 0;
+    for (let i = msgs.length - 1; i >= 0 && scanned < ALM_CHAT_SCAN_LIMIT; i--) {
+        const msg = msgs[i];
+        if (!msg || msg.is_user || !msg.mes) continue;
+        scanned++;
+        const { start, end } = parseStoryClock(msg.mes);
+        if (start || end) return { start, end, floor: i };
+    }
+    return null;
 }
 
 const OUTLINE_JUDGE_PROMPT = (cur, nxt, curScene, nxtScene) =>
@@ -2800,6 +2935,25 @@ function injectModal() {
                                 <summary class="sp-settings-layer-title">模块设置</summary>
                                 <div class="sp-settings-layer-body">
 
+                            <!-- 模块设置：时间戳（时间锚点体系·让主楼 AI 每楼产出时间戳） -->
+                            <details class="sp-settings-section" id="sp-storyclock-section">
+                                <summary class="sp-settings-section-title">时间戳</summary>
+                                <div class="sp-settings-section-body">
+                                    <label class="sp-mode-opt">
+                                        <input type="checkbox" id="sp-storyclock-enabled" ${getSettings().storyClockEnabled !== false ? 'checked' : ''}>
+                                        <span>启用时间戳</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">给整个故事一个<b>跟着剧情走的时间源</b>：向主楼 AI 注入一段指令，让它在<b>每楼正文首尾各打一个隐形时间戳</b>（HTML 注释，聊天里看不到），构画读回它来把握「现在是什么时候」，精确到<b>小时</b>。这是时间系统的地基——默认开。<br><span style="opacity:.75">注：会给每楼多加一小段系统提示词（占少量 token）；导出聊天原文时能看到这些 <code>&lt;!-- … --&gt;</code> 注释。不受「允许潜伏注入」总闸控制——关掉那个总闸不会关掉时间戳。它是让主楼 AI 产出时间数据的地基（与线/面「把数据喂给 AI」方向相反），只由插件总开关和上面这个开关控制。</span></p>
+                                    <label class="sp-cfg-group" style="margin-top:10px">强制注入提示词（可二改）</label>
+                                    <p class="sp-cfg-hint"><strong>留空＝用内置默认</strong>（默认词随插件更新走）。想自定义就点「载入默认再改」把默认全文拉进编辑框，<strong>改成什么就整段注入什么</strong>；想回到跟随更新的原版，点「恢复默认」清空即可。⚠️ 务必保留 <code>&lt;!-- SDC-start … --&gt;</code> / <code>&lt;!-- SDC-end … --&gt;</code> 这对注释结构——构画靠它读回时间戳；改坏了只是时间戳读空、历 / 点仍照常兜底，不影响其它。</p>
+                                    <textarea id="sp-storyclock-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="留空＝用内置默认强制词。"></textarea>
+                                    <div style="display:flex; gap:8px; margin-top:6px">
+                                        <button id="sp-storyclock-prompt-load" class="sp-mem-btn" type="button">载入默认再改</button>
+                                        <button id="sp-storyclock-prompt-reset" class="sp-mem-btn" type="button">恢复默认</button>
+                                    </div>
+                                </div>
+                            </details>
+
                             <!-- 模块设置 1：线（伏笔） -->
                             <details class="sp-settings-section">
                                 <summary class="sp-settings-section-title">线</summary>
@@ -2874,7 +3028,7 @@ function injectModal() {
 
                             <!-- 模块设置：历 / 点 · 时间推进（自动确认当前剧情日期 + 手动兜底） -->
                             <details class="sp-settings-section" id="sp-datetime-section">
-                                <summary class="sp-settings-section-title">历 · 点（时间推进）</summary>
+                                <summary class="sp-settings-section-title">历 · 点</summary>
                                 <div class="sp-settings-section-body">
                                     <p class="sp-cfg-hint">历（全年日历）与点（近七日日程）<b>共用同一个「今天」</b>，都靠「当前剧情日期」定位。开启自动确认后，每隔若干楼<b>独立判定</b>剧情演到几月几日、把「今天」钉过去，七天条 / 日程条随之走；识别不到<b>保持原日期</b>。也可在历面板顶部手动钉今天兜底。</p>
 
@@ -3209,6 +3363,20 @@ function injectModal() {
         if (saved?.raw) { cachedOutline = renderOutline(saved.raw, getOutlineCursor()); setOutlineBody(cachedOutline); }
         refreshOutlineInjection();
     });
+    // 面·逐 step 复制：取该节点干净文本写剪贴板，图标闪 ✓ 反馈（只读操作，不受生成态限制；照抄间的 .sp-chat-msg-copy）。
+    $('#sp-outline-beats').on('click', '.sp-beat-copy', async function () {
+        const text = _copyTexts[$(this).data('cid')];
+        if (text == null) return;
+        const $btn = $(this);
+        if ($btn.data('sp-copy-reset')) { clearTimeout($btn.data('sp-copy-reset')); }
+        const ok = await copyPlainText(text);
+        $btn.html(ok ? '<i class="fa-solid fa-check"></i>' : '<i class="fa-solid fa-xmark"></i>')
+            .attr('title', ok ? '已复制' : '复制失败');
+        const t = setTimeout(() => {
+            $btn.html('<i class="fa-solid fa-copy"></i>').attr('title', '复制这一步').removeData('sp-copy-reset');
+        }, 1200);
+        $btn.data('sp-copy-reset', t);
+    });
     $('#sp-lines-list').on('click', '.sp-refresh-lines', triggerGenerateLines);
     // Advance lines — button appears in both panel toolbar and inline block
     $('#sp-lines-list, #chat').on('click', '.sp-advance-lines, .sp-inline-advance-lines', function (e) {
@@ -3235,8 +3403,8 @@ function injectModal() {
         if (!Number.isInteger(idx)) return;
         triggerTogglePointPin(day === 'future' ? 'future' : Number(day), idx);
     });
-    // Per-point delete (× on each drawer item, 楼内块专用；对齐线的 .sp-line-del-one)。
-    $('#chat').on('click', '.sp-sch-del-one', function (e) {
+    // Per-point delete (× on each event, 点面板 + 楼内块抽屉；对齐线的 .sp-line-del-one 双绑 #sp-lines-list/#chat)。
+    $('#sp-body, #chat').on('click', '.sp-sch-del-one', function (e) {
         e.stopPropagation();
         const day = $(this).attr('data-day');
         const idx = Number($(this).attr('data-ev'));
@@ -3842,6 +4010,7 @@ function injectModal() {
         if (isSideTab) {
             $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
             $btn.addClass('sp-view-active');
+            _lastMainView = view;   // 记住当前模块视图，供下次打开面板时恢复（同 chat）
         } else if (isSubBtn) {
             $('.sp-sub-btn').removeClass('sp-view-active');
             $btn.addClass('sp-view-active');
@@ -4097,6 +4266,14 @@ function injectModal() {
         getSettings().linesInject = this.checked;
         saveSettingsDebounced();
         refreshLinesInjection();
+    });
+    // 时间戳开关：on → 立即注入首尾戳指令；off → 清空扩展 prompt（下楼主模型就不再被要求打戳）。
+    // 面板开着则重渲染历，让「时间戳」只读行随之出现/消失（读回不依赖开关，但显示随开关走更直观）。
+    $('#sp-storyclock-enabled').on('change', function () {
+        getSettings().storyClockEnabled = this.checked;
+        saveSettingsDebounced();
+        refreshStoryClockInjection();
+        if (almanacMode) renderAlmanacPanel();
     });
     // 虚线开关：off → 清掉已存冷知识；面板开着则刷新那一块（不主动生成，等下次线生成时跟随）
     $('#sp-dashed-enabled').on('change', function () {
@@ -4383,7 +4560,17 @@ function resetPanelToScheduleHome() {
 }
 function openSchedule() {
     showPanel();
-    resetPanelToScheduleHome();   // 每次打开回到点首页，不残留上次的历/线/面等子视图
+    resetPanelToScheduleHome();   // 先归位到点首页（清所有子视图 mode/wrap），作为恢复的干净基线
+    // 同 chat 内恢复上次打开的模块视图；切 chat 已把 _lastMainView 复位成 schedule → 默认第一页。
+    // 非 schedule：触发该 tab 的 click 让它自渲染（此刻各 mode 均 false，不会被幂等 guard 挡）。
+    if (_lastMainView && _lastMainView !== 'schedule') {
+        const $tab = $(`#${MODAL_ID} .sp-side-tab.sp-view-btn[data-view="${_lastMainView}"]`);
+        if ($tab.length) {
+            $tab.trigger('click');
+            checkMemoryMigrationNotice();
+            return;
+        }
+    }
     if (isGenerating) {
         setBody(`<div class="sp-loading"><div class="sp-spinner"></div><p class="sp-loading-text">正在规划中…</p><button class="sp-abort-btn" id="sp-abort-generate"><i class="fa-solid fa-circle-stop"></i>中止生成</button></div>`);
     } else if (cachedSchedule) {
@@ -5703,6 +5890,16 @@ function makeInjectBtn(text) {
     return `<button class="sp-inject-btn" data-iid="${id}" title="注入到输入框"><i class="fa-solid fa-arrow-right-to-bracket"></i></button>`;
 }
 
+// 复制按钮：仿 makeInjectBtn 把整段文本寄存进 _copyTexts、按钮带 data-cid，点击时 handler 取回写剪贴板。
+// 用于面·逐 step 复制（每个剧情节点一份干净文本）。
+const _copyTexts = {};
+let _copyIdSeq = 0;
+function makeCopyBtn(text) {
+    const id = ++_copyIdSeq;
+    _copyTexts[id] = text;
+    return `<button class="sp-beat-copy" data-cid="${id}" title="复制这一步"><i class="fa-solid fa-copy"></i></button>`;
+}
+
 function injectToST(text) {
     const $ta = $('#send_textarea');
     if (!$ta.length) { showToast('找不到输入框', null, true); return; }
@@ -6922,6 +7119,13 @@ function renderOutline(raw, cursor = 0) {
         if (b.scene)   injectParts.push(b.scene);
         if (b.outcome) injectParts.push(`结果：${b.outcome}`);
         const injectBtn = makeInjectBtn(injectParts.join('\n'));
+        // 逐 step 复制：该节点的干净可读文本（时间·标题·类型（线）/结果/场景/潜台词），供粘贴到别处。
+        const copyBtn = makeCopyBtn([
+            `${b.time}·《${b.title}》${b.type ? '·' + b.type : ''}${b.line ? '（' + b.line + '）' : ''}`,
+            b.outcome ? `结果：${cleanText(b.outcome)}` : '',
+            b.scene   ? cleanText(b.scene) : '',
+            b.subtext ? `"${cleanText(b.subtext)}"` : '',
+        ].filter(Boolean).join('\n'));
         const isCur  = cursor >= 1 && i + 1 === cursor;
         const isNext = cursor >= 1 && i + 1 === cursor + 1;
         const hi = isCur ? ' sp-beat-current' : (isNext ? ' sp-beat-next' : '');
@@ -6937,7 +7141,7 @@ function renderOutline(raw, cursor = 0) {
                 <span class="sp-beat-time">${escapeHtml(b.time)}</span>
                 ${b.type ? `<span class="sp-beat-type">${escapeHtml(b.type)}</span>` : ''}
                 ${b.line ? `<span class="sp-beat-line">${escapeHtml(b.line)}</span>` : ''}
-                <span class="sp-beat-actions">${setcurBtn}${injectBtn}</span>
+                <span class="sp-beat-actions">${setcurBtn}${injectBtn}${copyBtn}</span>
             </div>
             <div class="sp-beat-title">${escapeHtml(b.title)}</div>
             ${b.outcome ? `<div class="sp-beat-outcome">${escapeHtml(cleanText(b.outcome))}</div>` : ''}
@@ -8703,6 +8907,26 @@ function almTodayBarHtml() {
         </span>
     </div>`;
 }
+// 时间戳·只读显示行。开关关 → 空串（整行不显）。开着但还没扫到戳 → 显示占位（可诊断）。
+// 扫到戳 → 起→止（只有其一就单显）。本片只回显原文、不解析。放今天条下方，与「今天(历日期)」并列作参考。
+function storyClockBarHtml() {
+    if (!storyClockEnabled()) return '';
+    let clk = null;
+    try { clk = latestStoryClock(); } catch { clk = null; }
+    let val;
+    if (!clk || (!clk.start && !clk.end)) {
+        // 开着但还没扫到任何戳：显示占位，让用户区分「显示层/开关坏了」还是「主楼 AI 还没产出戳」。
+        val = '<span class="sp-alm-clock-wait">等待主楼 AI 打点…（发几楼后自动出现）</span>';
+    } else if (clk.start && clk.end && clk.start !== clk.end) {
+        val = `${escapeHtml(clk.start)} <span class="sp-alm-clock-arrow">→</span> ${escapeHtml(clk.end)}`;
+    } else {
+        val = escapeHtml(clk.end || clk.start);
+    }
+    return `<div class="sp-alm-clock" title="由主楼 AI 每楼打的隐形时间戳读回，精确到小时">
+        <span class="sp-alm-clock-lbl"><i class="fa-regular fa-clock"></i>时间戳</span>
+        <span class="sp-alm-clock-val">${val}</span>
+    </div>`;
+}
 // 「今天」±1 天：以当前显示的今天（可能来自自动源）为基准挪 delta 天，钉成手动锚点，走共享善后。
 function almNudgeToday(delta) {
     const key = charStableKey(getContext());
@@ -8732,7 +8956,7 @@ function renderAlmanacPanel(options = {}) {
         return;
     }
     const bodyHtml = _almanacSheet === 'calendar' ? renderAlmanacCalendar() : renderAlmanacUpcoming();
-    $wrap.html(almToolbarHtml() + almTodayBarHtml() + `<div class="sp-alm-body">${bodyHtml}</div>`);
+    $wrap.html(almToolbarHtml() + almTodayBarHtml() + storyClockBarHtml() + `<div class="sp-alm-body">${bodyHtml}</div>`);
 }
 
 function almRowHtml(it, ctx) {
@@ -9766,6 +9990,7 @@ function renderMemorySection() {
     // 自定义提示词是全局设置、与记忆源无关，必须在下面按源分支的 early-return 之前回填，
     // 否则用户选 Anima/柏宝书时函数提前 return，重开面板这框会空白（值其实已存盘）。
     $('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
+    $('#sp-storyclock-prompt').val(typeof s.storyClockPrompt === 'string' ? s.storyClockPrompt : '');
     if (useBbb) {
         $('#sp-mem-internal').hide();
         $('#sp-mem-anima-status').hide();
@@ -9984,6 +10209,30 @@ function bindMemoryHandlers() {
     }).on('blur', function () {
         getSettings().customPrompt = this.value;
         stSaveSettings();   // 失焦即落盘，覆盖"填完没关面板就直接刷新"的场景
+    });
+    // 时间戳·强注词二改：与 customPrompt 同套持久化；改后立即重设常驻注入让新词当楼生效。
+    $('#sp-storyclock-prompt').on('input', function () {
+        getSettings().storyClockPrompt = this.value;
+        saveSettingsDebounced();
+        try { refreshStoryClockInjection(); } catch {}
+    }).on('blur', function () {
+        getSettings().storyClockPrompt = this.value;
+        stSaveSettings();
+    });
+    $('#sp-storyclock-prompt-load').on('click', function () {
+        $('#sp-storyclock-prompt').val(_DEFAULT_STORY_CLOCK_PROMPT);
+        getSettings().storyClockPrompt = _DEFAULT_STORY_CLOCK_PROMPT;
+        stSaveSettings();
+        try { refreshStoryClockInjection(); } catch {}
+        try { showToast('已把默认强制词载入编辑框，可直接修改'); } catch {}
+    });
+    // 恢复默认＝清空＝回到内置 live 默认（继续跟随插件更新），区别于「载入默认再改」的冻结快照。
+    $('#sp-storyclock-prompt-reset').on('click', function () {
+        $('#sp-storyclock-prompt').val('');
+        getSettings().storyClockPrompt = '';
+        stSaveSettings();
+        try { refreshStoryClockInjection(); } catch {}
+        try { showToast('已恢复内置默认（跟随插件更新）'); } catch {}
     });
     $('#sp-mem-check').on('click', function () {
         refreshMemoryStatus();
@@ -10893,11 +11142,16 @@ function renderSchedule(raw, userName, perspective = 'user') {
         <span class="sp-tab-num">未来</span>
     </button>`);
 
-    const panels = days.map((day, di) =>
-        `<div class="sp-day-panel" style="width:calc(100%/${totalTabs})">${weatherChipHtml(day.weather, day.temp)}${day.events.map((ev, ei) => renderEvent(ev, di, ei, day.weather, day.temp)).join('')}</div>`
-    );
+    const panels = days.map((day, di) => {
+        let dateLabel = `第${di + 1}天`;
+        if (startDate) {
+            const { month, day: dd, wd } = scheduleDayLabel(di, startDate, ctx);
+            dateLabel = `${month}月${dd}日 · ${ALM_WEEKDAYS[wd]}`;
+        }
+        return `<div class="sp-day-panel" style="width:calc(100%/${totalTabs})">${weatherChipHtml(day.weather, day.temp)}${day.events.map((ev, ei) => renderEvent(ev, di, ei, day.weather, day.temp, dateLabel)).join('')}</div>`;
+    });
     if (hasFuture) panels.push(
-        `<div class="sp-day-panel sp-future-panel" style="width:calc(100%/${totalTabs})">${future.events.map((ev, ei) => renderEvent(ev, 'future', ei, '', '')).join('')}</div>`
+        `<div class="sp-day-panel sp-future-panel" style="width:calc(100%/${totalTabs})">${future.events.map((ev, ei) => renderEvent(ev, 'future', ei, '', '', '未来')).join('')}</div>`
     );
 
     const debug = days.length < 3 ? `
@@ -11091,10 +11345,12 @@ async function triggerDeletePointEvent(dayKey, evIdx) {
 
 // 点注入文案（面板卡片 + 楼内抽屉共用同一个 builder，保证两处注入内容一致）。
 // 按用户决定：每条注入带上当天天气（天气/温度任一有值即前置一行「天气：…」）。
-function buildPointInjectText(ev, weather = '', temp = '') {
+function buildPointInjectText(ev, weather = '', temp = '', dateLabel = '') {
     const w  = String(weather || '').trim();
     const tp = String(temp || '').trim();
+    const dl = String(dateLabel || '').trim();
     const parts = ['【点参考】'];
+    if (dl)           parts.push(`日期：${dl}`);
     if (w || tp)      parts.push(`天气：${w}${tp ? ' ' + tp : ''}`);
     if (ev.time)      parts.push(`时间：${ev.time}`);
     parts.push(ev.title);
@@ -11104,19 +11360,24 @@ function buildPointInjectText(ev, weather = '', temp = '') {
     return parts.join('\n');
 }
 
-function renderEvent(ev, dayKey = null, evIdx = null, weather = '', temp = '') {
+function renderEvent(ev, dayKey = null, evIdx = null, weather = '', temp = '', dateLabel = '') {
     const meta = TYPE_META[ev.type] || TYPE_META.main;
-    const injectBtn = makeInjectBtn(buildPointInjectText(ev, weather, temp));
+    const injectBtn = makeInjectBtn(buildPointInjectText(ev, weather, temp, dateLabel));
     // F5 锁点：仅面板内渲染（有定位 dayKey）且事件有标题时给锁钮；注入卡/无定位场景不显示
     const pinBtn = (dayKey !== null && ev.title && ev.title.trim())
         ? `<button class="sp-point-pin-toggle" data-day="${escapeAttr(String(dayKey))}" data-ev="${evIdx}" title="${ev.pin ? '解锁' : '锁定'}"><i class="fa-solid fa-${ev.pin ? 'lock' : 'lock-open'}"></i></button>`
+        : '';
+    // 删除钮：仅面板内渲染（有定位 dayKey）才给；注入卡/无定位场景不显示。走 .sp-sch-del-one，
+    // 与楼内块抽屉同类、共用 handler（#sp-body/#chat 委托）与 triggerDeletePointEvent（同刷主面板+楼内块）。
+    const delBtn = (dayKey !== null)
+        ? `<button class="sp-sch-del-one" data-day="${escapeAttr(String(dayKey))}" data-ev="${evIdx}" title="删除这个点"><i class="fa-solid fa-xmark"></i></button>`
         : '';
     return `<div class="sp-event ${meta.cls}${ev.pin ? ' sp-event-pinned' : ''}">
         <div class="sp-event-head">
             <span class="sp-type-badge"><i class="fa-solid ${meta.icon}"></i>${escapeHtml(meta.label)}</span>
             <span class="sp-event-title">${escapeHtml(ev.title)}</span>
             ${ev.time ? `<span class="sp-event-time"><i class="fa-regular fa-clock"></i> ${escapeHtml(ev.time)}</span>` : ''}
-            ${injectBtn}${pinBtn}
+            ${injectBtn}${pinBtn}${delBtn}
         </div>
         ${ev.desc ? `<p class="sp-event-desc">${escapeHtml(ev.desc)}</p>` : ''}
         <div class="sp-event-meta">
