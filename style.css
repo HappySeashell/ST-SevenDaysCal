@@ -4238,6 +4238,107 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-alm-note { font-size: 0.76rem; color: var(--sp-subtle); line-height: 1.5; overflow-wrap: anywhere; padding-left: 20px; }
 .sp-alm-pinned .sp-alm-pin { color: var(--sp-primary); }
 
+/* ── 暗账（历面板第三 sheet：拾贝控制条 + 只读条目列表）── */
+/* 类型强调色走继承变量 --ledger-c：设在 .sp-ledger-row 上，左边框与类型徽章都吃它。 */
+.sp-ledger-state { --ledger-c: #e08a5b; }              /* 持续状态·暖橙（伤情/身心） */
+.sp-ledger-todo  { --ledger-c: var(--sp-primary); }    /* 约定待办·主题色 */
+.sp-ledger-cycle { --ledger-c: #6fa07a; }              /* 周期·青绿（月经/发薪） */
+
+/* 控制条：勾选自动拾贝 + 间隔 + 立即拾贝，压在列表顶、下有分隔线 */
+.sp-ledger-ctrl {
+    display      : flex;
+    align-items  : center;
+    gap          : 8px;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--sp-divider);
+}
+.sp-ledger-auto {
+    display    : flex;
+    align-items: center;
+    gap        : 6px;
+    font-size  : 0.78rem;
+    color      : var(--sp-on-surface);
+    cursor     : pointer;
+}
+.sp-ledger-auto input[type="checkbox"] { cursor: pointer; }
+.sp-ledger-capture-now { margin-left: auto; flex-shrink: 0; }
+
+.sp-ledger-empty {
+    padding   : 24px 16px;
+    text-align: center;
+    font-size : 0.76rem;
+    color     : var(--sp-subtle);
+    line-height: 1.6;
+}
+
+.sp-ledger-list { display: flex; flex-direction: column; gap: 7px; }
+.sp-ledger-row {
+    display      : flex;
+    flex-direction: column;
+    gap          : 4px;
+    padding      : 7px 10px;
+    background   : var(--sp-sheet-bg);
+    border       : 1px solid var(--sp-divider);
+    border-left  : 3px solid var(--ledger-c, var(--sp-divider));
+    border-radius: 9px;
+    transition   : background 0.12s;
+}
+.sp-ledger-row:hover { background: var(--sp-hover-bg); }
+
+/* 第一行：类型徽章 + 事由 + 锁 + 起/周期/期 元信息（可换行） */
+.sp-ledger-r1 {
+    display    : flex;
+    align-items: center;
+    flex-wrap  : wrap;
+    gap        : 6px;
+    min-width  : 0;
+}
+.sp-ledger-type {
+    font-size    : 0.63rem;
+    font-weight  : 600;
+    color        : var(--ledger-c, var(--sp-subtle));
+    background    : color-mix(in oklab, var(--ledger-c, var(--sp-divider)) 16%, transparent);
+    border-radius: 99px;
+    padding      : 0 7px;
+    line-height  : 1.5;
+    flex-shrink  : 0;
+}
+.sp-ledger-gist {
+    font-size  : 0.82rem;
+    font-weight: 600;
+    color      : var(--sp-on-surface);
+    min-width  : 0;
+    overflow   : hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sp-ledger-lock { font-size: 0.68rem; color: var(--sp-subtle); flex-shrink: 0; }
+.sp-ledger-meta {
+    font-size    : 0.63rem;
+    font-weight  : 600;
+    color        : var(--sp-subtle);
+    background    : color-mix(in oklab, var(--sp-subtle) 14%, transparent);
+    border-radius: 99px;
+    padding      : 0 7px;
+    line-height  : 1.5;
+    flex-shrink  : 0;
+}
+/* 第二行：现状整行铺开 */
+.sp-ledger-r2 { font-size: 0.76rem; color: var(--sp-subtle); line-height: 1.5; overflow-wrap: anywhere; }
+/* 第三行：牵扯人物 + 标签 */
+.sp-ledger-r3 { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sp-ledger-who { font-size: 0.7rem; color: var(--sp-subtle); font-weight: 500; }
+.sp-ledger-tag {
+    font-size    : 0.63rem;
+    font-weight  : 600;
+    color        : var(--sp-primary);
+    background    : color-mix(in oklab, var(--sp-primary) 14%, transparent);
+    border-radius: 99px;
+    padding      : 0 7px;
+    line-height  : 1.5;
+}
+
 /* ── 空态 ── */
 .sp-alm-empty { gap: 8px; padding: 30px 20px; }
 .sp-alm-empty-glyph i { font-size: 2rem; opacity: 0.35; }

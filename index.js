@@ -72,6 +72,10 @@ const DEFAULT_SETTINGS = {
     almanacJudgeInterval : 3,     // 历确认节奏：每几条 AI 回复确认一次当前日期
     scheduleAutoDetect   : false, // 点：默认关（点默认相对日即可；开了才额外调 API）
     scheduleJudgeInterval: 3,     // 点确认节奏：每几条 AI 回复确认一次当前日期
+    // 暗账·标注：每 N 楼构画 AI 从正文捞「需按时间追踪」的新事件写入 sp-ledger（伤情/身心/约定/周期）。
+    // 独立开关+间隔，关掉即不触发 API；默认关（opt-in，多一路后台判定+API 成本，照 outlineInject 的克制）。
+    ledgerCaptureEnabled : false, // 暗账标注：默认关
+    ledgerCaptureInterval: 5,     // 标注节奏：每几条 AI 回复捞一次新事件
     // Memory system
     memoryEnabled  : true,
     memoryL0Group  : 5,    // AI floors per L0 entry
@@ -366,6 +370,11 @@ jQuery(async () => {
         almanacJudgeAbort?.abort();  almanacJudgeAbort = null;
         scheduleJudgeAbort?.abort(); scheduleJudgeAbort = null;
         isJudgingDate = false;
+        // 暗账标注：切 chat 同理复位单调闸到末楼、清计数、中断进行中的标注。
+        ledgerLastCapturedMsgId = (getContext().chat?.length ?? 0) - 1;
+        ledgerCaptureCounter = 0;
+        ledgerCaptureAbort?.abort(); ledgerCaptureAbort = null;
+        isCapturingLedger = false;
         _autoRegenSchedAbort?.abort(); _autoRegenSchedAbort = null;   // 中断进行中的「同步到点」后台生成
         _lastDetectedDay  = null;   // days-mode: reset day tracker on chat switch
         spaceMode = false;
@@ -627,6 +636,21 @@ jQuery(async () => {
         runJudgeDateStep('schedule');
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.scheduleJudge);
+    // 暗账·标注：每 N 楼从正文捞新事件写库。独立开关(ledgerCaptureEnabled)/间隔/单调闸；默认关。
+    if (_stListeners.ledgerCapture) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerCapture);
+    _stListeners.ledgerCapture = async (messageId) => {
+        if (!pluginEnabled()) return;   // 插件总关：停后台标注
+        if (getSettings().ledgerCaptureEnabled !== true) return;
+        const chat = getContext().chat;
+        if (!Array.isArray(chat)) return;
+        if (messageId !== chat.length - 1) return;
+        if (messageId <= ledgerLastCapturedMsgId) return;
+        ledgerLastCapturedMsgId = messageId;
+        if (++ledgerCaptureCounter < getLedgerCaptureInterval()) return;
+        ledgerCaptureCounter = 0;
+        runLedgerCaptureStep();   // fire-and-forget，自带守卫
+    };
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerCapture);
     // 聊天改名（酒馆改 chat 文件名 = chatId 变）→ 把坐标收藏里旧 chatId 的记录迁到新名，
     // 否则收藏夹里那个聊天桶名不跟新、且跳转来源失效。newFileName/oldFileName 均不带后缀，
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
@@ -800,14 +824,17 @@ function _abortAllBackground() {
         scheduleAbortController, outlineAbortController, theaterAbortController,
         almanacAbortController, outlineChatAbortController,
         outlineJudgeAbort, almanacJudgeAbort, scheduleJudgeAbort, _autoRegenSchedAbort,
+        ledgerCaptureAbort,
     ]) { try { c?.abort(); } catch {} }
     linesAbortController = dashedAbortController = spaceChatAbortController = null;
     scheduleAbortController = outlineAbortController = theaterAbortController = null;
     almanacAbortController = outlineChatAbortController = null;
     outlineJudgeAbort = almanacJudgeAbort = scheduleJudgeAbort = _autoRegenSchedAbort = null;
+    ledgerCaptureAbort = null;
     isGeneratingOutline = isGeneratingLines = isGeneratingDashed = false;
     isGeneratingTheater = isGeneratingAlmanac = false;
     isJudgingOutline = isJudgingDate = false;
+    isCapturingLedger = false;
 }
 
 // 插件总开关落地。关：藏悬浮球、清所有楼内块与锚点入口（由 refreshInlineWindow/scanAnchorButtons 内部闸兜底）、
@@ -1742,6 +1769,12 @@ let   scheduleJudgeAbort     = null;
 let   scheduleLastJudgedMsgId = -1;
 let   scheduleJudgeCounter   = 0;
 
+// 暗账·标注的判定状态（自成一套三闸：防重入 + 单调 msgId + 攒够计数）。与历/点判定各自独立。
+let   isCapturingLedger      = false; // 标注重入锁
+let   ledgerCaptureAbort     = null;
+let   ledgerLastCapturedMsgId = -1;
+let   ledgerCaptureCounter   = 0;
+
 // 判定间隔（缺省/非法 → 3；≥1）。独立于线的 getLinesInterval。
 function getOutlineJudgeInterval() {
     const n = Number(getSettings().outlineJudgeInterval);
@@ -1756,6 +1789,12 @@ function getAlmanacJudgeInterval() {
 function getScheduleJudgeInterval() {
     const n = Number(getSettings().scheduleJudgeInterval);
     return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+}
+
+// 暗账标注间隔（缺省/非法 → 5；≥1）。抄 getAlmanacJudgeInterval。
+function getLedgerCaptureInterval() {
+    const n = Number(getSettings().ledgerCaptureInterval);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 5;
 }
 
 // 读当前视角大纲游标（1-based；无大纲 → 0 表示「无」；有大纲无 cursor 字段 → 默认停在第 1 节点）。
@@ -1955,6 +1994,135 @@ async function runJudgeDateStep(mode) {
         // 判定失败也弹（不动锚点，纯提示）：判定按每 N 楼跑，用户未必每楼盯着，失败要让他知道去查 API。
         // isError toast 不受通知三档静音；下一轮 AI 回复攒够计数会自动再判，无需手动重试。
         showToast('剧情日期自动确认失败，请检查 API 或网络', null, true);
+    }
+}
+
+// ═══ 暗账·标注 ═════════════════════════════════════════════════════════════════
+// 构画 AI 从最近正文里捞「需按时间追踪」的新事件，标注入 sp-ledger（此时·此物·此状态）。
+// 起始锚 = 此刻楼层 + 历「今天」(almTodayAnchor)，钉死不改；判定/注入是后续切片。
+// 触发：每 N 楼自动车(runLedgerCaptureStep 无参) + 历面板「暗账」页手动「立即标注」(manual=true)。
+const LEDGER_CAPTURE_FLOORS = 6;   // 标注窗口：读最近几楼 AI 正文找新事件（比日期判定的 4 稍宽，捞得全）
+
+// 全角/半角顿号逗号分隔 → 去空数组（牵扯/标签用）。
+function splitCnList(v) {
+    return String(v || '').split(/[、,，;；]/).map(x => x.trim()).filter(Boolean);
+}
+// 事由归一化（JS 侧兜底去重键）：去空白。中文无大小写，够用。
+function normGist(s) { return String(s || '').replace(/\s+/g, ''); }
+// 最新 AI 楼下标（无 AI 楼 → 末楼下标兜底）。
+function latestAiFloorId() {
+    const chat = getContext().chat || [];
+    for (let i = chat.length - 1; i >= 0; i--) if (!chat[i].is_user) return i;
+    return chat.length - 1;
+}
+// 现有活跃条目摘要（喂进提示词供 AI 去重）。
+function listActiveLedgerBrief() {
+    const act = ledger.listEntries();   // 默认只活跃
+    if (!act.length) return '（暂无，本次都是新登记）';
+    return act.map(e => `- ${e.事由}${e.标签?.length ? `（${e.标签.join('、')}）` : ''}`).join('\n');
+}
+
+function buildLedgerCapturePrompt() {
+    return `请暂停角色扮演，作为剧情分析助手，只做一件事：从以上最近的对话正文里，捞取「需要按时间追踪」的新事件，登记入「暗账」。
+
+【什么算暗账事件】会随时间推移改变状态、或到某天该发生的事，典型三类：
+- 持续状态：身体伤情 / 病症、怀孕、显著且会延续的情绪等——会随天数自然演变（如割伤→结痂→愈合）。
+- 约定待办：约好要做的事（哪天见面、答应帮忙），无论有没有定下具体日期都要记。
+- 周期：规律反复发生的事（月经、发薪、值班），带大致周期天数。
+
+【已在账上的（不要重复登记）】
+${listActiveLedgerBrief()}
+
+【规则】
+- 只登记上面对话里【新出现】的，或【虽同名但明显是另一次独立事件】的；已在账上的同一件事跳过。
+- 宁可多记：拿不准也记下，漏记的代价比多记大。
+- 每个事件一行，用全角竖线「｜」分隔 7 个字段，顺序固定：
+  事由｜类型｜牵扯｜标签｜现状｜到期｜周期
+  · 类型：持续状态 / 约定待办 / 周期（只能三选一，原样写这三个词之一）
+  · 牵扯：涉及的人物，多个用顿号「、」分隔；没有就留空
+  · 标签：检索关键词，多个用「、」分隔（如：伤、左手、身体）
+  · 现状：此刻状态一句话（如「新伤口，仍在流血」）
+  · 到期：仅约定/周期填，写大致哪天（如「第3月20日」，本世界观自定义历法请按其月名/月序），说不清就留空
+  · 周期：仅周期类填天数（如 30）；其它类型留空
+- 若没有任何新事件可登记，只回一个字：无
+不要解释，不要输出表头，不要输出多余文字。`;
+}
+
+// 解析标注回答 → 松散条目数组（起始锚由 runLedgerCaptureStep 补钉）。认全角竖线分隔行，其余行忽略。
+function parseLedgerCapture(raw) {
+    const s = String(raw || '').trim();
+    if (!s || /^无[。.！!]?$/.test(s)) return [];
+    const out = [];
+    for (const line of s.split('\n')) {
+        const t = line.trim();
+        if (!t || !t.includes('｜')) continue;                 // 只认带全角竖线的登记行（跳过表头/寒暄）
+        if (/^事由\s*｜/.test(t)) continue;                     // AI 若误输出表头，跳过
+        const cols = t.split('｜').map(x => x.trim());
+        const 事由 = cols[0];
+        if (!事由) continue;
+        const entry = {
+            事由,
+            类型: ledger.TYPES.includes(cols[1]) ? cols[1] : '持续状态',
+            牵扯: splitCnList(cols[2]),
+            标签: splitCnList(cols[3]),
+            现状: cols[4] || '',
+        };
+        const cyc = parseInt(cols[6], 10);
+        if (Number.isFinite(cyc) && cyc > 0) entry.周期长度 = cyc;
+        const due = parseJudgedDate(cols[5] || '');            // 复用日期解析（认「第M月D日」/月名式）；相对日「三天后」认不出即留空
+        if (due) entry.到期锚 = { 历日期: due };
+        out.push(entry);
+    }
+    return out;
+}
+
+// 标注一次：抄 runJudgeDateStep 的 abort/chatId/重入守卫。manual=true 时（历面板手动点）无论通知档位都反馈结果。
+// fire-and-forget，失败静默（自动车）/弹错（手动）。
+async function runLedgerCaptureStep(manual = false) {
+    if (isCapturingLedger) return;
+    const ctx = getContext();
+    const charKey = charStableKey(ctx);
+    if (!charKey) { if (manual) showToast('当前没有角色卡，无法标注', null, true); return; }
+    const chatIdSnap = ctx.chatId;
+    const cfg = loadUtilityCfg();                    // 机械任务：可分流轻量预设，未设则=主 API
+    if (!cfg.url || !cfg.key) { if (manual) showToast('请先在设置中填写 API', null, true); return; }
+    const myCtrl = new AbortController(); ledgerCaptureAbort = myCtrl;
+    isCapturingLedger = true;
+    const done = () => { isCapturingLedger = false; if (ledgerCaptureAbort === myCtrl) ledgerCaptureAbort = null; };
+    try {
+        const userName = ctx.name1 || '用户', charName = ctx.name2 || '角色';
+        const raw = await callCustomApi(ctx, buildLedgerCapturePrompt(), cfg, userName, charName, myCtrl.signal, LEDGER_CAPTURE_FLOORS);
+        if (ledgerCaptureAbort !== myCtrl) return;                          // 被更新的标注取代
+        if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃
+        done();
+        const picked = parseLedgerCapture(raw);
+        if (!picked.length) { if (manual) showToast('未发现可登记的新事件'); return; }
+        const floor = latestAiFloorId();
+        const today = almTodayAnchor();                                     // 历「今天」= 起始锚日期
+        const seen = new Set(ledger.listEntries({ includeClosed: true }).map(e => normGist(e.事由)));
+        const added = [];
+        for (const p of picked) {
+            const g = normGist(p.事由);
+            if (!g || seen.has(g)) continue;                               // JS 侧兜底去重（同名事由）
+            seen.add(g);
+            p.起始锚 = { 楼层: floor, 历日期: today };                     // 底账·钉死
+            p.现状锚 = { 楼层: floor, 历日期: today };                     // 入库即以起始为现状锚（判定车后续刷）
+            const e = ledger.addEntry(p);
+            if (e) added.push(e);
+        }
+        if (!added.length) { if (manual) showToast('没有新事件（都已在账上）'); return; }
+        // 通知：手动必反馈；自动仅 full 档弹（照三档静音约定）。
+        if (manual || getSettings().notifyMode === 'full') {
+            showToast(`暗账标注 ${added.length} 条：${added.map(e => e.事由).join('、')} · 请注意查看`);
+        }
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    } catch (err) {
+        if (ledgerCaptureAbort !== myCtrl) return;         // 被更新的标注取代 → 新的接管，别动
+        done();
+        if (err?.name === 'AbortError') return;            // 中止 / 切档
+        if (err?.spDisabled) return;                       // 插件关闭：静默
+        if (getContext().chatId !== chatIdSnap) return;    // 已切 chat
+        showToast('暗账标注失败，请检查 API 或网络', null, true);
     }
 }
 
@@ -3536,6 +3704,26 @@ function injectModal() {
     // ── 历（日历）事件（委托到 #sp-almanac-wrap，两个 sheet 动态重渲染）──
     const $almanac = $('#sp-almanac-wrap');
     $almanac.on('click', '.sp-alm-sheet-btn', function () { almSetSheet($(this).attr('data-sheet')); });
+    // 暗账页：自动标注开关 / 间隔 / 立即标注。委托到 #sp-almanac-wrap，随 sheet 重渲染存活。
+    $almanac.on('change', '.sp-ledger-auto-toggle', function () {
+        getSettings().ledgerCaptureEnabled = this.checked;
+        saveSettingsDebounced();
+        ledgerCaptureCounter = 0;   // 开/关都重置计数，避免残留计数刚开就触发
+        renderAlmanacPanel();       // 开/关切换后空态提示措辞跟着变（关态催勾开关、开态提示已自动）
+    });
+    $almanac.on('change', '.sp-ledger-interval', function () {
+        const n = Math.max(1, Math.min(30, Math.floor(Number(this.value) || 5)));
+        getSettings().ledgerCaptureInterval = n;
+        this.value = String(n);     // 规范化回填
+        saveSettingsDebounced();
+        ledgerCaptureCounter = 0;
+    });
+    $almanac.on('click', '.sp-ledger-capture-now', function () {
+        if (isCapturingLedger) return;
+        const p = runLedgerCaptureStep(true);   // 同步内设 isCapturingLedger=true（守卫通过时）
+        renderAlmanacPanel();                    // 立刻渲染成 busy 态（spinner + 禁用）
+        p.then(() => { if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel(); });
+    });
     $almanac.on('click', '.sp-alm-add', function () { openAlmanacEditor(null); });
     $almanac.on('click', '.sp-alm-gen', triggerGenerateAlmanac);
     $almanac.on('click', '.sp-alm-manage', openCalendarManager);
@@ -8638,19 +8826,21 @@ function actionMenuHtml(menuId) {
 }
 
 function almToolbarHtml() {
+    const onLedger = _almanacSheet === 'ledger';
     return `<div class="sp-alm-toolbar">
         <div class="sp-alm-sheet-toggle">
             <button class="sp-alm-sheet-btn${_almanacSheet === 'upcoming' ? ' sp-alm-sheet-active' : ''}" data-sheet="upcoming">即将到来</button>
             <button class="sp-alm-sheet-btn${_almanacSheet === 'calendar' ? ' sp-alm-sheet-active' : ''}" data-sheet="calendar">日历</button>
+            <button class="sp-alm-sheet-btn${onLedger ? ' sp-alm-sheet-active' : ''}" data-sheet="ledger">暗账</button>
         </div>
-        <div class="sp-alm-tools">
+        ${onLedger ? '' : `<div class="sp-alm-tools">
             <button class="sp-icon-btn sp-alm-add" title="手动添加日期" aria-label="手动添加日期"><i class="fa-solid fa-plus"></i></button>
             <div class="sp-alm-wide-tools">
                 <button class="sp-icon-btn sp-alm-gen" title="生成节日（AI 按世界观铺满一整年）" aria-label="生成节日"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
                 <button class="sp-icon-btn sp-alm-manage" title="历法管理" aria-label="历法管理"><i class="fa-solid fa-calendar-days"></i></button>
             </div>
             <div class="sp-alm-narrow-tools">${actionMenuHtml('almanac')}</div>
-        </div>
+        </div>`}
     </div>`;
 }
 // 历面板「今天」栏：显示共享锚点的今天（月/日·周几），配一排一键控制——
@@ -8733,7 +8923,9 @@ function renderAlmanacPanel(options = {}) {
         $wrap.html(almToolbarHtml() + `<div class="sp-alm-body">${loadingHtml('正在编排历法', 'sp-abort-almanac')}</div>`);
         return;
     }
-    const bodyHtml = _almanacSheet === 'calendar' ? renderAlmanacCalendar() : renderAlmanacUpcoming();
+    const bodyHtml = _almanacSheet === 'ledger' ? renderLedgerSheet()
+                   : _almanacSheet === 'calendar' ? renderAlmanacCalendar()
+                   : renderAlmanacUpcoming();
     $wrap.html(almToolbarHtml() + almTodayBarHtml() + `<div class="sp-alm-body">${bodyHtml}</div>`);
 }
 
@@ -8787,6 +8979,57 @@ function renderAlmanacUpcoming() {
     const cal = loadCalDesc();
     const ctx = { cal, wkRef: almWeekdayRef(cal), todayDoy: almDayOfYear(anchor.month, anchor.day, cal) };
     return `<div class="sp-alm-list">${sortAlmanacUpcoming(items, cal).map(it => almRowHtml(it, ctx)).join('')}</div>`;
+}
+
+// ─── 暗账页（历面板第三 sheet：标注开关/间隔 + 手动标注 + 条目只读列表）──────────
+// 这是暗账②的验证面：看构画 AI 每 N 楼从正文拾到了什么。编辑/检索/注入是后续切片。
+const LEDGER_TYPE_CLASS = { '持续状态': 'state', '约定待办': 'todo', '周期': 'cycle' };
+function ledgerTypeClass(t) { return LEDGER_TYPE_CLASS[t] || 'state'; }
+// 锚里的历日期 {month,day} → 「霜月8日」。缺/坏 → 空串。
+function fmtLedgerAnchorDate(md, cal) {
+    if (!md || typeof md !== 'object' || !Number.isFinite(+md.month) || !Number.isFinite(+md.day)) return '';
+    return `${calMonthName(cal, +md.month)}${+md.day}日`;
+}
+function ledgerRowHtml(e, cal) {
+    const badge = `<span class="sp-ledger-type">${escapeHtml(e.类型)}</span>`;
+    const start = fmtLedgerAnchorDate(e.起始锚?.历日期, cal);
+    const startTag = start ? `<span class="sp-ledger-meta">起 ${escapeHtml(start)}</span>` : '';
+    const cyc = e.周期长度 ? `<span class="sp-ledger-meta">周期${e.周期长度}天</span>` : '';
+    const due = e.到期锚?.历日期 ? `<span class="sp-ledger-meta">期 ${escapeHtml(fmtLedgerAnchorDate(e.到期锚.历日期, cal))}</span>` : '';
+    const lock = e.锁 === '用户锁' ? '<i class="fa-solid fa-lock sp-ledger-lock" title="已锁定，AI 判定不动"></i>' : '';
+    const who = (e.牵扯 || []).length ? `<span class="sp-ledger-who">${escapeHtml(e.牵扯.join('、'))}</span>` : '';
+    const tags = (e.标签 || []).map(t => `<span class="sp-ledger-tag">${escapeHtml(t)}</span>`).join('');
+    const r3 = (who || tags) ? `<div class="sp-ledger-r3">${who}${tags}</div>` : '';
+    return `<div class="sp-ledger-row sp-ledger-${ledgerTypeClass(e.类型)}" data-id="${escapeAttr(e.id)}">
+        <div class="sp-ledger-r1">${badge}<span class="sp-ledger-gist">${escapeHtml(e.事由)}</span>${lock}${startTag}${cyc}${due}</div>
+        <div class="sp-ledger-r2">${escapeHtml(e.现状 || '（无现状）')}</div>
+        ${r3}
+    </div>`;
+}
+function renderLedgerSheet() {
+    const s = getSettings();
+    const on = s.ledgerCaptureEnabled === true;
+    const iv = getLedgerCaptureInterval();
+    const busy = isCapturingLedger;
+    const ctrl = `<div class="sp-ledger-ctrl">
+        <label class="sp-ledger-auto">
+            <input type="checkbox" class="sp-ledger-auto-toggle" ${on ? 'checked' : ''}>
+            <span>每</span>
+            <input type="number" class="sp-input sp-interval-input sp-ledger-interval" min="1" max="30" value="${iv}">
+            <span>楼自动标注</span>
+        </label>
+        <button class="sp-icon-btn sp-ledger-capture-now" title="立即标注一次" aria-label="立即标注一次" ${busy ? 'disabled' : ''}>
+            <i class="fa-solid ${busy ? 'fa-spinner fa-spin' : 'fa-hand-sparkles'}"></i>
+        </button>
+    </div>`;
+    const entries = ledger.listEntries();
+    if (!entries.length) {
+        const hint = busy ? '正在标注…'
+            : `暂无暗账条目。聊几楼后${on ? '自动标注' : '（先勾上「自动标注」）'}，或点右上「立即标注」。`;
+        return ctrl + `<div class="sp-ledger-empty">${hint}</div>`;
+    }
+    const cal = loadCalDesc();
+    return ctrl + `<div class="sp-ledger-list">${entries.map(e => ledgerRowHtml(e, cal)).join('')}</div>`;
 }
 
 // 历不挂年：年在实际游玩里是极模糊的概念（绝大多数卡都不是现实年份），只按月/日排。
