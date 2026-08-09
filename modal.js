@@ -105,7 +105,10 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
             const onExternalClose = () => finish(null);
             const submit = () => {
                 const value = String($overlay.find('.sp-dialog-input').val() ?? '').trim();
-                const error = typeof validate === 'function' ? String(validate(value) || '') : '';
+                // 校验约定：返回非空字符串＝错误信息，其它（''/null/undefined/true/数字/对象）一律算通过。
+                // 旧写法 String(validate()||'') 会把 true→"true"、对象→"[object Object]" 误当错误显示，且吞掉 0/false。
+                const raw = typeof validate === 'function' ? validate(value) : '';
+                const error = typeof raw === 'string' ? raw : '';
                 if (error) {
                     $overlay.find('.sp-dialog-input-error').html(`<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${escapeHtml(error)}`);
                     $overlay.find('.sp-dialog-input').trigger('focus');

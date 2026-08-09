@@ -79,10 +79,13 @@ function store(create = false) {
         s = cm[STORE_KEY] = freshStore();
     }
     if (!s.data || typeof s.data !== 'object') s.data = {};
-    if (s.version !== SCHEMA_VERSION) {
+    // 版本对齐只在写路径做：读路径若也把内存 version 拔到最新却不落盘、不迁移，
+    // 将来 bump schema 时写路径会误判「已是最新」而跳过迁移，数据停在旧结构却挂新版本号。
+    // 故读路径原样返回（version 保持磁盘值），迁移一律推到下一次写路径（在此补迁移逻辑）。
+    if (create && s.version !== SCHEMA_VERSION) {
         // v1 是初版，无历史结构要迁移；未来 bump 时在此补齐。
         s.version = SCHEMA_VERSION;
-        if (create) persist();
+        persist();
     }
     return s;
 }

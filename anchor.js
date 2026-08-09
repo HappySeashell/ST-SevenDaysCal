@@ -385,7 +385,9 @@ export async function healChatByHash(currentChatId, currentChatName, chatIdHash)
             } catch (err) { console.warn('[SP anchor] 回填 hash 单条失败:', m.id, err); }
         }
     }
-    const total = migrated + (staleIds.length ? 0 : backfilled);
+    // 返回值只作「有没有改动过」的真值信号（调用侧 index.js 仅 if(n>0) 决定刷不刷面板）。
+    // 故直接相加：迁移与回填可能覆盖同一条（重复计数无害），关键是别在「迁移全 no-op 但有回填」时误归 0 而漏刷。
+    const total = migrated + backfilled;
     if (migrated || backfilled) console.info(`[SP anchor] 自愈：迁移 ${migrated} 条、回填 hash ${backfilled} 条 → ${currentChatId}`);
     return total;
 }

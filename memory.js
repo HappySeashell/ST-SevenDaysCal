@@ -38,7 +38,6 @@ let _callApi = null;
 // ─── State ───────────────────────────────────────────────────────────────────
 let _queue = [];
 let _running = false;
-let _currentJob = null;           // job currently in handleJob (must be declared: strict-mode ES module)
 let _abortController = null;      // reserved for rebuild flow (see abortRebuild)
 let _jobAbortController = null;   // shared signal for per-job fetches; aborted on CHAT_CHANGED
 
@@ -352,10 +351,8 @@ async function processQueue() {
     _running = true;
     while (_queue.length) {
         const job = _queue.shift();
-        _currentJob = job;
         try { await handleJob(job); }
         catch (err) { console.warn('[SP memory] job failed:', job, err); }
-        _currentJob = null;
     }
     _running = false;
 }

@@ -25,7 +25,6 @@ const TEMPLATE_BOOK = '构画-棱-小剧场模板';   // 专用世界书名（�
 // ─── 依赖注入 ─────────────────────────────────────────────────────────────────
 let _getSettings = () => ({
     theaterStylePrompt   : '',
-    theaterFewShot       : '',
     theaterBeautifyPrompt: '',
 });
 let _callWriteApi    = null;   // (messages, {maxTokens, signal}) => Promise<string>
@@ -368,7 +367,7 @@ export async function generate(userInput, { signal, onStage } = {}) {
         let htmlRaw = '';
         try {
             htmlRaw = await _callBeautifyApi(buildBeautifyMessages(raw), {
-                maxTokens: Math.max(2048, writeMaxTokens),
+                maxTokens: writeMaxTokens,
                 signal,
             });
         } catch (err) {
