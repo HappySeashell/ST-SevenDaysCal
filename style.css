@@ -1083,7 +1083,7 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-wi-fullview-body::-webkit-scrollbar-thumb { background: var(--sp-divider); border-radius: 2px; }
 
 /* ─── Interval / mode selector ───────────────────────────────────────────────── */
-.sp-interval-input  { width: 46px !important; text-align: center; }
+.sp-interval-input  { width: 46px !important; text-align: center; font-size: 0.78rem !important; padding: 4px 6px !important; }
 /* Subtle divider between logical groups within the memory section */
 .sp-mem-divider {
     border    : 0;
@@ -1138,8 +1138,8 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-mode-opt input[type="checkbox"],
 .sp-mode-opt input[type="radio"] {
-    width       : 16px;
-    height      : 16px;
+    width       : 14px;
+    height      : 14px;
     accent-color: var(--sp-primary);
     cursor      : pointer;
     flex-shrink : 0;
@@ -3048,8 +3048,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     align-items: center;
 }
 .sp-inline-summary-actions button {
-    width          : 22px;
-    height         : 22px;
+    width          : 20px;
+    height         : 20px;
     padding        : 0;
     background     : transparent;
     border         : none;
@@ -3059,7 +3059,7 @@ select.sp-input { appearance: none; cursor: pointer; }
     display        : flex;
     align-items    : center;
     justify-content: center;
-    font-size      : 0.68rem;
+    font-size      : 0.66rem;
     opacity        : 0.55;
     transition     : opacity 0.12s, background 0.12s, color 0.12s;
 }
@@ -3982,6 +3982,20 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     opacity : 0.6;
 }
 
+/* 冷知识独立刷新键：区块头部右对齐，比常规面板刷新键小一档、弱一档，不抢线的刷新/推进键风头 */
+.sp-dashed-head {
+    display        : flex;
+    justify-content: flex-end;
+    margin         : -2px -4px 2px 0;
+}
+.sp-dashed-head .sp-panel-refresh {
+    width    : 24px;
+    height   : 24px;
+    font-size: 0.72rem;
+    opacity  : 0.6;
+}
+.sp-dashed-head .sp-panel-refresh:hover { opacity: 1; }
+
 /* 底部注脚：很小、很弱，只点明「仅为世界观补充」，不喧宾夺主 */
 .sp-dashed-foot {
     margin-top    : 8px;
@@ -4009,12 +4023,50 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     opacity   : 0.92;
 }
 .sp-dashed-inline-hint {
-    margin-bottom : 5px;
-    font-size     : 0.62rem;
-    letter-spacing: 0.06em;
-    color         : var(--sp-subtle);
+    display        : flex;
+    align-items    : center;
+    justify-content: space-between;
+    margin-bottom  : 5px;
+    font-size      : 0.62rem;
+    letter-spacing : 0.06em;
+    color          : var(--sp-subtle);
 }
 .sp-dashed-inline-sub .sp-dashed-list li { font-size: 0.74rem; }
+/* 楼内冷知识刷新键：镜像 summary-actions 小键，再小半档，坐在「世界观补充」行右侧 */
+.sp-inline-refresh-dashed {
+    width          : 18px;
+    height         : 18px;
+    padding        : 0;
+    background     : transparent;
+    border         : none;
+    border-radius  : 4px;
+    color          : var(--sp-subtle);
+    cursor         : pointer;
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : 0.6rem;
+    opacity        : 0.55;
+    letter-spacing : 0;
+    transition     : opacity 0.12s, background 0.12s, color 0.12s;
+}
+.sp-inline-refresh-dashed:hover {
+    opacity   : 1;
+    color     : var(--sp-primary);
+    background: rgba(127, 127, 127, 0.12);
+}
+.sp-inline-refresh-dashed.sp-refresh-busy {
+    opacity       : 0.4;
+    pointer-events: none;
+    cursor        : default;
+}
+.sp-dashed-inline-empty {
+    font-size : 0.7rem;
+    color     : var(--sp-subtle);
+    font-style: italic;
+    opacity   : 0.75;
+}
+.sp-dashed-inline-empty i { margin-right: 4px; }
 
 /* ═══ 历（日历）════════════════════════════════════════════════════════════════
    四类日期各一色（固定 hex，与 .sp-type-* 同思路，切主题不需重渲）。--alm-c 由类型类
@@ -4126,7 +4178,7 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-alm-today-hint { color: var(--sp-subtle); font-size: 0.72rem; margin-left: 4px; }
 .sp-alm-today-acts { display: inline-flex; gap: 2px; margin-left: auto; }
 .sp-alm-today-acts .sp-icon-btn { width: 26px; height: 26px; font-size: 0.72rem; }
-.sp-alm-today-input { width: 44px !important; text-align: center; }
+.sp-alm-today-input { width: 44px !important; text-align: center; font-size: 0.78rem; padding: 4px 6px; }
  /* 时间戳·只读行：今天条下方一行，回显主楼 AI 每楼隐形时间戳（起→止），比今天条更素 */
 .sp-alm-clock {
     display      : flex;

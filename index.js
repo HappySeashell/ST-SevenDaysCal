@@ -68,13 +68,11 @@ const DEFAULT_SETTINGS = {
     // 楼内统一框·渲染深度：只在最新 N 层 AI 楼挂 DOM，更早的楼只留 message.extra 快照、滑回再秒重建。
     // 0 或缺 = 跟随酒馆助手 render_depth（读不到再退 INLINE_RENDER_DEPTH_FALLBACK）。默认 0=跟随。
     inlineRenderDepth: 0,
-    // 历/点·自动确认当前剧情日期（写共享 dateAnchor[charKey]，见 getDateAnchor）。每 N 楼独立判定一次
-    // 「现在剧情演到几月几日」→ 钉成「今天」，让历的七天条/点的日程条跟着剧情走；识别不到留上次值。
-    // 历、点共用同一个今天：只开历即可两者都跟进；各自开关+各自间隔，关掉即该模块不触发 API。
-    almanacAutoDetect    : true,  // 历：默认开（历是全年日历，尤其需要强时间推进）
-    almanacJudgeInterval : 3,     // 历确认节奏：每几条 AI 回复确认一次当前日期
-    scheduleAutoDetect   : false, // 点：默认关（点默认相对日即可；开了才额外调 API）
-    scheduleJudgeInterval: 3,     // 点确认节奏：每几条 AI 回复确认一次当前日期
+    // 剧情日期检测（写共享 dateAnchor[charKey]，见 getDateAnchor）：戳优先——戳开时每楼直读戳落地「今天」，零 API；
+    // 读不到戳（漏打 / 「谷雨」无月日）才由 almanacAutoDetect 决定是否隔 N 楼调一次 API 兜底。点纯下游连带跟随，无独立判定。
+    almanacAutoDetect    : true,  // 读不到戳时用 API 兜底判定（戳关时＝历自动判定总开关，回落老行为）
+    almanacJudgeInterval : 3,     // API 兜底节奏：每几条 AI 回复兜底一次
+    scheduleAutoDetect   : false, // 点：连带跟随「今天」（历改今天后把点重排过去）；默认关
     // Memory system
     memoryEnabled  : true,
     memoryL0Group  : 5,    // AI floors per L0 entry
@@ -90,7 +88,6 @@ const DEFAULT_SETTINGS = {
     customPrompt   : '',         // 自定义提示词（破限）：注入到所有链路 system 最前，全局生效
     // 棱（小剧场）
     theaterStylePrompt   : '',   // 写作 agent 文风提示词
-    theaterFewShot       : '',   // few-shot 范文
     theaterBeautifyPrompt: '',   // 美化 agent 提示词（空=用内置默认）
     // 坐标（收藏楼层）
     anchorInlineBtn      : true,               // 楼层头部显示「收藏此楼」入口（关掉则只能从别处收藏，暂无）
@@ -307,7 +304,6 @@ jQuery(async () => {
             const s = getSettings();
             return {
                 theaterStylePrompt   : typeof s.theaterStylePrompt === 'string' ? s.theaterStylePrompt : '',
-                theaterFewShot       : typeof s.theaterFewShot === 'string' ? s.theaterFewShot : '',
                 theaterBeautifyPrompt: typeof s.theaterBeautifyPrompt === 'string' ? s.theaterBeautifyPrompt : '',
             };
         },
@@ -364,11 +360,10 @@ jQuery(async () => {
         outlineJudgeAbort?.abort();
         outlineJudgeAbort = null;
         isJudgingOutline = false;
-        // 历/点·自动确认日期：同理切 chat 复位单调闸到末楼、清计数、中断进行中的判定。
-        almanacLastJudgedMsgId = scheduleLastJudgedMsgId = (getContext().chat?.length ?? 0) - 1;
-        almanacJudgeCounter = scheduleJudgeCounter = 0;
+        // 历·自动确认日期：同理切 chat 复位单调闸到末楼、清计数、中断进行中的判定。
+        almanacLastJudgedMsgId = (getContext().chat?.length ?? 0) - 1;
+        almanacJudgeCounter = 0;
         almanacJudgeAbort?.abort();  almanacJudgeAbort = null;
-        scheduleJudgeAbort?.abort(); scheduleJudgeAbort = null;
         isJudgingDate = false;
         _autoRegenSchedAbort?.abort(); _autoRegenSchedAbort = null;   // 中断进行中的「同步到点」后台生成
         _lastDetectedDay  = null;   // days-mode: reset day tracker on chat switch
@@ -513,12 +508,15 @@ jQuery(async () => {
             }
             // mode === 'manual': never auto-advance, only inline block append
         } else if (isReroll || (_pendingSwipeGen && _pendingSwipeGen.mesId === mid)) {
-            // 重 roll（重生成按钮 / 末尾 swipe）刚渲染完 → 先贴当前线（避免重算期间主楼空白），再从楼层基线 B0 重算。
-            // 不动 counter、不走常规推进；_regenLinesForSwipe 完成后 syncLatestInlineBlock 覆盖显示。
-            // 非推进楼没有 B0 基线，_regenLinesForSwipe 内部会早退、线保持原样（与既有 swipe 重 roll 语义一致，防止凭空推进）。
+            // 重 roll（🔄 重生成按钮）刚渲染完 → 先贴当前线（避免重算期间主楼空白），再从楼层基线 B0 重算。
+            // 纯 swipe 生成新变体（_pendingSwipeGen 命中）不再自动重算——只本地重挂，用户想更新线自己点刷新键。
+            // 借此避开「swipe 撞后台/改写插件请求」的并发；🔄 重 roll 仍保留自动重算（用户明确要留）。
+            // 区分靠 _pendingSwipeGen：只在 MESSAGE_SWIPED 带 pendingGeneration 时置位，重 roll 走 GENERATION_STARTED 不置。
+            const wasSwipeGen = !!(_pendingSwipeGen && _pendingSwipeGen.mesId === mid);
             _pendingSwipeGen = null;
             appendLinesInlineBlock(mid, false);
-            _regenLinesForSwipe(mid, true);
+            // 非推进楼没有 B0 基线，_regenLinesForSwipe 内部会早退、线保持原样（与既有重 roll 语义一致，防止凭空推进）。
+            if (!wasSwipeGen) _regenLinesForSwipe(mid, true);
             return;
         }
         // 新楼层按 shouldAdvance 推进并贴块；刷新/历史/swipe 回退重渲染 shouldAdvance=false，仅把内联块补回最新楼。
@@ -602,37 +600,29 @@ jQuery(async () => {
         runJudgeOutlineStep();   // fire-and-forget，自带守卫
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.outlineJudge);
-    // 历·自动确认当前剧情日期：独立监听，同 outlineJudge 三闸（末楼 + 单调 + 攒够计数）。
-    // 每 N 楼跑一次轻量日期判定 → 写共享 dateAnchor。关开关即 early-return（不判、不调 API）。
+    // 历·确认当前剧情日期：末楼 + 单调闸。戳优先——戳开且本楼有可解析戳 → 每楼直读落地、零 API；
+    // 读不到戳（漏打 / 「谷雨」无月日）才由 almanacAutoDetect 决定是否攒够 N 楼调一次 API 兜底 → 写共享 dateAnchor。
     if (_stListeners.almanacJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.almanacJudge);
     _stListeners.almanacJudge = async (messageId) => {
         if (!pluginEnabled()) return;   // 插件总关：停后台历日期判定
-        if (getSettings().almanacAutoDetect === false) return;
         const chat = getContext().chat;
         if (!Array.isArray(chat)) return;
         if (messageId !== chat.length - 1) return;
         if (messageId <= almanacLastJudgedMsgId) return;
         almanacLastJudgedMsgId = messageId;
+        // 戳优先：戳开着且本楼扫到可解析戳 → 一线落地，不受「API 兜底」开关约束、零 API。
+        if (storyClockEnabled()) {
+            const md = storyClockDate();
+            if (md) { applyDetectedDate(charStableKey(getContext()), md); return; }
+        }
+        // 到这＝戳关，或戳开但本楼读不到戳（漏打 / 「谷雨」无月日）→ 是否调 API judge 兜底由 almanacAutoDetect 决定。
+        if (getSettings().almanacAutoDetect === false) return;
         if (++almanacJudgeCounter < getAlmanacJudgeInterval()) return;
         almanacJudgeCounter = 0;
-        runJudgeDateStep('almanac');   // fire-and-forget，自带守卫
+        runJudgeDateStep();   // fire-and-forget，自带守卫
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.almanacJudge);
-    // 点·自动确认当前剧情日期：同上，独立开关/间隔/单调闸；默认关。历、点共写同一个锚点。
-    if (_stListeners.scheduleJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.scheduleJudge);
-    _stListeners.scheduleJudge = async (messageId) => {
-        if (!pluginEnabled()) return;   // 插件总关：停后台点日期判定
-        if (getSettings().scheduleAutoDetect !== true) return;
-        const chat = getContext().chat;
-        if (!Array.isArray(chat)) return;
-        if (messageId !== chat.length - 1) return;
-        if (messageId <= scheduleLastJudgedMsgId) return;
-        scheduleLastJudgedMsgId = messageId;
-        if (++scheduleJudgeCounter < getScheduleJudgeInterval()) return;
-        scheduleJudgeCounter = 0;
-        runJudgeDateStep('schedule');
-    };
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.scheduleJudge);
+    // 点不再独立判定日期：历改「今天」时（戳路 / API 兜底路都经 applyDetectedDate）顺手 syncPointToToday，点纯下游连带。
     // 聊天改名（酒馆改 chat 文件名 = chatId 变）→ 把坐标收藏里旧 chatId 的记录迁到新名，
     // 否则收藏夹里那个聊天桶名不跟新、且跳转来源失效。newFileName/oldFileName 均不带后缀，
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
@@ -805,12 +795,12 @@ function _abortAllBackground() {
         linesAbortController, dashedAbortController, spaceChatAbortController,
         scheduleAbortController, outlineAbortController, theaterAbortController,
         almanacAbortController, outlineChatAbortController,
-        outlineJudgeAbort, almanacJudgeAbort, scheduleJudgeAbort, _autoRegenSchedAbort,
+        outlineJudgeAbort, almanacJudgeAbort, _autoRegenSchedAbort,
     ]) { try { c?.abort(); } catch {} }
     linesAbortController = dashedAbortController = spaceChatAbortController = null;
     scheduleAbortController = outlineAbortController = theaterAbortController = null;
     almanacAbortController = outlineChatAbortController = null;
-    outlineJudgeAbort = almanacJudgeAbort = scheduleJudgeAbort = _autoRegenSchedAbort = null;
+    outlineJudgeAbort = almanacJudgeAbort = _autoRegenSchedAbort = null;
     isGeneratingOutline = isGeneratingLines = isGeneratingDashed = false;
     isGeneratingTheater = isGeneratingAlmanac = false;
     isJudgingOutline = isJudgingDate = false;
@@ -1031,6 +1021,7 @@ function _buildLinesBlockHtml(rawArg = null, readOnly = false) {
             </div>`;
         }).join('');
         const advanceBtn = readOnly ? '' : `<span class="sp-inline-summary-actions">
+            <button class="sp-inline-refresh-lines" title="重新生成线"><i class="fa-solid fa-rotate-right"></i></button>
             <button class="sp-inline-advance-lines" title="推进事件线"><i class="fa-solid fa-forward"></i></button>
         </span>`;
         return `<summary class="sp-inline-summary"><span class="sp-inline-title">线</span><span class="sp-inline-count">${lines.length} 条活跃</span>${advanceBtn}</summary><div class="sp-inline-body">${linesHtml}${dashedSub}</div>`;
@@ -1787,15 +1778,11 @@ let   outlineJudgeAbort      = null;
 let   outlineLastJudgedMsgId = -1;   // 防重放：只判「比上次判过的更新的末楼」，切 chat 时设成末楼
 let   outlineJudgeMsgCounter = 0;    // 攒够 interval 条真·新回复才跑一次判定（照 linesAiMsgCounter 套路）
 
-// 历/点·自动确认日期的判定状态（各自一套，抄 outline 那套三闸：防重入 + 单调 msgId + 攒够计数）。
-// 历/点共用同一个 dateAnchor，但触发/间隔独立，故计数/单调闸各自分开。
-let   isJudgingDate          = false; // 历、点共用一把重入锁（都写同一个锚点，不必并发）
+// 历·自动确认日期的判定状态（抄 outline 那套三闸：防重入 + 单调 msgId + 攒够计数）。仅 API 兜底路用；戳优先路每楼直读不占这些。
+let   isJudgingDate          = false; // 写 dateAnchor 的重入锁
 let   almanacJudgeAbort      = null;
 let   almanacLastJudgedMsgId = -1;
 let   almanacJudgeCounter    = 0;
-let   scheduleJudgeAbort     = null;
-let   scheduleLastJudgedMsgId = -1;
-let   scheduleJudgeCounter   = 0;
 
 // 判定间隔（缺省/非法 → 3；≥1）。独立于线的 getLinesInterval。
 function getOutlineJudgeInterval() {
@@ -1803,13 +1790,9 @@ function getOutlineJudgeInterval() {
     return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
 }
 
-// 历/点·自动确认日期的间隔（各自独立；缺省/非法 → 3；≥1）。抄 getOutlineJudgeInterval。
+// 历·API 兜底判定的间隔（缺省/非法 → 3；≥1）。抄 getOutlineJudgeInterval。
 function getAlmanacJudgeInterval() {
     const n = Number(getSettings().almanacJudgeInterval);
-    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
-}
-function getScheduleJudgeInterval() {
-    const n = Number(getSettings().scheduleJudgeInterval);
     return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
 }
 
@@ -1943,6 +1926,14 @@ function latestStoryClock() {
     return null;
 }
 
+// 从最近一楼的戳解析出结构化 {month,day}。end 优先(当前时间)、退 start。无戳/解析不出 → null（交回兜底）。
+function storyClockDate() {
+    let clk = null;
+    try { clk = latestStoryClock(); } catch { return null; }
+    if (!clk) return null;
+    return parseJudgedDate(clk.end) || parseJudgedDate(clk.start);
+}
+
 const OUTLINE_JUDGE_PROMPT = (cur, nxt, curScene, nxtScene) =>
 `请暂停角色扮演，作为剧情分析助手，判断上面的最近对话是否已经把剧情推进到了「下一个节点」。
 当前节点：${cur}${curScene ? '（' + curScene + '）' : ''}
@@ -2034,20 +2025,44 @@ function parseJudgedDate(ans) {
             const nm = String(cal.months[i].name || '').trim();
             if (!nm) continue;
             const nmEsc = nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const mm = s.match(new RegExp(nmEsc + '\\s*(\\d{1,2})\\s*日?'));
+            const mm = s.match(new RegExp(nmEsc + '\\s*(初[零〇一二两三四五六七八九十]|[零〇一二两三四五六七八九十]+|\\d{1,2})\\s*日?'));
             if (mm) {
-                const md = almValidMonthDay({ month: i + 1, day: +mm[1] }, cal);
+                const da = /^\d+$/.test(mm[1]) ? +mm[1] : (mm[1].startsWith('初') ? _cnToNumber(mm[1].slice(1)) : _cnToNumber(mm[1]));
+                const md = almValidMonthDay({ month: i + 1, day: da }, cal);
                 if (md) return md;
             }
         }
     }
+    // 中文数字「M月D日/初X」：三月十七日 / 冬月初三 → 序号月+日（与 extractDayFromTime 古代中文段同源，但不要求年份）。
+    const cnMD = s.match(/(正|冬|腊|[零〇一二两三四五六七八九十]+)\s*月\s*(初[零〇一二两三四五六七八九十]|[零〇一二两三四五六七八九十]+)\s*日?/);
+    if (cnMD) {
+        const mo = (cnMD[1] in _CN_MONTH_ALIAS) ? _CN_MONTH_ALIAS[cnMD[1]] : _cnToNumber(cnMD[1]);
+        const da = cnMD[2].startsWith('初') ? _cnToNumber(cnMD[2].slice(1)) : _cnToNumber(cnMD[2]);
+        const md = almValidMonthDay({ month: mo, day: da }, cal);
+        if (md) return md;
+    }
     return monthDayFromDayKey(extractDayFromTime(s));
 }
 
-// 历/点·自动确认当前剧情日期：抄 runJudgeOutlineStep 的 abort/chatId/重入守卫。mode='almanac'|'schedule'
-// 只决定用哪个 abort 控制器（触发/间隔各自独立），判定逻辑与写入的锚点完全一致——历、点共用一个「今天」。
+// 落地检测到的剧情日期：变了才写/才弹 → 共享善后 → 点连带跟随（scheduleAutoDetect 开时）。
+// 戳优先路（almanacJudge 每楼直读戳）与 API 兜底路（runJudgeDateStep）共用；且是点连带的唯一咽喉（内含 syncPointToToday）。
+function applyDetectedDate(charKey, md) {
+    if (!charKey || !md) return;
+    const prev = getDateAnchor(charKey);
+    if (prev && prev.month === md.month && prev.day === md.day) return; // 日期没变 → 免重渲染
+    setDateAnchor(charKey, md.month, md.day);
+    // 全量通知：真把「今天」改了才弹（上面 prev 相等已 return，到这里必是真变）
+    if (getSettings().notifyMode === 'full') showToast(`剧情日期已自动更新为 ${calMonthName(loadCalDesc(), md.month)}${md.day}日 · 请注意查看`);
+    runAnchorAftermath();   // 共享善后：刷历条/点条/历面板
+    // 点连带跟随：开「点：连带跟随今天」(scheduleAutoDetect) 时，历改「今天」后把点重排到今天（保 pin 点，见 syncPointToToday）。
+    // 生成中先跳过（避免抢 isGenerating + 弹「稍候」toast），此时今天条会回落到「同步到点」键兜底。
+    // syncPointToToday 自带 scheduleAutoDetect/重入/chatId/abort 守卫，fire-and-forget 安全。
+    if (getSettings().scheduleAutoDetect === true && !isGenerating) syncPointToToday(true);
+}
+
+// 历·API 兜底判定当前剧情日期（仅在读不到戳、almanacAutoDetect 开时调用）：抄 runJudgeOutlineStep 的 abort/chatId/重入守卫。
 // fire-and-forget，失败静默。识别不到日期 → 不动锚点（保留上次值），符合「无信号不动」的兜底。
-async function runJudgeDateStep(mode) {
+async function runJudgeDateStep() {
     if (isJudgingDate) return;                       // 历、点共一把锁：都写同一个锚点，不必并发
     const ctx = getContext();
     const charKey = charStableKey(ctx);
@@ -2055,8 +2070,8 @@ async function runJudgeDateStep(mode) {
     const chatIdSnap = ctx.chatId;
     const cfg = loadUtilityCfg();                    // 机械任务：可分流到轻量预设，未设则=主 API
     if (!cfg.url || !cfg.key) return;
-    const setAbort = c => { if (mode === 'schedule') scheduleJudgeAbort = c; else almanacJudgeAbort = c; };
-    const getAbort = ()  =>   mode === 'schedule' ? scheduleJudgeAbort : almanacJudgeAbort;
+    const setAbort = c => { almanacJudgeAbort = c; };
+    const getAbort = ()  =>   almanacJudgeAbort;
     const myCtrl = new AbortController(); setAbort(myCtrl);
     isJudgingDate = true;
     const done = () => { isJudgingDate = false; setAbort(null); };
@@ -2069,18 +2084,7 @@ async function runJudgeDateStep(mode) {
         done();
         const md = parseJudgedDate(raw);
         if (!md) return;                                                    // 识别不到 → 保持上次不动
-        const prev = getDateAnchor(charKey);
-        if (prev && prev.month === md.month && prev.day === md.day) return; // 日期没变 → 免重渲染
-        setDateAnchor(charKey, md.month, md.day);
-        // 全量通知：judge 真把「今天」改了才弹（上面 prev 相等已 return，到这里必是真变）
-        if (getSettings().notifyMode === 'full') showToast(`剧情日期已自动更新为 ${calMonthName(loadCalDesc(), md.month)}${md.day}日 · 请注意查看`);
-        runAnchorAftermath();   // 共享善后：刷历条/点条/历面板
-        // 方案 A·点自动跟历：开了「点：自动确认当前日期」(scheduleAutoDetect) 时，历自动推进「今天」后，
-        // 后台把点也同步重排到今天（保 pin 住的点，见 syncPointToToday）。仅走**自动判定**这条路——
-        // 手动 ±1天 / 改今天经 runAnchorAftermath 只刷不烧点（那是纠日期的常规操作，不该顺手重生成点）。
-        // 生成中先跳过（避免抢 isGenerating + 弹「稍候」toast），此时今天条会回落到方案 B 的「同步到点」键兜底。
-        // syncPointToToday 自带 scheduleAutoDetect/重入/chatId/abort 守卫，fire-and-forget 安全。
-        if (getSettings().scheduleAutoDetect === true && !isGenerating) syncPointToToday(true);
+        applyDetectedDate(charKey, md);                                     // 变了才写/才弹 + 点连带跟随（共享咽喉）
     } catch (err) {
         if (getAbort() !== myCtrl) return;                 // 被更新的判定取代 → 新判定接管状态，别动
         done();
@@ -2944,6 +2948,22 @@ function injectModal() {
                                         <span>启用时间戳</span>
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">给整个故事一个<b>跟着剧情走的时间源</b>：向主楼 AI 注入一段指令，让它在<b>每楼正文首尾各打一个隐形时间戳</b>（HTML 注释，聊天里看不到），构画读回它来把握「现在是什么时候」，精确到<b>小时</b>。这是时间系统的地基——默认开。<br><span style="opacity:.75">注：会给每楼多加一小段系统提示词（占少量 token）；导出聊天原文时能看到这些 <code>&lt;!-- … --&gt;</code> 注释。不受「允许潜伏注入」总闸控制——关掉那个总闸不会关掉时间戳。它是让主楼 AI 产出时间数据的地基（与线/面「把数据喂给 AI」方向相反），只由插件总开关和上面这个开关控制。</span></p>
+                                    <hr class="sp-mem-divider">
+                                    <label class="sp-cfg-group">剧情日期（历 / 点共用「今天」）</label>
+                                    <label class="sp-mode-opt" style="margin-top:6px">
+                                        <input type="checkbox" id="sp-almanac-autodetect" ${getSettings().almanacAutoDetect !== false ? 'checked' : ''}>
+                                        <span>读不到戳时，用 API 兜底判定日期</span>
+                                    </label>
+                                    <label class="sp-mode-opt" style="margin-top:6px">
+                                        <span>每</span><input id="sp-almanac-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getAlmanacJudgeInterval()))}"><span>条 AI 回复兜底一次</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">有戳时每楼直接读、<b>不调 API</b>；只有漏打戳、或戳没写月日（如「谷雨」）时，才隔几楼调一次 API 从正文推算日期补上。<b>关掉＝只认戳、绝不为日期调 API</b>。</p>
+                                    <label class="sp-mode-opt" style="margin-top:10px">
+                                        <input type="checkbox" id="sp-schedule-autodetect" ${getSettings().scheduleAutoDetect === true ? 'checked' : ''}>
+                                        <span>点：连带跟随「今天」</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">历的「今天」推进时，点（近七日日程）自动跟着排到同一天；不开则点原地不动，需在历面板今天条点「同步到点」手动追。默认关。</p>
+                                    <hr class="sp-mem-divider">
                                     <label class="sp-cfg-group" style="margin-top:10px">强制注入提示词（可二改）</label>
                                     <p class="sp-cfg-hint"><strong>留空＝用内置默认</strong>（默认词随插件更新走）。想自定义就点「载入默认再改」把默认全文拉进编辑框，<strong>改成什么就整段注入什么</strong>；想回到跟随更新的原版，点「恢复默认」清空即可。⚠️ 务必保留 <code>&lt;!-- SDC-start … --&gt;</code> / <code>&lt;!-- SDC-end … --&gt;</code> 这对注释结构——构画靠它读回时间戳；改坏了只是时间戳读空、历 / 点仍照常兜底，不影响其它。</p>
                                     <textarea id="sp-storyclock-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="留空＝用内置默认强制词。"></textarea>
@@ -3023,37 +3043,6 @@ function injectModal() {
                                         <span>条 AI 回复判定一次推进</span>
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">楼数越大越省 token、越迟钝；越小越灵敏、开销越高（<b>每次判定 = 一次额外 API</b>）。默认 3。</p>
-                                </div>
-                            </details>
-
-                            <!-- 模块设置：历 / 点 · 时间推进（自动确认当前剧情日期 + 手动兜底） -->
-                            <details class="sp-settings-section" id="sp-datetime-section">
-                                <summary class="sp-settings-section-title">历 · 点</summary>
-                                <div class="sp-settings-section-body">
-                                    <p class="sp-cfg-hint">历（全年日历）与点（近七日日程）<b>共用同一个「今天」</b>，都靠「当前剧情日期」定位。开启自动确认后，每隔若干楼<b>独立判定</b>剧情演到几月几日、把「今天」钉过去，七天条 / 日程条随之走；识别不到<b>保持原日期</b>。也可在历面板顶部手动钉今天兜底。</p>
-
-                                    <label class="sp-mode-opt" style="margin-top:10px">
-                                        <input type="checkbox" id="sp-almanac-autodetect" ${getSettings().almanacAutoDetect !== false ? 'checked' : ''}>
-                                        <span>历：自动确认当前日期</span>
-                                    </label>
-                                    <label class="sp-mode-opt" style="margin-top:6px">
-                                        <span>每</span>
-                                        <input id="sp-almanac-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getAlmanacJudgeInterval()))}">
-                                        <span>条 AI 回复确认一次</span>
-                                    </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">默认开。每次确认 = 一次额外 API；楼数越大越省、越迟钝。默认 3。</p>
-
-                                    <hr class="sp-mem-divider">
-                                    <label class="sp-mode-opt">
-                                        <input type="checkbox" id="sp-schedule-autodetect" ${getSettings().scheduleAutoDetect === true ? 'checked' : ''}>
-                                        <span>点：自动确认当前日期</span>
-                                    </label>
-                                    <label class="sp-mode-opt" style="margin-top:6px">
-                                        <span>每</span>
-                                        <input id="sp-schedule-judge-interval" class="sp-input sp-interval-input" type="number" min="1" value="${escapeAttr(String(getScheduleJudgeInterval()))}">
-                                        <span>条 AI 回复确认一次</span>
-                                    </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">默认关。开 = 历推进「今天」时<b>点也自动重排到今天</b>（保 pin 点，每次多一次 API）；不开则点原地冻结，落后时历面板今天条冒「同步到点」键手动补。</p>
                                 </div>
                             </details>
 
@@ -3377,11 +3366,20 @@ function injectModal() {
         }, 1200);
         $btn.data('sp-copy-reset', t);
     });
-    $('#sp-lines-list').on('click', '.sp-refresh-lines', triggerGenerateLines);
+    // Refresh lines — button appears in both panel toolbar and inline block
+    $('#sp-lines-list, #chat').on('click', '.sp-refresh-lines, .sp-inline-refresh-lines', function (e) {
+        e.stopPropagation();   // inline button lives in <summary>, don't toggle details
+        triggerGenerateLines();
+    });
     // Advance lines — button appears in both panel toolbar and inline block
     $('#sp-lines-list, #chat').on('click', '.sp-advance-lines, .sp-inline-advance-lines', function (e) {
         e.stopPropagation();   // inline button lives in <summary>, don't toggle details
         triggerAdvanceLines();
+    });
+    // Refresh 冷知识（虚线）— 独立键，放冷知识自己的区块内（主面板 + 楼内块）
+    $('#sp-lines-list, #chat').on('click', '.sp-refresh-dashed, .sp-inline-refresh-dashed', function (e) {
+        e.stopPropagation();
+        runGenerateDashed();
     });
     // Per-line delete (× on each line card, panel + inline). No full-clear button anymore.
     $('#sp-lines-list, #chat').on('click', '.sp-line-del-one', function (e) {
@@ -3734,6 +3732,7 @@ function injectModal() {
     });
     $almanac.on('click', '.sp-alm-today-cancel', function () { _almTodayEditing = false; renderAlmanacPanel(); });
     $almanac.on('click', '.sp-alm-today-save', function () {
+        if (storyClockEnabled()) { _almTodayEditing = false; renderAlmanacPanel(); return; }   // 戳开时手动钉禁用（防陈旧 DOM 误触）
         const key = charStableKey(getContext());
         if (!key) { showToast('当前没有角色卡，无法钉日期', null, true); return; }
         const mo = parseInt($('#sp-alm-today-month').val(), 10);
@@ -3749,6 +3748,7 @@ function injectModal() {
         showToast(`已把今天钉为 ${mo}月${da}日`);
     });
     $almanac.on('click', '.sp-alm-today-clear', function () {
+        if (storyClockEnabled()) return;   // 戳开时无「恢复自动」概念（今天恒由戳钉）；防陈旧 DOM 误触
         const key = charStableKey(getContext());
         if (!key) return;
         setDateAnchor(key, null);   // 清锚 → 恢复自动确认
@@ -4314,19 +4314,10 @@ function injectModal() {
         saveSettingsDebounced();
         almanacJudgeCounter = 0;
     });
-    // 点·自动确认当前日期 开关
+    // 点·连带跟随「今天」开关（点纯下游，无独立判定）
     $('#sp-schedule-autodetect').on('change', function () {
         getSettings().scheduleAutoDetect = this.checked;
         saveSettingsDebounced();
-        scheduleJudgeCounter = 0;
-    });
-    // 点·确认间隔：改完重新计数
-    $('#sp-schedule-judge-interval').on('change', function () {
-        const n = Math.max(1, parseInt(this.value, 10) || 3);
-        getSettings().scheduleJudgeInterval = n;
-        this.value = String(n);
-        saveSettingsDebounced();
-        scheduleJudgeCounter = 0;
     });
     // 楼内渲染框·主开关：关 → 整框全清、停观察；开 → 重算窗口挂回。三个子开关只在它开时才起效。
     $('#sp-inline-render-enabled').on('change', function () {
@@ -7913,8 +7904,14 @@ const DASHED_PROMPT = `请暂停角色扮演，跳出正文叙事，以设定考
 
 function getDashedCacheKey() { return keyDesc('dashed', 'user', ''); }  // 固定 user scope = 不分视角
 
-function buildDashedPrompt(userName, charName) {
-    return DASHED_PROMPT.replace(/\{\{user\}\}/gi, userName).replace(/char/g, charName);
+function buildDashedPrompt(userName, charName, avoidItems = []) {
+    let p = DASHED_PROMPT.replace(/\{\{user\}\}/gi, userName).replace(/char/g, charName);
+    const avoid = (avoidItems || []).map(s => String(s || '').trim()).filter(Boolean);
+    if (avoid.length) {
+        p += `\n  【以下冷知识最近已经讲过，务必全部避开——换全新的取材角度和素材，哪怕换个说法复述同一件事也不允许】：\n`
+           + avoid.map(t => `  - ${t}`).join('\n');
+    }
+    return p;
 }
 
 // 生成虚线冷知识。照抄线的 abort/chatId 快照守卫；fire-and-forget 调用（不阻塞线）。
@@ -7923,14 +7920,17 @@ async function runGenerateDashed() {
     const chatIdSnap = getContext().chatId;
     const myCtrl = dashedAbortController = new AbortController();
     isGeneratingDashed = true;
-    if (linesMode) renderDashedSection();   // 显示 loading
+    if (linesMode) renderDashedSection();   // 主面板显示 loading
+    syncLatestInlineBlock();                // 楼内块也刷出 loading（手动点楼内刷新键时给即时反馈）
     try {
         const ctx = getContext();
         const userName = ctx.name1 || '用户';
         const charName = ctx.name2 || '角色';
         const cfg = loadCfg();
         if (!cfg.url || !cfg.key) throw new Error('未配置自定义 API');
-        const prompt = buildDashedPrompt(userName, charName);
+        // 去重：把最近讲过的冷知识（滚动窗，含上一批）当排除清单喂进去，强制换新素材。
+        const avoidRecent = _mergeDashedRecent(parseDashedItems(), _readDashedRecent());
+        const prompt = buildDashedPrompt(userName, charName, avoidRecent);
         // historyLimit=0：冷知识不喂最近对话，只靠 system 块（人设/卡描述/世界书/记忆库）发散。
         // 否则最近十楼里反复出现的某个道具/场景会把它锚死，导致老围着同一件东西打转。
         const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 0);
@@ -7940,7 +7940,10 @@ async function runGenerateDashed() {
         }
         isGeneratingDashed = false;
         dashedAbortController = null;
-        writeStore(getDashedCacheKey(), { raw: String(raw || '').trim(), ts: Date.now() });
+        // 新一批并进滚动窗（新条目排前、去重、封顶），随缓存一起落盘，供下一轮当排除清单。
+        const newRaw = String(raw || '').trim();
+        const recent = _mergeDashedRecent(_dashedItemsFromRaw(newRaw), avoidRecent);
+        writeStore(getDashedCacheKey(), { raw: newRaw, recent, ts: Date.now() });
         if (linesMode) renderDashedSection();
         syncLatestInlineBlock();   // 楼内窗口同步刷出新冷知识（虚线折进线块，重挂合并块）
     } catch (err) {
@@ -7953,15 +7956,36 @@ async function runGenerateDashed() {
     }
 }
 
-// 存储的原始冷知识文本 → 条目数组（按行拆、剥前导符号/序号、去空行）。面板与楼内块共用。
+// 原始冷知识文本 → 条目数组（按行拆、剥前导符号/序号、去空行）。
 // 序号只剥「1. / 1、/ 1)」这种 1~2 位数字 + 分隔符的列表标记，绝不误伤「3000年前…」这类正文数字。
+function _dashedItemsFromRaw(raw) {
+    return String(raw || '').split('\n')
+        .map(s => s.replace(/^[\s\-*·•]+/, '').replace(/^\d{1,2}[.、．)）]\s*/, '').trim())
+        .filter(Boolean);
+}
+// 当前活跃（上一批）冷知识条目。面板与楼内块渲染共用。
 function parseDashedItems() {
     const saved = readStore(getDashedCacheKey());
-    return saved?.raw
-        ? String(saved.raw).split('\n')
-            .map(s => s.replace(/^[\s\-*·•]+/, '').replace(/^\d{1,2}[.、．)）]\s*/, '').trim())
-            .filter(Boolean)
-        : [];
+    return saved?.raw ? _dashedItemsFromRaw(saved.raw) : [];
+}
+// 冷知识去重滚动窗：存最近若干条已讲过的冷知识（最新在前），生成时当排除清单喂给 AI、务必换新素材。
+// 封顶 12 条 ≈ 最近六轮；每次生成把新条目并进去、按原文去重、超额裁掉最旧的。
+const DASHED_RECENT_CAP = 12;
+function _readDashedRecent() {
+    try { const s = readStore(getDashedCacheKey()); return Array.isArray(s?.recent) ? s.recent : []; }
+    catch { return []; }
+}
+// 新一批条目并入旧滚动窗：新的排前、按 trim 后原文去重、封顶。
+function _mergeDashedRecent(newItems, oldRecent) {
+    const seen = new Set();
+    const out = [];
+    for (const it of [...(newItems || []), ...(oldRecent || [])]) {
+        const k = String(it || '').trim();
+        if (!k || seen.has(k)) continue;
+        seen.add(k); out.push(k);
+        if (out.length >= DASHED_RECENT_CAP) break;
+    }
+    return out;
 }
 
 // 渲染线面板下方的虚线区块。自检容器（#sp-dashed-section 只在 renderLines 输出里有；
@@ -7985,7 +8009,9 @@ function renderDashedSection(err) {
     // 底部注脚：只在有真实内容时出现，很小、弱化——点明「仅为世界观补充」，不喧宾夺主。
     const foot = (!isGeneratingDashed && !err && parseDashedItems().length)
         ? '<div class="sp-dashed-foot">此条仅为世界观补充</div>' : '';
-    $sec.html(body + foot);
+    // 冷知识独立刷新键：放冷知识自己的区块头部、不与线键混（防误会）；生成中置灰禁点（runGenerateDashed 顶端亦有 guard）。
+    const head = `<div class="sp-dashed-head"><button class="sp-panel-refresh sp-refresh-dashed${isGeneratingDashed ? ' sp-refresh-busy' : ''}" title="换一条冷知识"><i class="fa-solid fa-rotate-right"></i></button></div>`;
+    $sec.html(head + body + foot);
 }
 
 // ─── 虚线楼内子块（折进 .sp-lines-inline 的 body，与线合并成一个楼内窗口）──────────
@@ -7995,11 +8021,20 @@ function renderDashedSection(err) {
 function _buildDashedSubsectionHtml() {
     if (getSettings().dashedEnabled !== true) return '';
     const items = parseDashedItems();
-    if (!items.length) return '';
-    const list = items.map(t => `<li>${escapeHtml(t)}</li>`).join('');
+    // 开启即渲染外壳（含刷新键），哪怕暂无条目——供首次从楼内块直接生成。
+    let inner;
+    if (isGeneratingDashed) {
+        inner = '<div class="sp-dashed-inline-empty"><i class="fa-solid fa-spinner fa-spin"></i> 正在翻找冷知识…</div>';
+    } else if (items.length) {
+        inner = `<ul class="sp-dashed-list">${items.map(t => `<li>${escapeHtml(t)}</li>`).join('')}</ul>`;
+    } else {
+        inner = '<div class="sp-dashed-inline-empty">线生成 / 推进时会顺手抽一条冷知识</div>';
+    }
+    // 刷新键坐在「世界观补充」这行右侧、冷知识区内部——不与线键混（用户要求，防误会）。
+    const btn = `<button class="sp-inline-refresh-dashed${isGeneratingDashed ? ' sp-refresh-busy' : ''}" title="换一条冷知识"><i class="fa-solid fa-rotate-right"></i></button>`;
     return '<div class="sp-dashed-inline-sub">'
-        + '<div class="sp-dashed-inline-hint">世界观补充</div>'
-        + `<ul class="sp-dashed-list">${list}</ul></div>`;
+        + `<div class="sp-dashed-inline-hint"><span>世界观补充</span>${btn}</div>`
+        + inner + '</div>';
 }
 
 async function runGenerateLines(silent = false, swipeCtx = null) {
@@ -8873,7 +8908,9 @@ function almTodayBarHtml() {
             <span class="sp-alm-today-hint">无角色卡，无法钉</span>
         </div>`;
     }
-    if (_almTodayEditing) {
+    // 戳开时（默认）历「今天」由戳一线钉，手动钉/±1天/改/恢复自动全隐藏——校准改为回那一楼 reroll。
+    // 只留日期显示 + 「同步到点」。戳关 → 恢复手动钉全套（老行为）。
+    if (_almTodayEditing && !storyClockEnabled()) {
         const maxDim = Math.max(...cal.months.map(x => x.days));
         return `<div class="sp-alm-today sp-alm-today-editing">
             <span class="sp-alm-today-lbl">今天</span>
@@ -8887,24 +8924,27 @@ function almTodayBarHtml() {
             </span>
         </div>`;
     }
+    const showPins = !storyClockEnabled();   // 戳开＝历今天条只读（钉选控件全隐），戳关＝手动钉全套回来
     const pinned = getDateAnchor(key);
-    const pinTag = pinned ? '<span class="sp-alm-today-pin" title="已手动钉住，压过自动确认"><i class="fa-solid fa-thumbtack"></i></span>' : '';
-    const autoBtn = pinned ? '<button class="sp-icon-btn sp-alm-today-clear" title="恢复自动确认"><i class="fa-solid fa-rotate"></i></button>' : '';
-    // 「同步到点」：改了今天后，点若落后于今天就冒出这枚 CTA；点一下后台把点重生成到今天（点·自动检测开没开都有此键，点关时全靠它手动追）。
-    // 正在同步 → 换成禁用的「同步中…」。反馈全在这（按钮态 + toast），结果落在点面板。不弹窗、不占前台生成锁。
+    // 注意：戳优先下 getDateAnchor 每楼非空（戳写的就是这个锚），故 pinTag 必须按开关门控、不能按锚点有无——否则常驻误报「已手动钉住」。
+    const pinTag = (showPins && pinned) ? '<span class="sp-alm-today-pin" title="已手动钉住，压过自动确认"><i class="fa-solid fa-thumbtack"></i></span>' : '';
+    const autoBtn = (showPins && pinned) ? '<button class="sp-icon-btn sp-alm-today-clear" title="恢复自动确认"><i class="fa-solid fa-rotate"></i></button>' : '';
+    // 「同步到点」：改了今天后，点若落后于今天就冒出这枚 CTA；点一下后台把点重生成到今天（点·连带开没开都有此键，点关时全靠它手动追）。
+    // 正在同步 → 换成禁用的「同步中…」。反馈全在这（按钮态 + toast），结果落在点面板。不弹窗、不占前台生成锁。两态都留。
     const syncEl = _almSyncingPoint
         ? '<span class="sp-alm-today-sync sp-alm-today-sync-busy"><i class="fa-solid fa-spinner fa-spin"></i>同步中…</span>'
         : (schedulePointNeedsSync()
             ? '<button class="sp-alm-today-sync sp-alm-today-sync-btn" title="把「点」重新生成到今天，与历同一天"><i class="fa-solid fa-rotate-right"></i>同步到点</button>'
             : '');
-    return `<div class="sp-alm-today">
-        <span class="sp-alm-today-lbl">今天</span>
-        <span class="sp-alm-today-date">${calMonthName(cal, t.month)}${t.day}日·${wd}</span>${pinTag}${syncEl}
-        <span class="sp-alm-today-acts">
+    const actsEl = showPins ? `<span class="sp-alm-today-acts">
             <button class="sp-icon-btn sp-alm-today-prev" title="往前一天（−1 天）"><i class="fa-solid fa-chevron-left"></i></button>
             <button class="sp-icon-btn sp-alm-today-next" title="往后一天（+1 天）"><i class="fa-solid fa-chevron-right"></i></button>
             <button class="sp-icon-btn sp-alm-today-edit" title="改日期"><i class="fa-solid fa-pen"></i></button>${autoBtn}
-        </span>
+        </span>` : '';
+    return `<div class="sp-alm-today">
+        <span class="sp-alm-today-lbl">今天</span>
+        <span class="sp-alm-today-date">${calMonthName(cal, t.month)}${t.day}日·${wd}</span>${pinTag}${syncEl}
+        ${actsEl}
     </div>`;
 }
 // 时间戳·只读显示行。开关关 → 空串（整行不显）。开着但还没扫到戳 → 显示占位（可诊断）。
@@ -8929,6 +8969,7 @@ function storyClockBarHtml() {
 }
 // 「今天」±1 天：以当前显示的今天（可能来自自动源）为基准挪 delta 天，钉成手动锚点，走共享善后。
 function almNudgeToday(delta) {
+    if (storyClockEnabled()) return;   // 戳开时今天由戳一线钉、手动挪键已隐；防手机端陈旧 DOM 误触
     const key = charStableKey(getContext());
     if (!key) { showToast('当前没有角色卡，无法钉日期', null, true); return; }
     const cal = loadCalDesc();
@@ -10613,7 +10654,7 @@ function bindApiPresetEvents() {
         showPresetHint(`已填入「${p.name}」，点下方「保存」生效`);
     });
 
-    // 改名（内联，无弹窗）：点 ✎ → 名字就地变输入框；Enter / ✓ / 失焦提交，Esc 取消
+    // 改名（内联，无弹窗）：点 ✎ → 名字就地变输入框；Enter / ✓ 提交，Esc 取消
     const commitPresetRename = ($row) => {
         const $inp = $row.find('.sp-preset-rename-input');
         if (!$inp.length) return;
@@ -10642,11 +10683,6 @@ function bindApiPresetEvents() {
     $('#sp-preset-list').on('keydown', '.sp-preset-rename-input', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); commitPresetRename($(this).closest('.sp-preset-item-row')); }
         else if (e.key === 'Escape') { e.preventDefault(); renderApiPresetList(); }
-    });
-    // 失焦提交（延迟一拍让 ✓ 的 click 先跑；提交后旧行已卸载，守卫防重复提交）
-    $('#sp-preset-list').on('blur', '.sp-preset-rename-input', function () {
-        const $row = $(this).closest('.sp-preset-item-row');
-        setTimeout(() => { if ($row.find('.sp-preset-rename-input').length) commitPresetRename($row); }, 150);
     });
 
     // ＋新增 → 把当前输入框这套存成新预设，名字先按 URL 域名自动生成（同名自动加序号）；
