@@ -30,7 +30,7 @@ const STORE_KEY      = 'sp-store';
 const SCHEMA_VERSION = 1;
 
 // 构画自己拥有的 chat_metadata 顶层 key。面板据此区分"构画 vs 别的插件"，也是 clearOwnKey 的白名单。
-export const OWN_KEYS = ['sp-store', 'sp-memory', 'sp-theater'];
+export const OWN_KEYS = ['sp-store', 'sp-memory', 'sp-theater', 'sp-ledger'];
 
 // 收进 sp-store 的 7 类数据（theater-draft 是设备相关的草稿，留 localStorage，不在此列）。
 // dashed（虚线·冷知识）与 almanac（历）都不分视角，运行时固定走 user scope（子键恒为 dashed-user / almanac-user）。
