@@ -1549,8 +1549,9 @@ select.sp-input { appearance: none; cursor: pointer; }
     opacity   : 1;
 }
 .sp-fab-btn:active { transform: scale(0.95); }
-/* 生成中 / 刚完成时强制不透明——用户正等结果，别让它半隐形。 */
+/* 生成中 / 刚完成时强制不透明——用户正等结果，别让它半隐形。sp-fab-busy＝插件任意工作态（引用计数）。 */
 .sp-fab-btn.sp-btn-generating,
+.sp-fab-btn.sp-fab-busy,
 .sp-fab-btn.sp-btn-done { opacity: 1; }
 /* 内联笔图标：跟按钮字色走（fill=currentColor），随字号缩放。 */
 .sp-pen-icon { width: 1em; height: 1em; display: block; }
@@ -1574,6 +1575,12 @@ select.sp-input { appearance: none; cursor: pointer; }
     color    : var(--sp-primary, #d0bcff) !important;
 }
 .sp-fab-btn.sp-btn-generating {
+    animation: sp-neon-bar 1.4s ease-in-out infinite !important;
+    color    : var(--sp-neon-color) !important;
+}
+/* 插件任意工作态（写记忆/生成/判定，引用计数）→ 同款霓虹呼吸。与点的 sp-btn-generating
+   同动画同色，任一 class 在身上都呼吸；两者可并存（如点生成中又叠了后台判定），互不打架。 */
+.sp-fab-btn.sp-fab-busy {
     animation: sp-neon-bar 1.4s ease-in-out infinite !important;
     color    : var(--sp-neon-color) !important;
 }
@@ -1842,6 +1849,16 @@ select.sp-input { appearance: none; cursor: pointer; }
     font-family: 'Roboto Mono', monospace;
     font-size  : 0.72rem;
     color      : var(--sp-subtle);
+}
+/* 线卡日期独占一行（在头部下方）：古风长日期「大梁二十九年十一月廿六未时」放进头部会把那行挤爆、
+   逼近右侧图标组。挪成单独一行后，无论长短都不再和阶段/类型/珠子/图标抢横向空间。 */
+.sp-line-when {
+    font-family  : 'Roboto Mono', monospace;
+    font-size    : 0.72rem;
+    color        : var(--sp-subtle);
+    margin       : -2px 0 5px;
+    line-height  : 1.35;
+    word-break   : break-word;
 }
 .sp-beat-type {
     font-size    : 0.68rem;

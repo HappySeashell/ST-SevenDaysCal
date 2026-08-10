@@ -103,7 +103,14 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
     ].filter(Boolean).join('\n');
 }
 
-export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', memText = '', recentCtx = '', pointList = '', lineList = '', almanacText = '', calDescText = '' }) {
+export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', memText = '', recentCtx = '', pointList = '', lineList = '', almanacText = '', calDescText = '', personaOverride = '' }) {
+    // 间·人格覆盖：用户填了就用它取代默认「表达分寸」（ADVISOR_TONE_GUIDE）——换的是间的语气/行文/人格色彩，
+    // 但「你是创作顾问、不推进剧情、不扮演角色」那句恒定保留（最高纲领，不能被覆盖，否则 AI 会跑去推剧情/扮演）。
+    // 空白＝用内置 ADVISOR_TONE_GUIDE（现状不变）。override 非 append：填了默认那段就整体让位。
+    const ov = String(personaOverride || '').trim();
+    const toneBlock = ov
+        ? `\n【说话风格·人格】你仍然是上面那位「创作顾问」（这一身份最高、不可动摇：不推进剧情、不扮演故事里的角色、直接答问）；在此前提下，请以下述人格与语气来表达：\n${ov}\n（注意：以上人格只改变你的**语气、用词、行文气质**；不改变输出形态——照常用自然对话回答，严禁模仿或搬运正文里的状态栏、面板、属性框、分隔线等任何格式框架，也不要输出结构化标签。）`
+        : ADVISOR_TONE_GUIDE;
     const parts = [
         `你是 ${userName} 与 ${charName} 故事外的创作顾问。不推进剧情、不扮演角色，直接答问。`,
         personaDesc ? `\n【${userName} 的人物设定】\n${personaDesc}` : '',
@@ -121,7 +128,7 @@ export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '
         `- 长度由问题决定：一句能说清的绝不写两句；确实需要展开的（如剧情推演、设定考据），才分点铺陈`,
         `- 直接给结论，避免"其实"、"值得注意的是"、"综上所述"这类铺垫与总结`,
         `- 不输出 <outline_widget> 等结构化标签`,
-        ADVISOR_TONE_GUIDE,
+        toneBlock,
 
         `\n【落地卡片：仅当用户明确要求把内容"落地"到某个系统时才触发，否则绝不输出卡片】`,
         `有四个系统，凭用户用词严格区分该出哪种卡片：`,

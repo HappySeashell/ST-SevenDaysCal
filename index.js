@@ -73,11 +73,12 @@ const DEFAULT_SETTINGS = {
     // 读不到戳（漏打 / 「谷雨」无月日）才由 almanacAutoDetect 决定是否隔 N 楼调一次 API 兜底。点纯下游连带跟随，无独立判定。
     almanacAutoDetect    : true,  // 读不到戳时用 API 兜底判定（戳关时＝历自动判定总开关，回落老行为）
     almanacJudgeInterval : 3,     // API 兜底节奏：每几条 AI 回复兜底一次
-    scheduleAutoDetect   : false, // 点：连带跟随「今天」（历改今天后把点重排过去）；默认关
+    scheduleAutoDetect   : false, // 点·后台自动跟随「今天」：开＝历今天变了自动重排点（多一次 API）；关（默认）＝只手动刷新点时对齐今天
     // 暗账·标注：每 N 楼构画 AI 从正文捞「需按时间追踪」的新事件写入 sp-ledger（伤情/身心/约定/周期）。
     // 独立开关+间隔，关掉即不触发 API；默认关（opt-in，多一路后台判定+API 成本，照 outlineInject 的克制）。
     ledgerCaptureEnabled : false, // 暗账标注：默认关
     ledgerCaptureInterval: 5,     // 标注节奏：每几条 AI 回复捞一次新事件
+    ledgerJudgeInterval  : 4,     // 判定节奏：每几条 AI 回复重算一次现状（与标注同受 ledgerCaptureEnabled 总闸）
     // Memory system
     memoryEnabled  : true,
     memoryL0Group  : 5,    // AI floors per L0 entry
@@ -91,6 +92,7 @@ const DEFAULT_SETTINGS = {
     keepTags       : 'content',  // protect list — contents inside these tags survive stripping
     extraTags      : '',         // extra strip list — forcibly delete these tags + their content
     customPrompt   : '',         // 自定义提示词（破限）：注入到所有链路 system 最前，全局生效
+    spacePersona   : '',         // 间·人格覆盖：空=用内置默认语气（ADVISOR_TONE_GUIDE）；非空=换间的语气/行文/人格（顾问身份恒保留、不可覆盖）
     // 棱（小剧场）
     theaterStylePrompt   : '',   // 写作 agent 文风提示词
     theaterBeautifyPrompt: '',   // 美化 agent 提示词（空=用内置默认）
@@ -375,6 +377,11 @@ jQuery(async () => {
         ledgerCaptureCounter = 0;
         ledgerCaptureAbort?.abort(); ledgerCaptureAbort = null;
         isCapturingLedger = false;
+        // 暗账判定：同理复位。
+        ledgerLastJudgedMsgId = (getContext().chat?.length ?? 0) - 1;
+        ledgerJudgeCounter = 0;
+        ledgerJudgeAbort?.abort(); ledgerJudgeAbort = null;
+        isJudgingLedger = false;
         _autoRegenSchedAbort?.abort(); _autoRegenSchedAbort = null;   // 中断进行中的「同步到点」后台生成
         _lastDetectedDay  = null;   // days-mode: reset day tracker on chat switch
         spaceMode = false;
@@ -632,7 +639,7 @@ jQuery(async () => {
         runJudgeDateStep();   // fire-and-forget，自带守卫
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.almanacJudge);
-    // 点不再独立判定日期：历改「今天」时（戳路 / API 兜底路都经 applyDetectedDate）顺手 syncPointToToday，点纯下游连带。
+    // 点不再独立判定日期、也无独立跟随开关：任何一处改「今天」锚点都经 runAnchorAftermath → 顺手把点重排到今天，点纯下游连带跟随。
     // 暗账·标注：每 N 楼从正文捞新事件写库。独立开关(ledgerCaptureEnabled)/间隔/单调闸；默认关。
     if (_stListeners.ledgerCapture) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerCapture);
     _stListeners.ledgerCapture = async (messageId) => {
@@ -648,6 +655,22 @@ jQuery(async () => {
         runLedgerCaptureStep();   // fire-and-forget，自带守卫
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerCapture);
+    // 暗历·判定（刷现状）：每 N 楼重算活跃条目「距今多久」、只让 AI 回该变的那几条。与标注共用 ledgerCaptureEnabled
+    // 总闸，各自独立计数/间隔/单调闸——两车间隔不同、少同楼齐发；无活跃条目时 runLedgerJudgeStep 自己跳过、不空烧。
+    if (_stListeners.ledgerJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerJudge);
+    _stListeners.ledgerJudge = async (messageId) => {
+        if (!pluginEnabled()) return;   // 插件总关：停后台判定
+        if (getSettings().ledgerCaptureEnabled !== true) return;
+        const chat = getContext().chat;
+        if (!Array.isArray(chat)) return;
+        if (messageId !== chat.length - 1) return;
+        if (messageId <= ledgerLastJudgedMsgId) return;
+        ledgerLastJudgedMsgId = messageId;
+        if (++ledgerJudgeCounter < getLedgerJudgeInterval()) return;
+        ledgerJudgeCounter = 0;
+        runLedgerJudgeStep();   // fire-and-forget，自带守卫
+    };
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerJudge);
     // 聊天改名（酒馆改 chat 文件名 = chatId 变）→ 把坐标收藏里旧 chatId 的记录迁到新名，
     // 否则收藏夹里那个聊天桶名不跟新、且跳转来源失效。newFileName/oldFileName 均不带后缀，
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
@@ -821,17 +844,17 @@ function _abortAllBackground() {
         scheduleAbortController, outlineAbortController, theaterAbortController,
         almanacAbortController, outlineChatAbortController,
         outlineJudgeAbort, almanacJudgeAbort, _autoRegenSchedAbort,
-        ledgerCaptureAbort,
+        ledgerCaptureAbort, ledgerJudgeAbort,
     ]) { try { c?.abort(); } catch {} }
     linesAbortController = dashedAbortController = spaceChatAbortController = null;
     scheduleAbortController = outlineAbortController = theaterAbortController = null;
     almanacAbortController = outlineChatAbortController = null;
     outlineJudgeAbort = almanacJudgeAbort = _autoRegenSchedAbort = null;
-    ledgerCaptureAbort = null;
+    ledgerCaptureAbort = ledgerJudgeAbort = null;
     isGeneratingOutline = isGeneratingLines = isGeneratingDashed = false;
     isGeneratingTheater = isGeneratingAlmanac = false;
     isJudgingOutline = isJudgingDate = false;
-    isCapturingLedger = false;
+    isCapturingLedger = isJudgingLedger = false;
 }
 
 // 插件总开关落地。关：藏悬浮球、清所有楼内块与锚点入口（由 refreshInlineWindow/scanAnchorButtons 内部闸兜底）、
@@ -893,17 +916,25 @@ let _lastDetectedDay = null;
 let _bbbWarned       = false;   // 现已无读取点（旧 days 检测的唯一读者随桥接删除）；仅剩 622 处复位，留着不动柏宝书就绪handler
 
 
-// 中文数字 → 阿拉伯数字（覆盖 0–99，足以处理古代年月日）。
-const _CN_NUM_MAP = { 零:0, 〇:0, 一:1, 二:2, 两:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9, 十:10 };
-const _CN_MONTH_ALIAS = { 正:1, 冬:11, 腊:12 };
+// 中文数字 → 阿拉伯数字（覆盖 0–99，足以处理古代年月日）。含农历「廿/卅」与大写/繁体（民国·契据式）。
+const _CN_NUM_MAP = { 零:0, 〇:0, 一:1, 二:2, 两:2, 兩:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9, 十:10, 廿:20, 卅:30,
+    壹:1, 贰:2, 貳:2, 叁:3, 參:3, 叄:3, 肆:4, 伍:5, 陆:6, 陸:6, 柒:7, 捌:8, 玖:9, 拾:10 };
+const _CN_MONTH_ALIAS = { 正:1, 冬:11, 腊:12, 臘:12 };
 
 function _cnToNumber(s) {
     if (!s) return null;
     if (s === '元') return 1;
     if (/^\d+$/.test(s)) return parseInt(s, 10);
-    if (s.length === 1) return _CN_NUM_MAP[s] ?? null;
-    if (s.includes('十')) {
-        const [a, b] = s.split('十');
+    if (s.length === 1) return _CN_NUM_MAP[s] ?? null;   // 单字含 廿=20 / 卅=30
+    // 廿三=23 / 卅一=31（农历日常写 廿一~廿九，偶见卅）：首字定 20/30，其后为个位。
+    if (s[0] === '廿' || s[0] === '卅') {
+        const ones = _CN_NUM_MAP[s.slice(1)];
+        if (ones != null && ones < 10) return _CN_NUM_MAP[s[0]] + ones;
+        return null;
+    }
+    const t = s.replace(/拾/g, '十');   // 大写「拾」＝十位标记：拾伍→十伍、贰拾叁→贰十叁
+    if (t.includes('十')) {
+        const [a, b] = t.split('十');
         const tens = a === '' ? 1 : _CN_NUM_MAP[a];
         const ones = b === '' ? 0 : _CN_NUM_MAP[b];
         if (tens != null && ones != null) return tens * 10 + ones;
@@ -926,7 +957,7 @@ function extractDayFromTime(timeStr) {
     // day N
     if ((m = timeStr.match(/day\s*(\d+)/i))) return `day-${+m[1]}`;
     // 古代中文：<cn年>年<cn月/正/冬/腊>月<初X/cn日>[日]?
-    m = timeStr.match(/(元|[零〇一二两三四五六七八九十]+)\s*年\s*(正|冬|腊|[零〇一二两三四五六七八九十]+)\s*月\s*(初[零〇一二两三四五六七八九十]|[零〇一二两三四五六七八九十]+)/);
+    m = timeStr.match(/(元|[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]+)\s*年\s*(正|冬|腊|[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]+)\s*月\s*(初[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]|[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]+)/);
     if (m) {
         const year  = _cnToNumber(m[1]);
         const month = (m[2] in _CN_MONTH_ALIAS) ? _CN_MONTH_ALIAS[m[2]] : _cnToNumber(m[2]);
@@ -1817,6 +1848,11 @@ let   isCapturingLedger      = false; // 标注重入锁
 let   ledgerCaptureAbort     = null;
 let   ledgerLastCapturedMsgId = -1;
 let   ledgerCaptureCounter   = 0;
+// 暗账·判定（刷现状）的一套闸，独立于标注：判定车重算「距今多久」、只让 AI 回该变的那几条。
+let   isJudgingLedger        = false; // 判定重入锁
+let   ledgerJudgeAbort       = null;
+let   ledgerLastJudgedMsgId  = -1;
+let   ledgerJudgeCounter     = 0;
 
 // 判定间隔（缺省/非法 → 3；≥1）。独立于线的 getLinesInterval。
 function getOutlineJudgeInterval() {
@@ -1834,6 +1870,12 @@ function getAlmanacJudgeInterval() {
 function getLedgerCaptureInterval() {
     const n = Number(getSettings().ledgerCaptureInterval);
     return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 5;
+}
+
+// 暗账判定（刷现状）间隔（缺省/非法 → 4；≥1）。抄 getLedgerCaptureInterval。
+function getLedgerJudgeInterval() {
+    const n = Number(getSettings().ledgerJudgeInterval);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 4;
 }
 
 // 读当前视角大纲游标（1-based；无大纲 → 0 表示「无」；有大纲无 cursor 字段 → 默认停在第 1 节点）。
@@ -2065,7 +2107,7 @@ function parseJudgedDate(ans) {
             const nm = String(cal.months[i].name || '').trim();
             if (!nm) continue;
             const nmEsc = nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const mm = s.match(new RegExp(nmEsc + '\\s*(初[零〇一二两三四五六七八九十]|[零〇一二两三四五六七八九十]+|\\d{1,2})\\s*日?'));
+            const mm = s.match(new RegExp(nmEsc + '\\s*(初[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]|[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]+|\\d{1,2})\\s*日?'));
             if (mm) {
                 const da = /^\d+$/.test(mm[1]) ? +mm[1] : (mm[1].startsWith('初') ? _cnToNumber(mm[1].slice(1)) : _cnToNumber(mm[1]));
                 const md = almValidMonthDay({ month: i + 1, day: da }, cal);
@@ -2074,7 +2116,7 @@ function parseJudgedDate(ans) {
         }
     }
     // 中文数字「M月D日/初X」：三月十七日 / 冬月初三 → 序号月+日（与 extractDayFromTime 古代中文段同源，但不要求年份）。
-    const cnMD = s.match(/(正|冬|腊|[零〇一二两三四五六七八九十]+)\s*月\s*(初[零〇一二两三四五六七八九十]|[零〇一二两三四五六七八九十]+)\s*日?/);
+    const cnMD = s.match(/(正|冬|腊|[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]+)\s*月\s*(初[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]|[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]+)\s*日?/);
     if (cnMD) {
         const mo = (cnMD[1] in _CN_MONTH_ALIAS) ? _CN_MONTH_ALIAS[cnMD[1]] : _cnToNumber(cnMD[1]);
         const da = cnMD[2].startsWith('初') ? _cnToNumber(cnMD[2].slice(1)) : _cnToNumber(cnMD[2]);
@@ -2084,8 +2126,8 @@ function parseJudgedDate(ans) {
     return monthDayFromDayKey(extractDayFromTime(s));
 }
 
-// 落地检测到的剧情日期：变了才写/才弹 → 共享善后 → 点连带跟随（scheduleAutoDetect 开时）。
-// 戳优先路（almanacJudge 每楼直读戳）与 API 兜底路（runJudgeDateStep）共用；且是点连带的唯一咽喉（内含 syncPointToToday）。
+// 落地检测到的剧情日期：变了才写/才弹 → 共享善后（runAnchorAftermath 内含点连带跟随）。
+// 戳优先路（almanacJudge 每楼直读戳）与 API 兜底路（runJudgeDateStep）共用。
 function applyDetectedDate(charKey, md) {
     if (!charKey || !md) return;
     const prev = getDateAnchor(charKey);
@@ -2093,11 +2135,7 @@ function applyDetectedDate(charKey, md) {
     setDateAnchor(charKey, md.month, md.day);
     // 全量通知：真把「今天」改了才弹（上面 prev 相等已 return，到这里必是真变）
     if (getSettings().notifyMode === 'full') showToast(`剧情日期已自动更新为 ${calMonthName(loadCalDesc(), md.month)}${md.day}日 · 请注意查看`);
-    runAnchorAftermath();   // 共享善后：刷历条/点条/历面板
-    // 点连带跟随：开「点：连带跟随今天」(scheduleAutoDetect) 时，历改「今天」后把点重排到今天（保 pin 点，见 syncPointToToday）。
-    // 生成中先跳过（避免抢 isGenerating + 弹「稍候」toast），此时今天条会回落到「同步到点」键兜底。
-    // syncPointToToday 自带 scheduleAutoDetect/重入/chatId/abort 守卫，fire-and-forget 安全。
-    if (getSettings().scheduleAutoDetect === true && !isGenerating) syncPointToToday(true);
+    runAnchorAftermath();   // 共享善后：刷历条/点条/历面板 + 点连带跟随今天
 }
 
 // 历·API 兜底判定当前剧情日期（仅在读不到戳、almanacAutoDetect 开时调用）：抄 runJudgeOutlineStep 的 abort/chatId/重入守卫。
@@ -2161,13 +2199,25 @@ function listActiveLedgerBrief() {
     return act.map(e => `- ${e.事由}${e.标签?.length ? `（${e.标签.join('、')}）` : ''}`).join('\n');
 }
 
+// 两个标注提示词（首次建账 / 日常增量）共用的两段——单一来源，防两处 7 字段格式漂移。
+const LEDGER_EVENT_TYPES = `【什么算暗账事件】会随时间推移改变状态、或到某天该发生的事，典型三类：
+- 持续状态：身体伤情 / 病症、怀孕、显著且会延续的情绪等——会随天数自然演变（如割伤→结痂→愈合）。
+- 约定待办：约好要做的事（哪天见面、答应帮忙），无论有没有定下具体日期都要记。
+- 周期：规律反复发生的事（月经、发薪、值班），带大致周期天数。`;
+
+const LEDGER_FIELD_SPEC = `- 每个事件一行，用全角竖线「｜」分隔 7 个字段，顺序固定：
+  事由｜类型｜牵扯｜标签｜现状｜到期｜周期
+  · 类型：持续状态 / 约定待办 / 周期（只能三选一，原样写这三个词之一）
+  · 牵扯：涉及的人物，多个用顿号「、」分隔；没有就留空
+  · 标签：检索关键词，多个用「、」分隔（如：伤、左手、身体）
+  · 现状：此刻状态一句话（如「新伤口，仍在流血」）
+  · 到期：仅约定/周期填，写大致哪天（如「第3月20日」，本世界观自定义历法请按其月名/月序），说不清就留空
+  · 周期：仅周期类填天数（如 30）；其它类型留空`;
+
 function buildLedgerCapturePrompt() {
     return `请暂停角色扮演，作为剧情分析助手，只做一件事：从以上最近的对话正文里，捞取「需要按时间追踪」的新事件，登记入「暗账」。
 
-【什么算暗账事件】会随时间推移改变状态、或到某天该发生的事，典型三类：
-- 持续状态：身体伤情 / 病症、怀孕、显著且会延续的情绪等——会随天数自然演变（如割伤→结痂→愈合）。
-- 约定待办：约好要做的事（哪天见面、答应帮忙），无论有没有定下具体日期都要记。
-- 周期：规律反复发生的事（月经、发薪、值班），带大致周期天数。
+${LEDGER_EVENT_TYPES}
 
 【已在账上的（不要重复登记）】
 ${listActiveLedgerBrief()}
@@ -2175,15 +2225,31 @@ ${listActiveLedgerBrief()}
 【规则】
 - 只登记上面对话里【新出现】的，或【虽同名但明显是另一次独立事件】的；已在账上的同一件事跳过。
 - 宁可多记：拿不准也记下，漏记的代价比多记大。
-- 每个事件一行，用全角竖线「｜」分隔 7 个字段，顺序固定：
-  事由｜类型｜牵扯｜标签｜现状｜到期｜周期
-  · 类型：持续状态 / 约定待办 / 周期（只能三选一，原样写这三个词之一）
-  · 牵扯：涉及的人物，多个用顿号「、」分隔；没有就留空
-  · 标签：检索关键词，多个用「、」分隔（如：伤、左手、身体）
-  · 现状：此刻状态一句话（如「新伤口，仍在流血」）
-  · 到期：仅约定/周期填，写大致哪天（如「第3月20日」，本世界观自定义历法请按其月名/月序），说不清就留空
-  · 周期：仅周期类填天数（如 30）；其它类型留空
+${LEDGER_FIELD_SPEC}
 - 若没有任何新事件可登记，只回一个字：无
+不要解释，不要输出表头，不要输出多余文字。`;
+}
+
+// 首次建账专用（账上全空时用，见 runLedgerCaptureStep 的 isFirst 分支）：除了对话正文里的已发生事件，
+// 额外指向【角色卡背景资料 / 世界书设定】——把开局就存在、却不会在正文里「新冒出来」的既定机制（周期硬规则、
+// 死线、长期状态/契约）一并种进账。角色卡/世界书本就在 buildMessages 的 system 里，故零额外 API，只换这段指令。
+function buildLedgerFirstScanPrompt() {
+    return `请暂停角色扮演，作为剧情分析助手，只做一件事：这是本故事**第一次**建立「暗账」，请把所有【需要长期按时间追踪】的事项一次性登记入账，覆盖两个来源：
+
+【来源一·既定机制（最重要，务必别漏）】从【角色卡背景资料 / 场景 / 世界书设定】里，找出开局就存在、需要长期盯着时间的**规则型设定**，尤其：
+- 周期性硬规则：如「每 N 天必须做某事，否则触发严重后果」「每逢某日会发生某事」——务必抓出周期天数。
+- 死线 / 倒计时：如「X 天内必须完成某事，否则……」。
+- 长期状态 / 契约 / 诅咒 / 期限：会随时间推进演变或到期的既定设定。
+这类往往是这张卡的核心机制、甚至关乎生死，最该盯——哪怕最近对话还没提到，也要从设定里登记下来。
+
+【来源二·已发生事件】再从最近对话正文里，捞取已经出现、需要追踪的事件（同下三类）。
+
+${LEDGER_EVENT_TYPES}
+
+【规则】
+- 宁可多记：拿不准也记下，漏记的代价比多记大；既定机制哪怕暂时还没触发也要记。
+${LEDGER_FIELD_SPEC}
+- 若确实没有任何可登记的，只回一个字：无
 不要解释，不要输出表头，不要输出多余文字。`;
 }
 
@@ -2230,7 +2296,11 @@ async function runLedgerCaptureStep(manual = false) {
     const done = () => { isCapturingLedger = false; if (ledgerCaptureAbort === myCtrl) ledgerCaptureAbort = null; };
     try {
         const userName = ctx.name1 || '用户', charName = ctx.name2 || '角色';
-        const raw = await callCustomApi(ctx, buildLedgerCapturePrompt(), cfg, userName, charName, myCtrl.signal, LEDGER_CAPTURE_FLOORS);
+        // 账上全空 = 本卡首次建账：这一趟连角色卡/世界书里的既定机制（周期硬规则、死线、长期状态）一并扫入，
+        // 而非只捞对话正文里的新事件。零额外 API——角色卡/世界书本就在 buildMessages 的 system 里，只是换一段指令。
+        const isFirst = ledger.listEntries({ includeClosed: true }).length === 0;
+        const prompt = isFirst ? buildLedgerFirstScanPrompt() : buildLedgerCapturePrompt();
+        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, LEDGER_CAPTURE_FLOORS);
         if (ledgerCaptureAbort !== myCtrl) return;                          // 被更新的标注取代
         if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃
         done();
@@ -2265,14 +2335,155 @@ async function runLedgerCaptureStep(manual = false) {
     }
 }
 
+// ═══ 暗历③·判定·刷现状 ═══════════════════════════════════════════════════════
+// 每 N 楼把活跃条目连同「距今几天」（纯 JS 算好，LLM 不擅长日期差）喂给构画 AI，
+// 只让它回「状态该随时间变化的那几条」的新现状/了结/周期滚动。CODE 算数、AI 只下结论——正是暗历立意。
+const LEDGER_JUDGE_FLOORS = 4;   // 判定读最近几楼正文（比标注窄，够看「刚发生了什么」即可）
+
+// 距今天数：从起始锚(历日期)到今天，环形不涉年（<1 年场景足够）。缺锚/非法 → null。
+function ledgerDaysSince(entry) {
+    const a = entry?.起始锚?.历日期;
+    if (!a || !Number.isFinite(+a.month) || !Number.isFinite(+a.day)) return null;
+    const t = almTodayAnchor();
+    return almDaysUntil(t.month, t.day, a);
+}
+// 到期口径：{天数, 过期}。无到期锚 → null；今天到期 → {天数:0}；已过 → {过期:true}。环形取短弧判过期。
+function ledgerDueInfo(entry) {
+    const d = entry?.到期锚?.历日期;
+    if (!d || !Number.isFinite(+d.month) || !Number.isFinite(+d.day)) return null;
+    const t = almTodayAnchor();
+    const to = almDaysUntil(d.month, d.day, t);          // 今天→到期
+    const since = almDaysUntil(t.month, t.day, d);       // 到期→今天
+    if (to === 0) return { 天数: 0, 过期: false };
+    return to <= since ? { 天数: to, 过期: false } : { 天数: since, 过期: true };
+}
+// 参与判定的活跃条目（排除「用户锁」——用户手改过的不许判定车再动，照点/线锁机制）。
+function listJudgeableLedger() {
+    return ledger.listEntries().filter(e => e.锁 !== '用户锁');
+}
+// 一行摘要（喂进判定提示词）。天数由 CODE 算好塞进去，AI 据此下结论、不自己算日期。
+function fmtLedgerForJudge(e) {
+    const since = ledgerDaysSince(e);
+    const sinceStr = since == null ? '起始不明' : (since === 0 ? '今天登记' : `距登记 ${since} 天`);
+    const du = ledgerDueInfo(e);
+    const dueStr = !du ? '' : (du.天数 === 0 ? '·今天到期' : (du.过期 ? `·已过期 ${du.天数} 天` : `·还有 ${du.天数} 天到期`));
+    const cyc = e.周期长度 ? `·周期 ${e.周期长度} 天` : '';
+    const who = e.牵扯?.length ? `·涉及 ${e.牵扯.join('、')}` : '';
+    return `[${e.id}] ${e.事由}（${e.类型}）：现状「${e.现状 || '—'}」｜${sinceStr}${dueStr}${cyc}${who}`;
+}
+
+function buildLedgerJudgePrompt() {
+    const lines = listJudgeableLedger().map(fmtLedgerForJudge).join('\n');
+    return `请暂停角色扮演，作为剧情连续性助手，只做一件事：根据下面【已登记事件】各自「距今过了多少天」和最近正文，判断哪些事件的状态**该随时间变化了**，只输出需要更新的那几条。
+
+【已登记事件】（方括号是编号，天数已由系统算好，你不必自己算日期）
+${lines || '（暂无活跃事件）'}
+
+【怎么判断该不该变】
+- 持续状态：随天数自然演变（如割伤：当天流血→两三天结痂→约一周愈合；病症、孕期同理）。到该愈合/该缓解的天数了就更新现状；已彻底痊愈/结束的标「了结」。
+- 约定待办：到期或已过期还没兑现→在现状里点出「今天该…／已过 X 天未…」；正文里已兑现→标「了结」。
+- 周期：到期即本轮该发生（如月经）；正文印证发生了→更新现状并标「滚周期」（系统会把下次到期顺延一个周期）。
+
+【输出格式】只输出状态**有变化**的条目，每条一行，全角竖线「｜」分隔 4 段，顺序固定：
+  编号｜新现状｜动作｜新到期
+  · 编号：原样抄方括号里的（如 L3），不带方括号
+  · 新现状：更新后的一句话状态（如「伤口已结痂，隐隐作痒」）
+  · 动作：维持 / 了结 / 滚周期（三选一，原样写）
+  · 新到期：仅约定改期时填（如「第3月20日」，自定义历按其月名/月序），其余留空
+- 没有任何该变的，就只回一个字：无
+不要解释、不要输出表头、不要输出没变化的条目。`;
+}
+
+// 解析判定回答 → 改动数组。认全角竖线行；编号剥方括号；动作三选一兜底「维持」。
+function parseLedgerJudge(raw) {
+    const s = String(raw || '').trim();
+    if (!s || /^无[。.！!]?$/.test(s)) return [];
+    const out = [];
+    for (const line of s.split('\n')) {
+        const t = line.trim();
+        if (!t || !t.includes('｜')) continue;
+        if (/^编号\s*｜/.test(t)) continue;                    // AI 若误输出表头，跳过
+        const cols = t.split('｜').map(x => x.trim());
+        const id = cols[0].replace(/[\[\]【】]/g, '').trim();
+        if (!id) continue;
+        const 动作 = ['维持', '了结', '滚周期'].includes(cols[2]) ? cols[2] : '维持';
+        const chg = { id, 现状: cols[1] || '', 动作 };
+        const due = parseJudgedDate(cols[3] || '');
+        if (due) chg.到期 = due;
+        out.push(chg);
+    }
+    return out;
+}
+
+// 判定一次：抄 runLedgerCaptureStep 的 abort/chatId/重入守卫。manual=true（手动点）无论通知档位都反馈结果。
+// fire-and-forget，失败静默（自动车）/弹错（手动）。无活跃条目直接跳过、不空烧 API。
+async function runLedgerJudgeStep(manual = false) {
+    if (isJudgingLedger) return;
+    const ctx = getContext();
+    const charKey = charStableKey(ctx);
+    if (!charKey) { if (manual) showToast('当前没有角色卡，无法判定', null, true); return; }
+    if (!listJudgeableLedger().length) { if (manual) showToast('暂无可判定的活跃事件'); return; }
+    const chatIdSnap = ctx.chatId;
+    const cfg = loadUtilityCfg();                    // 机械任务：可分流轻量预设，未设则=主 API
+    if (!cfg.url || !cfg.key) { if (manual) showToast('请先在设置中填写 API', null, true); return; }
+    const myCtrl = new AbortController(); ledgerJudgeAbort = myCtrl;
+    isJudgingLedger = true;
+    const done = () => { isJudgingLedger = false; if (ledgerJudgeAbort === myCtrl) ledgerJudgeAbort = null; };
+    try {
+        const userName = ctx.name1 || '用户', charName = ctx.name2 || '角色';
+        const raw = await callCustomApi(ctx, buildLedgerJudgePrompt(), cfg, userName, charName, myCtrl.signal, LEDGER_JUDGE_FLOORS);
+        if (ledgerJudgeAbort !== myCtrl) return;                            // 被更新的判定取代
+        if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃
+        done();
+        const changes = parseLedgerJudge(raw);
+        if (!changes.length) { if (manual) showToast('本轮没有事件需要更新'); return; }
+        const cal = loadCalDesc();
+        const floor = latestAiFloorId();
+        const today = almTodayAnchor();
+        const applied = [];
+        for (const c of changes) {
+            const e = ledger.getEntry(c.id);
+            if (!e || e.状态 === '已了结' || e.锁 === '用户锁') continue;   // 目标须活跃、非用户锁（AI 乱报编号也挡掉）
+            const patch = { 现状锚: { 楼层: floor, 历日期: today } };       // 现状锚每次刷到今天（起始锚永不动）
+            if (c.现状) patch.现状 = c.现状;
+            if (c.动作 === '滚周期' && e.周期长度 > 0) {
+                const base = e.到期锚?.历日期 || today;                     // 保相位：从上次到期顺延一个周期，缺则从今天起
+                patch.到期锚 = { 历日期: almMonthDayFromDoy(almDayOfYear(base.month, base.day, cal) + e.周期长度, cal) };
+            } else if (c.到期) {
+                patch.到期锚 = { 历日期: c.到期 };
+            }
+            ledger.updateEntry(e.id, patch);
+            if (c.动作 === '了结') ledger.closeEntry(e.id);
+            applied.push(e.事由);
+        }
+        if (!applied.length) { if (manual) showToast('没有需要更新的事件'); return; }
+        // 通知：手动必反馈；自动仅 full 档弹（照三档静音约定）。
+        if (manual || getSettings().notifyMode === 'full') {
+            showToast(`暗历刷新 ${applied.length} 条：${applied.join('、')} · 请注意查看`);
+        }
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    } catch (err) {
+        if (ledgerJudgeAbort !== myCtrl) return;           // 被更新的判定取代 → 新的接管，别动
+        done();
+        if (err?.name === 'AbortError') return;            // 中止 / 切档
+        if (err?.spDisabled) return;                       // 插件关闭：静默
+        if (getContext().chatId !== chatIdSnap) return;    // 已切 chat
+        showToast('暗历判定失败，请检查 API 或网络', null, true);
+    }
+}
+
 // ─── 共享锚点善后 ───────────────────────────────────────────────────────────
-// 任何一处改「今天」锚点（自动判定 / 历面板 ±1天·改·恢复自动）后都走这里，
-// 统一刷新：楼内历条 / 点条、历面板。历面板重渲时若「点」已落后今天，会在今天条上冒出「同步到点」键（方案 B）。
-// 注意：改今天只更新历，绝不自动重生成点——点要不要跟随，由用户在历面板点「同步到点」显式触发。
+// 任何一处改「今天」锚点（自动判定 applyDetectedDate / 历面板 ±1天·改·恢复自动）后都走这里，统一善后：
+//   1) 刷楼内历条 / 点条、历面板；2) 点恒跟随今天——把点重排到今天（点纯下游连带，无独立开关）。
+// 点连带走 syncPointToToday(true)：其自带「点没生成过就 no-op」「_almSyncingPoint 重入合并」「isGenerating/
+// chatId/abort」守卫，fire-and-forget 安全；不占前台 isGenerating 锁。故这里无脑调、由它自己判断要不要真重生成。
 function runAnchorAftermath() {
     syncLatestAlmanacBlock();
     syncLatestScheduleBlock();
     if (almanacMode) renderAlmanacPanel();
+    // 点·后台自动跟随「今天」：仅在开关开时才自动重排点（每次一 API）；关（默认）时点原地不动，
+    // 用户想对齐今天时去点面板手动刷新即可。syncPointToToday 内部还有「点从未生成过就 no-op」守卫，双保险。
+    if (getSettings().scheduleAutoDetect === true) syncPointToToday(true);
 }
 
 // 方案 B·点随「今天」按钮同步（历面板「同步到点」键触发，非自动）：
@@ -2299,7 +2510,6 @@ let _autoRegenSchedAbort = null;
 async function syncPointToToday(auto = false) {
     if (_almSyncingPoint) { _almSyncPending = true; return; }   // 同步在飞：标记待办，等它收尾自对账补一轮（都开态·快聊防丢，别硬丢）
     if (isGenerating) { if (!auto) showToast('点正在生成，稍候再同步', null, true); return; }
-    if (auto && getSettings().scheduleAutoDetect !== true) return;   // 自动跟随仅在点·自动检测开时走；手动点「同步到点」不受此限（点关也能手动追）
     const view = currentView, charName = charViewName;
     const cacheKey = getCacheKey(view, charName);
     if (!cacheKey) return;
@@ -2668,11 +2878,19 @@ function injectExtButton() {
     }
 }
 
-function setExtBtnState(state) {
-    const $wandBtn = $('#sp_open_wand');
-    $wandBtn.removeClass('sp-btn-generating sp-btn-done');
-    if (state) $wandBtn.addClass(`sp-btn-${state}`);
+// 悬浮球「插件在忙」呼吸灯：引用计数。所有 LLM 请求都经唯一咽喉 postChatCompletion，
+// 那里进 +1 / finally -1，故点/线/面/棱/历/暗历标注/暗历判定/写记忆/间——无论自动手动、
+// 无论并发几路，只要还有一路在飞就呼吸，全部落地才熄。独立 class（sp-fab-busy）不碰点的
+// sp-btn-generating/done，两套并存互不干扰。计数只增减、不直接读 isGenerating 那些分散旗标，
+// 天然免漏灯/卡灯。
+let _fabBusyCount = 0;
+function setFabBusy(on) {
+    _fabBusyCount = Math.max(0, _fabBusyCount + (on ? 1 : -1));
+    $(`#${FAB_ID} .sp-fab-btn`).toggleClass('sp-fab-busy', _fabBusyCount > 0);
+}
 
+function setExtBtnState(state) {
+    // 魔法棒(#sp_open_wand)生成态变色太不显眼、用户根本看不到，故不再给它挂状态类——生成指示统一交给悬浮球呼吸灯。
     const $fab = $(`#${FAB_ID} .sp-fab-btn`);
     $fab.removeClass('sp-btn-generating sp-btn-done');
     if (state) $fab.addClass(`sp-btn-${state}`);
@@ -2797,7 +3015,7 @@ function injectModal() {
                             <span class="sp-tab-label">点</span>
                         </button>
                         <button class="sp-side-tab sp-view-btn" data-view="almanac">
-                            <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="9" r="1.9" fill="currentColor" stroke="none"/><circle cx="15.5" cy="9" r="1.9" fill="currentColor" stroke="none"/><circle cx="8.5" cy="15" r="1.9" fill="currentColor" stroke="none"/><circle cx="15.5" cy="15" r="1.9" fill="currentColor" stroke="none"/></svg></span>
+                            <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="4" x2="8" y2="20"/><line x1="8" y1="8" x2="15" y2="8"/><line x1="8" y1="12" x2="15" y2="12"/><line x1="8" y1="16" x2="15" y2="16"/></svg></span>
                             <span class="sp-tab-label">轴</span>
                         </button>
                         <button class="sp-side-tab sp-view-btn" data-view="lines">
@@ -3129,9 +3347,9 @@ function injectModal() {
                                     <p class="sp-cfg-hint" style="margin-top:2px">有戳时每楼直接读、<b>不调 API</b>；只有漏打戳、或戳没写月日（如「谷雨」）时，才隔几楼调一次 API 从正文推算日期补上。<b>关掉＝只认戳、绝不为日期调 API</b>。</p>
                                     <label class="sp-mode-opt" style="margin-top:10px">
                                         <input type="checkbox" id="sp-schedule-autodetect" ${getSettings().scheduleAutoDetect === true ? 'checked' : ''}>
-                                        <span>点：连带跟随「今天」</span>
+                                        <span>点：后台自动跟随「今天」</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">轴的「今天」推进时，点（近七日日程）自动跟着排到同一天；不开则点原地不动，需在轴面板今天条点「同步到点」手动追。默认关。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">开＝「今天」一推进就<b>自动在后台重排点</b>到今天（<b>每次多一趟 API</b>）。<b>关（默认）＝点原地不动、不后台调 API</b>；你想让点对齐今天时，去点面板<b>手动刷新一次</b>即可（刷新出来的点就从今天起排）。不常用点、想省 API 的就别开。</p>
                                     <hr class="sp-mem-divider">
                                     <label class="sp-cfg-group" style="margin-top:10px">强制注入提示词（可二改）</label>
                                     <p class="sp-cfg-hint"><strong>留空＝用内置默认</strong>（默认词随插件更新走）。想自定义就点「载入默认再改」把默认全文拉进编辑框，<strong>改成什么就整段注入什么</strong>；想回到跟随更新的原版，点「恢复默认」清空即可。⚠️ 务必保留 <code>&lt;!-- SDC-start … --&gt;</code> / <code>&lt;!-- SDC-end … --&gt;</code> 这对注释结构——构画靠它读回时间戳；改坏了只是时间戳读空、轴 / 点仍照常兜底，不影响其它。</p>
@@ -3233,10 +3451,19 @@ function injectModal() {
                                 </div>
                             </details>
 
+                            <!-- 模块设置 4：间（局外对话空间）人格覆盖 -->
+                            <details class="sp-settings-section" id="sp-space-section">
+                                <summary class="sp-settings-section-title">间</summary>
+                                <div class="sp-settings-section-body">
+                                    <p class="sp-cfg-hint">间 = 跳出扮演、和 AI 聊剧情/设定/关系的「局外」空间。这里可给它换一套<strong>说话语气与人格</strong>。</p>
+                                    <label class="sp-cfg-label">间的人格 / 说话风格</label>
+                                    <textarea id="sp-space-persona" class="sp-input sp-theater-cfg-textarea" placeholder="留空＝内置默认（柔和客观、含蓄内敛的中性顾问）。填了就换成你写的人格，如：深耕 ACG、熟知网络用语、爱用半个括号吐槽的重度宅女…"></textarea>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">只换<strong>语气 / 行文 / 人格色彩</strong>；「间仍是创作顾问、不推进剧情、不扮演故事角色」这条内核<strong>恒定保留</strong>（写得再放飞它也不会跑去演戏）。<b>只作用于「间」</b>，不影响面·和间聊聊。支持 <code>{{char}}</code> / <code>{{user}}</code>。</p>
                                 </div>
                             </details>
 
-                            <!-- ═══════════ 高级设置 ═══════════ -->
+                                </div>
+                            </details>
                             <details class="sp-settings-layer">
                                 <summary class="sp-settings-layer-title">高级设置</summary>
                                 <div class="sp-settings-layer-body">
@@ -3890,6 +4117,12 @@ function injectModal() {
         renderAlmanacPanel();                    // 立刻渲染成 busy 态（spinner + 禁用）
         p.then(() => { if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel(); });
     });
+    $almanac.on('click', '.sp-ledger-judge-now', function () {
+        if (isJudgingLedger) return;
+        const p = runLedgerJudgeStep(true);      // manual=true：无活跃条目/无改动时给 toast
+        renderAlmanacPanel();                    // 立刻渲染成 busy 态（spinner + 禁用）
+        p.then(() => { if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel(); });
+    });
     $almanac.on('click', '.sp-alm-add', function () { openAlmanacEditor(null); });
     $almanac.on('click', '.sp-alm-gen', triggerGenerateAlmanac);
     $almanac.on('click', '.sp-alm-manage', openCalendarManager);
@@ -3944,7 +4177,6 @@ function injectModal() {
         runAnchorAftermath();
         showToast('已清除手动日期，恢复自动确认');
     });
-    $almanac.on('click', '.sp-alm-today-sync-btn', function () { syncPointToToday(); });
     // 月历：翻月 / 选日（再点已选=取消回全月）/ 看全月 / 加到某天
     $almanac.on('click', '.sp-alm-cal-prev', function () { almNavMonth(-1); });
     $almanac.on('click', '.sp-alm-cal-next', function () { almNavMonth(1); });
@@ -4503,7 +4735,7 @@ function injectModal() {
         saveSettingsDebounced();
         almanacJudgeCounter = 0;
     });
-    // 点·连带跟随「今天」开关（点纯下游，无独立判定）
+    // 点·后台自动跟随「今天」：只写值。点无独立判定车，跟随经 runAnchorAftermath 门控，无计数器可重置。
     $('#sp-schedule-autodetect').on('change', function () {
         getSettings().scheduleAutoDetect = this.checked;
         saveSettingsDebounced();
@@ -5045,10 +5277,10 @@ async function runGenerate() {
         if (scheduleAbortController !== myCtrl) return;   // 生成途中被中止/取代：丢弃本次结果
         // F5：合并锁定，机制对齐 mergePinnedLines(oldRaw, aiRaw)
         let merged = prevRaw ? mergePinnedPoints(prevRaw, raw) : raw;
-        if (getSettings().scheduleAutoDetect === true) {   // C：自动检测开 → 手动生成也把点钉到今天，与历同日
-            const t = almTodayAnchor();
-            merged = forceStartDate(merged, t.month, t.day);
-        }
+        // 点恒跟随今天：手动生成也把 StartDate 钉到「今天」，与轴同日（今天由戳/手动钉/兜底经 almTodayAnchor 单一咽喉给出）。
+        // 不钉的话 AI 常不产 StartDate → 点只显 1/2/3/未来相对天、无日期，正是用户困惑的「没日期」态。
+        const t = almTodayAnchor();
+        merged = forceStartDate(merged, t.month, t.day);
         const html   = renderSchedule(merged, subject, viewSnap);
 
         writeStore(cacheKey, { raw: merged, userName: subject, ts: Date.now() });
@@ -5338,6 +5570,10 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
     // - 用户主动中止（外部 signal）与超时不重试：原样抛出；退避睡眠也可被中止打断。
     const RETRY_MAX = 2;   // 首次 + 最多 2 次重试 = 至多 3 次尝试
     let attempt = 0;
+    // 悬浮球呼吸：点亮放在前面的校验 throw 之后（那些没真发请求、不该点灯），包住整个含 retry 的循环，
+    // finally 熄灯——无论成功/失败/中止/超时都归还计数，绝不卡灯。retry 在 try 内循环，计数不随 retry 抖动。
+    setFabBusy(true);
+    try {
     for (;;) {
         const ctrl = new AbortController();
         let timedOut = false;
@@ -5388,6 +5624,9 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
         // 走到这里 = 本次判定为可重试（retryDelay≥0）。退避期间用户点「中止」→ sleepAbortable 抛 AbortError 逃出。
         attempt++;
         await sleepAbortable(retryDelay, signal);
+    }
+    } finally {
+        setFabBusy(false);   // 归还呼吸计数（含 return / throw / retry 内逃逸的所有出口）
     }
 }
 
@@ -6840,6 +7079,7 @@ async function buildSpaceChatMessages(userMsg) {
         lineList,
         almanacText: getAlmanacInjectText(),
         calDescText: getCalDescInjectText(),
+        personaOverride: (getSettings().spacePersona || '').trim(),   // 间·人格覆盖：填了就换间的语气/人格（顾问身份恒保留）
     });
     return [{ role: 'system', content: sys }, ...stripWidgetsForApi(spaceChatHistory), { role: 'user', content: userMsg }];
 }
@@ -7069,7 +7309,9 @@ async function runGenerateTheater(userInput) {
             return;
         }
         if (getContext().chatId !== chatIdSnap) return;
-        if (theaterMode) setTheaterBody(`<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p><button class="sp-btn sp-theater-back">返回</button></div>`);
+        // 面板可见才落面板正文；关了面板则弹 toast。必须判可见而非只判 theaterMode——closePanel 只
+        // display:none、不重置视角标志，关面板后 theaterMode 仍为真，漏可见性判断会把错误写进看不见的面板、不弹 toast。
+        if (theaterMode && $(`#${MODAL_ID}`).is(':visible')) setTheaterBody(`<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p><button class="sp-btn sp-theater-back">返回</button></div>`);
         else showToast('棱生成失败，请重试', null, true);
     }
 }
@@ -7198,7 +7440,9 @@ async function runGenerateOutline() {
         }
         if (getContext().chatId !== chatIdSnap) return;
         const errHtml = `<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p></div>`;
-        if (outlineMode) setOutlineBody(errHtml);
+        // 面板可见才落面板正文；关了面板则弹 toast。必须判可见而非只判 outlineMode——closePanel 只
+        // display:none、不重置视角标志，关面板后 outlineMode 仍为真，漏可见性判断会把错误写进看不见的面板、不弹 toast。
+        if (outlineMode && $(`#${MODAL_ID}`).is(':visible')) setOutlineBody(errHtml);
         else showToast('面生成失败，请重试', null, true);
     }
 }
@@ -8299,9 +8543,11 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
             return;
         }
         // 报错弹窗：线生成失败要让用户看见——即便后台自动推进（silent）也弹（isError 不受 notifyMode 静默）。
-        // 前台在面板里生成 → 错落面板；后台/自动 → 走 toast，不清掉可能正开着的面板。成功路径仍按 silent 静默。
+        // 面板可见时错落面板；后台/自动、或面板已关 → 走 toast，不清掉可能正开着的面板。成功路径仍按 silent 静默。
+        // ⚠ 必须判面板可见而非只判 linesMode：closePanel 只 display:none、不重置视角标志，关面板后 linesMode
+        //   仍为真，漏可见性判断就会把错误写进看不见的面板、不弹 toast（用户「关面板后生成失败无告警」的根因）。
         if (getContext().chatId === chatIdSnap) {
-            if (linesMode && !silent) setLinesBody(`<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p></div>`);
+            if (linesMode && !silent && $(`#${MODAL_ID}`).is(':visible')) setLinesBody(`<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p></div>`);
             else showToast('线生成失败，请重试', null, true);
         }
     }
@@ -8541,7 +8787,6 @@ function renderLines(raw) {
                 <span class="sp-beat-type" style="color:${stageColor}">${escapeHtml(l.stage)}</span>
                 ${l.type ? `<span class="sp-beat-line">${escapeHtml(l.type)}</span>` : ''}
                 <span class="sp-beat-time">${beadsHtml}</span>
-                ${l.when ? `<span class="sp-beat-time">${escapeHtml(l.when)}</span>` : ''}
                 ${stallTag}
                 <span class="sp-beat-actions">
                     ${injectBtn}
@@ -8549,6 +8794,7 @@ function renderLines(raw) {
                     <button class="sp-line-del-one" data-line-idx="${i}" title="删除这条线"><i class="fa-solid fa-xmark"></i></button>
                 </span>
             </div>
+            ${l.when ? `<div class="sp-line-when">${escapeHtml(l.when)}</div>` : ''}
             <div class="sp-beat-title">${escapeHtml(l.name)}</div>
             ${l.desc ? `<div class="sp-beat-scene">${escapeHtml(cleanText(l.desc))}</div>` : ''}
             ${nextRow}
@@ -9082,13 +9328,14 @@ function almToolbarHtml() {
         </div>`}
     </div>`;
 }
-// 历面板「今天」栏：显示共享锚点的今天（月/日·周几），配一排一键控制——
+// 历面板「今天」栏（仅时间戳关时显示；戳开时整行隐藏——时间戳条已明写当日日期、古风无「周几」概念，只读也多余）。
 //   ‹ / ›  = 把「今天」锚点往前/后挪一天（挪一下即固定成手动锚点）
 //   改      = 内联输入月/日（不弹窗，_almTodayEditing 切换）
 //   自动    = 清锚，恢复自动确认（仅当前已手动钉住时出现）
-// 历、点共用这枚锚点：在这里挪今天只更新历；点若落后今天，今天条就冒出「同步到点」键手动触发（见 syncPointToToday）——不论点·自动检测开没开都给这个手动入口。
+// 点恒跟随今天：这里挪/钉/清今天都走 runAnchorAftermath → 顺带把点重排到今天（无独立「同步到点」键）。
 // 正是给「AI 老提取不准、每天都得去设置里重钉」的卡准备的顺手推进入口。无角色卡 → 只读显示、不给控制。
 function almTodayBarHtml() {
+    if (storyClockEnabled()) return '';   // 戳开（默认）：今天由戳一线钉，整行隐藏；校准改为回那一楼 reroll
     const key = charStableKey(getContext());
     const cal = loadCalDesc();
     const t = almTodayAnchor();
@@ -9100,9 +9347,7 @@ function almTodayBarHtml() {
             <span class="sp-alm-today-hint">无角色卡，无法钉</span>
         </div>`;
     }
-    // 戳开时（默认）历「今天」由戳一线钉，手动钉/±1天/改/恢复自动全隐藏——校准改为回那一楼 reroll。
-    // 只留日期显示 + 「同步到点」。戳关 → 恢复手动钉全套（老行为）。
-    if (_almTodayEditing && !storyClockEnabled()) {
+    if (_almTodayEditing) {
         const maxDim = Math.max(...cal.months.map(x => x.days));
         return `<div class="sp-alm-today sp-alm-today-editing">
             <span class="sp-alm-today-lbl">今天</span>
@@ -9116,27 +9361,17 @@ function almTodayBarHtml() {
             </span>
         </div>`;
     }
-    const showPins = !storyClockEnabled();   // 戳开＝历今天条只读（钉选控件全隐），戳关＝手动钉全套回来
     const pinned = getDateAnchor(key);
-    // 注意：戳优先下 getDateAnchor 每楼非空（戳写的就是这个锚），故 pinTag 必须按开关门控、不能按锚点有无——否则常驻误报「已手动钉住」。
-    const pinTag = (showPins && pinned) ? '<span class="sp-alm-today-pin" title="已手动钉住，压过自动确认"><i class="fa-solid fa-thumbtack"></i></span>' : '';
-    const autoBtn = (showPins && pinned) ? '<button class="sp-icon-btn sp-alm-today-clear" title="恢复自动确认"><i class="fa-solid fa-rotate"></i></button>' : '';
-    // 「同步到点」：改了今天后，点若落后于今天就冒出这枚 CTA；点一下后台把点重生成到今天（点·连带开没开都有此键，点关时全靠它手动追）。
-    // 正在同步 → 换成禁用的「同步中…」。反馈全在这（按钮态 + toast），结果落在点面板。不弹窗、不占前台生成锁。两态都留。
-    const syncEl = _almSyncingPoint
-        ? '<span class="sp-alm-today-sync sp-alm-today-sync-busy"><i class="fa-solid fa-spinner fa-spin"></i>同步中…</span>'
-        : (schedulePointNeedsSync()
-            ? '<button class="sp-alm-today-sync sp-alm-today-sync-btn" title="把「点」重新生成到今天，与轴同一天"><i class="fa-solid fa-rotate-right"></i>同步到点</button>'
-            : '');
-    const actsEl = showPins ? `<span class="sp-alm-today-acts">
+    const pinTag = pinned ? '<span class="sp-alm-today-pin" title="已手动钉住，压过自动确认"><i class="fa-solid fa-thumbtack"></i></span>' : '';
+    const autoBtn = pinned ? '<button class="sp-icon-btn sp-alm-today-clear" title="恢复自动确认"><i class="fa-solid fa-rotate"></i></button>' : '';
+    return `<div class="sp-alm-today">
+        <span class="sp-alm-today-lbl">今天</span>
+        <span class="sp-alm-today-date">${calMonthName(cal, t.month)}${t.day}日·${wd}</span>${pinTag}
+        <span class="sp-alm-today-acts">
             <button class="sp-icon-btn sp-alm-today-prev" title="往前一天（−1 天）"><i class="fa-solid fa-chevron-left"></i></button>
             <button class="sp-icon-btn sp-alm-today-next" title="往后一天（+1 天）"><i class="fa-solid fa-chevron-right"></i></button>
             <button class="sp-icon-btn sp-alm-today-edit" title="改日期"><i class="fa-solid fa-pen"></i></button>${autoBtn}
-        </span>` : '';
-    return `<div class="sp-alm-today">
-        <span class="sp-alm-today-lbl">今天</span>
-        <span class="sp-alm-today-date">${calMonthName(cal, t.month)}${t.day}日·${wd}</span>${pinTag}${syncEl}
-        ${actsEl}
+        </span>
     </div>`;
 }
 // 时间戳·只读显示行。开关关 → 空串（整行不显）。开着但还没扫到戳 → 显示占位（可诊断）。
@@ -9260,7 +9495,7 @@ function ledgerRowHtml(e, cal) {
     const start = fmtLedgerAnchorDate(e.起始锚?.历日期, cal);
     const startTag = start ? `<span class="sp-ledger-meta">起 ${escapeHtml(start)}</span>` : '';
     const cyc = e.周期长度 ? `<span class="sp-ledger-meta">周期${e.周期长度}天</span>` : '';
-    const due = e.到期锚?.历日期 ? `<span class="sp-ledger-meta">期 ${escapeHtml(fmtLedgerAnchorDate(e.到期锚.历日期, cal))}</span>` : '';
+    const due = e.到期锚?.历日期 ? `<span class="sp-ledger-meta">终 ${escapeHtml(fmtLedgerAnchorDate(e.到期锚.历日期, cal))}</span>` : '';
     const lock = e.锁 === '用户锁' ? '<i class="fa-solid fa-lock sp-ledger-lock" title="已锁定，AI 判定不动"></i>' : '';
     const who = (e.牵扯 || []).length ? `<span class="sp-ledger-who">${escapeHtml(e.牵扯.join('、'))}</span>` : '';
     const tags = (e.标签 || []).map(t => `<span class="sp-ledger-tag">${escapeHtml(t)}</span>`).join('');
@@ -9276,6 +9511,7 @@ function renderLedgerSheet() {
     const on = s.ledgerCaptureEnabled === true;
     const iv = getLedgerCaptureInterval();
     const busy = isCapturingLedger;
+    const judging = isJudgingLedger;
     const ctrl = `<div class="sp-ledger-ctrl">
         <label class="sp-ledger-auto">
             <input type="checkbox" class="sp-ledger-auto-toggle" ${on ? 'checked' : ''}>
@@ -9285,6 +9521,9 @@ function renderLedgerSheet() {
         </label>
         <button class="sp-icon-btn sp-ledger-capture-now" title="立即标注一次" aria-label="立即标注一次" ${busy ? 'disabled' : ''}>
             <i class="fa-solid ${busy ? 'fa-spinner fa-spin' : 'fa-hand-sparkles'}"></i>
+        </button>
+        <button class="sp-icon-btn sp-ledger-judge-now" title="立即判定一次（更新现状/了结）" aria-label="立即判定一次" ${judging ? 'disabled' : ''}>
+            <i class="fa-solid ${judging ? 'fa-spinner fa-spin' : 'fa-gavel'}"></i>
         </button>
     </div>`;
     const entries = ledger.listEntries();
@@ -10277,6 +10516,7 @@ function renderMemorySection() {
     // 否则用户选 Anima/柏宝书时函数提前 return，重开面板这框会空白（值其实已存盘）。
     $('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
     $('#sp-storyclock-prompt').val(typeof s.storyClockPrompt === 'string' ? s.storyClockPrompt : '');
+    $('#sp-space-persona').val(typeof s.spacePersona === 'string' ? s.spacePersona : '');   // 间·人格覆盖：同为全局设置，须在按源 early-return 前回填
     if (useBbb) {
         $('#sp-mem-internal').hide();
         $('#sp-mem-anima-status').hide();
@@ -10495,6 +10735,14 @@ function bindMemoryHandlers() {
     }).on('blur', function () {
         getSettings().customPrompt = this.value;
         stSaveSettings();   // 失焦即落盘，覆盖"填完没关面板就直接刷新"的场景
+    });
+    // 间·人格覆盖：与 customPrompt 同套持久化（无常驻注入，下次进「间」发消息时经 buildSpaceChatSystemPrompt 现读现生效）。
+    $('#sp-space-persona').on('input', function () {
+        getSettings().spacePersona = this.value;
+        saveSettingsDebounced();
+    }).on('blur', function () {
+        getSettings().spacePersona = this.value;
+        stSaveSettings();
     });
     // 时间戳·强注词二改：与 customPrompt 同套持久化；改后立即重设常驻注入让新词当楼生效。
     $('#sp-storyclock-prompt').on('input', function () {
@@ -11325,14 +11573,18 @@ function injectToastContainer() {
 }
 
 function showToast(msg, onClick, isError = false) {
+    // 失败 toast 停留更久：失败需要用户处置（查 API/网络/重试），4 秒对不盯屏的用户太短、易错过；
+    // 成功仍 4 秒。（用户反馈：生成失败常没留意到，正是因为告警一闪而过。）
+    const holdMs = isError ? 10000 : 4000;
     // 若装了「酒馆提示框美化 (zmer-toast-theme-loader)」插件，改走原生 toastr，
     // 让它的 MutationObserver 捕获 #toast-container 里的 toast 并统一美化风格。
     // 探测其 init 时无条件挂上的全局清理钩子——与任何 UI 开关无关，最稳；
     // 探测失败（未装/改版/换名）则无害回退到下方自绘 toast。
     const tr = globalThis.toastr;
     if (globalThis.__zmerUniversalToastThemeCleanup && tr) {
-        // 不覆盖 timeOut/位置等视觉参数，交给美化插件统一；只保留点击行为。
-        const opts = onClick ? { onclick: onClick } : {};   // toastr 默认 tapToDismiss，点后自动消失
+        // 视觉参数交给美化插件统一；但失败破例覆盖 timeOut，保证告警停留够久（可靠性 > 风格统一）。
+        const opts = onClick ? { onclick: onClick } : {};
+        if (isError) { opts.timeOut = holdMs; opts.extendedTimeOut = holdMs; }
         (isError ? tr.error : tr.success)(msg, '', opts);
         return;
     }
@@ -11343,7 +11595,8 @@ function showToast(msg, onClick, isError = false) {
     $('#sp-toast-wrap').append($t);
     requestAnimationFrame(() => $t.addClass('sp-toast-show'));
     if (onClick) $t.css('cursor', 'pointer').on('click', () => { onClick(); $t.remove(); });
-    setTimeout(() => { $t.removeClass('sp-toast-show'); setTimeout(() => $t.remove(), 350); }, 4000);
+    else if (isError) $t.css('cursor', 'pointer').on('click', () => { $t.removeClass('sp-toast-show'); setTimeout(() => $t.remove(), 350); });   // 失败 toast 停留久，允许点掉提前消失，免堆叠挡视线
+    setTimeout(() => { $t.removeClass('sp-toast-show'); setTimeout(() => $t.remove(), 350); }, holdMs);
 }
 
 // ─── Rendering ────────────────────────────────────────────────────────────────
