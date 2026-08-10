@@ -120,10 +120,10 @@ const DEFAULT_JAILBREAK = `<sanctuary_override_directive>
 // 想改文字直接改这里即可（纯展示，不入库、不注入 AI）。
 const MODULE_INTROS = {
     schedule: '「点」是当前视角（我 / TA）的近期待办与状态卡片。它读取聊天剧情，自动推断某人此刻在做什么、接下来有什么安排、心情与所在地，用一张张卡片罗列出来。可手动生成或刷新；也能锁定某条事件，让它在下次重算时被保留不动。适合快速掌握「现在谁在哪、要干嘛」。',
-    almanac : '「历」是这个世界的历法与节日日历。既能定义整套历法——一年几个月、每月几天、纪年名（不必套用公历），也能把节日 / 生日 / 纪念日按月日录进去（支持跨多天的假期），它会依你的历法自动算周几、标出即将到来的日子。这些时间设定还会反哺点 / 线 / 大纲的生成，让故事与世界的历法自洽。',
+    almanac : '「轴」是这个世界的历法与节日日历。既能定义整套历法——一年几个月、每月几天、纪年名（不必套用公历），也能把节日 / 生日 / 纪念日按月日录进去（支持跨多天的假期），它会依你的历法自动算周几、标出即将到来的日子。这些时间设定还会反哺点 / 线 / 大纲的生成，让故事与世界的历法自洽。',
     lines   : '「线」追踪剧情里的伏笔与暗线——那些已经埋下、还没收束的悬念。它随对话按你设的节奏往前推进；可以锁定某条重点线不让它被冲掉，也可以选择把活跃的线隐形注入正式对话，悄悄提醒 AI 别忘了这些伏笔。是长线叙事的「备忘」。',
     outline : '「面」是整段故事的大纲 / 节拍表。它把剧情拆成若干节点，标出「现在演到哪、下一步去哪」。你可以手动狙击当前节点（再点一下取消），也可以开启自动判定让游标随剧情前进；开启注入后会隐形引导 AI 顺着大纲走，不至于跑偏。',
-    space   : '「间」是一个「局外」对话空间——跳出角色扮演，直接和 AI 聊剧情、设定、人物关系、世界观知识。这里说的话不进入正式对话、不影响角色。聊出结果后，还能一句话让它落地成点、线、历或历法卡片，直接写进对应模块——相当于你和「导演」私下对完戏，顺手就把决定归了档。',
+    space   : '「间」是一个「局外」对话空间——跳出角色扮演，直接和 AI 聊剧情、设定、人物关系、世界观知识。这里说的话不进入正式对话、不影响角色。聊出结果后，还能一句话让它落地成点、线、轴或历法卡片，直接写进对应模块——相当于你和「导演」私下对完戏，顺手就把决定归了档。',
     theater : '「棱」是小剧场：基于当前故事背景，让 AI 写一段独立的短篇 / 番外。可以设定文风与范文，先生成初稿再美化。产出不会塞进正式对话，纯当创作素材、番外彩蛋或灵感来源。想看「如果……会怎样」时很好用。',
     anchor  : '「坐标」是楼层收藏夹。把喜欢的楼层一键「收藏」下来（连同当时的样式快照），按角色 / 聊天归档，日后可随时回看名场面。可以在每楼角色名旁点星收藏，也能打标签分类管理。是给高光时刻做的书签。',
 };
@@ -1145,7 +1145,7 @@ function _buildAlmanacBlockHtml(itemsArg = null, anchorArg = null) {
         </div>`;
     }).join('');
     // 标题条仿线：收起态就是这条「历 · N个日程」，点整条展开（原生 <details>/<summary>）
-    const summary = `<summary class="sp-inline-summary"><span class="sp-inline-title">历</span><span class="sp-inline-count">${coveredItems.size}个日程</span></summary>`;
+    const summary = `<summary class="sp-inline-summary"><span class="sp-inline-title">轴</span><span class="sp-inline-count">${coveredItems.size}个日程</span></summary>`;
     const strip   = `<div class="sp-alm-strip">${cells}</div>`;
     // 即将到来清单（仪表盘顶行·今头右侧的 ≡ 倒计时行）：全历条目按「还有几天」排，多日节假日
     // 今天正落区间内记「进行中」(d=-1) 置顶。用本函数的 anchor/baseDoy，历史楼快照锚点也对。
@@ -1496,7 +1496,7 @@ function _dashSummaryHtml(snap, hasDate, almOn, schOn, linesOn, flat = false, is
     const chips = [];
     if (almOn) {
         const items = snap ? (snap.almanac || []) : loadAlmanac();
-        chips.push(`<span class="sp-dash-sum-chip">历${Array.isArray(items) ? items.length : 0}</span>`);
+        chips.push(`<span class="sp-dash-sum-chip">轴${Array.isArray(items) ? items.length : 0}</span>`);
     }
     if (schOn) {
         let n = 0;
@@ -2252,7 +2252,7 @@ async function runLedgerCaptureStep(manual = false) {
         if (!added.length) { if (manual) showToast('没有新事件（都已在账上）'); return; }
         // 通知：手动必反馈；自动仅 full 档弹（照三档静音约定）。
         if (manual || getSettings().notifyMode === 'full') {
-            showToast(`暗账标注 ${added.length} 条：${added.map(e => e.事由).join('、')} · 请注意查看`);
+            showToast(`暗历标注 ${added.length} 条：${added.map(e => e.事由).join('、')} · 请注意查看`);
         }
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     } catch (err) {
@@ -2261,7 +2261,7 @@ async function runLedgerCaptureStep(manual = false) {
         if (err?.name === 'AbortError') return;            // 中止 / 切档
         if (err?.spDisabled) return;                       // 插件关闭：静默
         if (getContext().chatId !== chatIdSnap) return;    // 已切 chat
-        showToast('暗账标注失败，请检查 API 或网络', null, true);
+        showToast('暗历标注失败，请检查 API 或网络', null, true);
     }
 }
 
@@ -2798,7 +2798,7 @@ function injectModal() {
                         </button>
                         <button class="sp-side-tab sp-view-btn" data-view="almanac">
                             <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="9" r="1.9" fill="currentColor" stroke="none"/><circle cx="15.5" cy="9" r="1.9" fill="currentColor" stroke="none"/><circle cx="8.5" cy="15" r="1.9" fill="currentColor" stroke="none"/><circle cx="15.5" cy="15" r="1.9" fill="currentColor" stroke="none"/></svg></span>
-                            <span class="sp-tab-label">历</span>
+                            <span class="sp-tab-label">轴</span>
                         </button>
                         <button class="sp-side-tab sp-view-btn" data-view="lines">
                             <span class="sp-tab-glyph" aria-hidden="true"><svg class="sp-tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="4" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="20" r="2.2" fill="currentColor" stroke="none"/></svg></span>
@@ -2996,7 +2996,7 @@ function injectModal() {
                                         <input id="sp-mem-maxtokens" class="sp-input sp-interval-input" type="number" min="0" step="1000" value="60000">
                                         <span>（0=不限）</span>
                                     </div>
-                                    <p class="sp-cfg-hint">超出则压缩再注入：点 / 线 / 面 / 间取近景，历全程等距节选（不漏日期）；不超原样。防长故事撑爆 token。</p>
+                                    <p class="sp-cfg-hint">超出则压缩再注入：点 / 线 / 面 / 间取近景，轴全程等距节选（不漏日期）；不超原样。防长故事撑爆 token。</p>
 
                                     <div id="sp-mem-internal">
                                     <hr class="sp-mem-divider">
@@ -3071,7 +3071,7 @@ function injectModal() {
                                         </label>
                                         <label class="sp-mode-opt sp-mode-opt-sub">
                                             <input type="checkbox" id="sp-almanac-inline-enabled" ${getSettings().almanacInlineEnabled !== false ? 'checked' : ''}>
-                                            <span>历</span>
+                                            <span>轴</span>
                                         </label>
                                     </div>
 
@@ -3094,7 +3094,7 @@ function injectModal() {
                                         </label>
                                         <label class="sp-mode-opt">
                                             <input type="radio" name="sp-notify-mode" value="full" ${(getSettings().notifyMode || 'lite') === 'full' ? 'checked' : ''}>
-                                            <span>全量（另在后台自动改动点 / 线 / 面 / 历时提示）</span>
+                                            <span>全量（另在后台自动改动点 / 线 / 面 / 轴时提示）</span>
                                         </label>
                                     </div>
                                 </div>
@@ -3118,7 +3118,7 @@ function injectModal() {
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">给整个故事一个<b>跟着剧情走的时间源</b>：向主楼 AI 注入一段指令，让它在<b>每楼正文首尾各打一个隐形时间戳</b>（HTML 注释，聊天里看不到），构画读回它来把握「现在是什么时候」，精确到<b>小时</b>。这是时间系统的地基——默认开。<br><span style="opacity:.75">注：会给每楼多加一小段系统提示词（占少量 token）；导出聊天原文时能看到这些 <code>&lt;!-- … --&gt;</code> 注释。不受「允许潜伏注入」总闸控制——关掉那个总闸不会关掉时间戳。它是让主楼 AI 产出时间数据的地基（与线/面「把数据喂给 AI」方向相反），只由插件总开关和上面这个开关控制。</span></p>
                                     <hr class="sp-mem-divider">
-                                    <label class="sp-cfg-group">剧情日期（历 / 点共用「今天」）</label>
+                                    <label class="sp-cfg-group">剧情日期（轴 / 点共用「今天」）</label>
                                     <label class="sp-mode-opt" style="margin-top:6px">
                                         <input type="checkbox" id="sp-almanac-autodetect" ${getSettings().almanacAutoDetect !== false ? 'checked' : ''}>
                                         <span>读不到戳时，用 API 兜底判定日期</span>
@@ -3131,10 +3131,10 @@ function injectModal() {
                                         <input type="checkbox" id="sp-schedule-autodetect" ${getSettings().scheduleAutoDetect === true ? 'checked' : ''}>
                                         <span>点：连带跟随「今天」</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">历的「今天」推进时，点（近七日日程）自动跟着排到同一天；不开则点原地不动，需在历面板今天条点「同步到点」手动追。默认关。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">轴的「今天」推进时，点（近七日日程）自动跟着排到同一天；不开则点原地不动，需在轴面板今天条点「同步到点」手动追。默认关。</p>
                                     <hr class="sp-mem-divider">
                                     <label class="sp-cfg-group" style="margin-top:10px">强制注入提示词（可二改）</label>
-                                    <p class="sp-cfg-hint"><strong>留空＝用内置默认</strong>（默认词随插件更新走）。想自定义就点「载入默认再改」把默认全文拉进编辑框，<strong>改成什么就整段注入什么</strong>；想回到跟随更新的原版，点「恢复默认」清空即可。⚠️ 务必保留 <code>&lt;!-- SDC-start … --&gt;</code> / <code>&lt;!-- SDC-end … --&gt;</code> 这对注释结构——构画靠它读回时间戳；改坏了只是时间戳读空、历 / 点仍照常兜底，不影响其它。</p>
+                                    <p class="sp-cfg-hint"><strong>留空＝用内置默认</strong>（默认词随插件更新走）。想自定义就点「载入默认再改」把默认全文拉进编辑框，<strong>改成什么就整段注入什么</strong>；想回到跟随更新的原版，点「恢复默认」清空即可。⚠️ 务必保留 <code>&lt;!-- SDC-start … --&gt;</code> / <code>&lt;!-- SDC-end … --&gt;</code> 这对注释结构——构画靠它读回时间戳；改坏了只是时间戳读空、轴 / 点仍照常兜底，不影响其它。</p>
                                     <textarea id="sp-storyclock-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="留空＝用内置默认强制词。"></textarea>
                                     <div style="display:flex; gap:8px; margin-top:6px">
                                         <button id="sp-storyclock-prompt-load" class="sp-mem-btn" type="button">载入默认再改</button>
@@ -4351,7 +4351,7 @@ function injectModal() {
                 $('#sp-anchor-wrap').hide();
                 $('#sp-almanac-wrap').css('display', 'flex');
                 $('#sp-sub-toggle').hide();
-                $('#sp-content-title').text('历');
+                $('#sp-content-title').text('轴');
                 renderAlmanacPanel();
                 return;
             }
@@ -4940,7 +4940,7 @@ function spConfirm({ title, body, note, confirmText = '确定', cancelText = '�
 // 三态：保留云端(丢 localStorage 副本) / 保留本机(localStorage 覆盖云端 + 重载) /
 // 点窗外=暂不决定(什么都不动，下次进本 chat 再问)。故意不设「默认破坏动作」——
 // 数据两难时，不选就谁都不动。
-const KIND_LABEL = { schedule: '点', outline: '面', lines: '线', 'creative-chat': '面·讨论', 'space-chat': '间', almanac: '历' };
+const KIND_LABEL = { schedule: '点', outline: '面', lines: '线', 'creative-chat': '面·讨论', 'space-chat': '间', almanac: '轴' };
 
 function fmtStoreSide(sum) {
     const labels = (sum?.kinds || []).map(k => KIND_LABEL[k] || k).join('、') || '（无）';
@@ -6233,7 +6233,7 @@ function renderSpaceWidgetCard(kind, body, wid, editIdx = null) {
                     </div>
                 </div>
                 <div class="sp-space-widget-actions">
-                    <button class="sp-space-widget-apply" data-wid="${wid}" data-idx="${i}"><i class="fa-solid fa-plus"></i> 应用到历</button>
+                    <button class="sp-space-widget-apply" data-wid="${wid}" data-idx="${i}"><i class="fa-solid fa-plus"></i> 应用到轴</button>
                 </div>
             </div>`;
         }).join('');
@@ -6424,20 +6424,20 @@ function applyAlmanacWidget(body, $btn, idx) {
     const items = parseAlmanacWidget(body);
     const it = items[Number(idx)] || (items.length === 1 ? items[0] : null);
     if (!it) { showToast('卡片格式不完整，无法应用', null, true); return; }
-    if (!getAlmanacKey()) { showToast('当前 chat 没有可写入的历缓存', null, true); return; }
+    if (!getAlmanacKey()) { showToast('当前 chat 没有可写入的轴缓存', null, true); return; }
     it.pin = true;
     const existing = loadAlmanac();
     const seen = new Set(existing.map(almDedupKey));
     if (seen.has(almDedupKey(it))) {
-        $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 历里已有`);
-        showToast('这个日期历里已经有了', null, true);
+        $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 轴里已有`);
+        showToast('这个日期轴里已经有了', null, true);
         return;
     }
     saveAlmanacItems([...existing, it]);   // 纯追加，不丢任何现有项
     if (almanacMode) renderAlmanacPanel();
     syncLatestAlmanacBlock();   // 楼内历条即时刷（对齐 applyEraWidget）
-    $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 已加到历`);
-    showToast(`已加到历：${it.name}`);
+    $btn.prop('disabled', true).html(`<i class="fa-solid fa-check"></i> 已加到轴`);
+    showToast(`已加到轴：${it.name}`);
 }
 
 // 应用间落地的历法描述符：写入全局 caldesc（单例，非追加），整个历的月数/月名/月长随之改变。
@@ -7804,12 +7804,12 @@ const STORAGE_KIND_LABELS = {
     'creative-chat': '面讨论',
     'space-chat'   : '间（局外）',
     'dashed'       : '虚线·冷知识',
-    'almanac'      : '历（日历）',
+    'almanac'      : '轴（日历）',
 };
 const STORAGE_OWNKEY_LABELS = {
     'sp-memory' : '记忆',
     'sp-theater': '棱永久层',
-    'sp-ledger' : '暗账',
+    'sp-ledger' : '暗历',
 };
 
 function storageRow(label, bytesText, btnHtml = '', extraClass = '') {
@@ -9070,7 +9070,7 @@ function almToolbarHtml() {
         <div class="sp-alm-sheet-toggle">
             <button class="sp-alm-sheet-btn${_almanacSheet === 'upcoming' ? ' sp-alm-sheet-active' : ''}" data-sheet="upcoming">即将到来</button>
             <button class="sp-alm-sheet-btn${_almanacSheet === 'calendar' ? ' sp-alm-sheet-active' : ''}" data-sheet="calendar">日历</button>
-            <button class="sp-alm-sheet-btn${onLedger ? ' sp-alm-sheet-active' : ''}" data-sheet="ledger">暗账</button>
+            <button class="sp-alm-sheet-btn${onLedger ? ' sp-alm-sheet-active' : ''}" data-sheet="ledger">暗历</button>
         </div>
         ${onLedger ? '' : `<div class="sp-alm-tools">
             <button class="sp-icon-btn sp-alm-add" title="手动添加日期" aria-label="手动添加日期"><i class="fa-solid fa-plus"></i></button>
@@ -9126,7 +9126,7 @@ function almTodayBarHtml() {
     const syncEl = _almSyncingPoint
         ? '<span class="sp-alm-today-sync sp-alm-today-sync-busy"><i class="fa-solid fa-spinner fa-spin"></i>同步中…</span>'
         : (schedulePointNeedsSync()
-            ? '<button class="sp-alm-today-sync sp-alm-today-sync-btn" title="把「点」重新生成到今天，与历同一天"><i class="fa-solid fa-rotate-right"></i>同步到点</button>'
+            ? '<button class="sp-alm-today-sync sp-alm-today-sync-btn" title="把「点」重新生成到今天，与轴同一天"><i class="fa-solid fa-rotate-right"></i>同步到点</button>'
             : '');
     const actsEl = showPins ? `<span class="sp-alm-today-acts">
             <button class="sp-icon-btn sp-alm-today-prev" title="往前一天（−1 天）"><i class="fa-solid fa-chevron-left"></i></button>
@@ -9290,7 +9290,7 @@ function renderLedgerSheet() {
     const entries = ledger.listEntries();
     if (!entries.length) {
         const hint = busy ? '正在标注…'
-            : `暂无暗账条目。聊几楼后${on ? '自动标注' : '（先勾上「自动标注」）'}，或点右上「立即标注」。`;
+            : `暂无暗历条目。聊几楼后${on ? '自动标注' : '（先勾上「自动标注」）'}，或点右上「立即标注」。`;
         return ctrl + `<div class="sp-ledger-empty">${hint}</div>`;
     }
     const cal = loadCalDesc();
@@ -9950,8 +9950,8 @@ async function runGenerateAlmanac() {
         isGeneratingAlmanac = false;
         almanacAbortController = null;
         syncLatestAlmanacBlock();   // 历生成 → 楼内七天条即时刷
-        if (almanacMode) { renderAlmanacPanel(); if (getSettings().notifyMode !== 'off') showToast('历已生成'); }
-        else showToast('历已生成，点击查看', () => { $('.sp-view-btn[data-view="almanac"]').trigger('click'); showPanel(); });
+        if (almanacMode) { renderAlmanacPanel(); if (getSettings().notifyMode !== 'off') showToast('轴已生成'); }
+        else showToast('轴已生成，点击查看', () => { $('.sp-view-btn[data-view="almanac"]').trigger('click'); showPanel(); });
     } catch (err) {
         if (almanacAbortController !== myCtrl) return;
         isGeneratingAlmanac = false;
@@ -9959,7 +9959,7 @@ async function runGenerateAlmanac() {
         if (err.name === 'AbortError') { if (almanacMode) renderAlmanacPanel(); return; }
         if (getContext().chatId === chatIdSnap) {
             if (almanacMode) { renderAlmanacPanel(); showToast('生成失败：' + escapeHtml(err.message || '未知错误'), null, true); }
-            else showToast('历生成失败，请重试', null, true);
+            else showToast('轴生成失败，请重试', null, true);
         }
     }
 }
