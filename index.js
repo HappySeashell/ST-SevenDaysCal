@@ -2289,7 +2289,7 @@ async function runLedgerCaptureStep(manual = false) {
     const charKey = charStableKey(ctx);
     if (!charKey) { if (manual) showToast('当前没有角色卡，无法标注', null, true); return; }
     const chatIdSnap = ctx.chatId;
-    const cfg = loadUtilityCfg();                    // 机械任务：可分流轻量预设，未设则=主 API
+    const cfg = loadCfg();                            // 标注＝从正文捞事件（内容活）→ 走内容生成 API，不分流机械
     if (!cfg.url || !cfg.key) { if (manual) showToast('请先在设置中填写 API', null, true); return; }
     const myCtrl = new AbortController(); ledgerCaptureAbort = myCtrl;
     isCapturingLedger = true;
@@ -2424,7 +2424,7 @@ async function runLedgerJudgeStep(manual = false) {
     if (!charKey) { if (manual) showToast('当前没有角色卡，无法判定', null, true); return; }
     if (!listJudgeableLedger().length) { if (manual) showToast('暂无可判定的活跃事件'); return; }
     const chatIdSnap = ctx.chatId;
-    const cfg = loadUtilityCfg();                    // 机械任务：可分流轻量预设，未设则=主 API
+    const cfg = loadCfg();                            // 判定 API 干的是「据天数写新现状」(内容活)；时间重算是上面零-API 的 JS → 走内容生成 API
     if (!cfg.url || !cfg.key) { if (manual) showToast('请先在设置中填写 API', null, true); return; }
     const myCtrl = new AbortController(); ledgerJudgeAbort = myCtrl;
     isJudgingLedger = true;
