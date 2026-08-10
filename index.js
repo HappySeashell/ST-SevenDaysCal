@@ -9500,8 +9500,13 @@ function ledgerRowHtml(e, cal) {
     const who = (e.牵扯 || []).length ? `<span class="sp-ledger-who">${escapeHtml(e.牵扯.join('、'))}</span>` : '';
     const tags = (e.标签 || []).map(t => `<span class="sp-ledger-tag">${escapeHtml(t)}</span>`).join('');
     const r3 = (who || tags) ? `<div class="sp-ledger-r3">${who}${tags}</div>` : '';
+    // 起/周期/终固定独占一行：这仨凑一起（尤其古风长日期「大梁二十九年十一月廿六未时」）放进事由那行会挤爆，
+    // 无条件挪到第二行、换行标准统一（不再靠 flex-wrap 超出才折）。三者全空则整行不渲染。
+    const dates = `${startTag}${cyc}${due}`;
+    const r15 = dates ? `<div class="sp-ledger-dates">${dates}</div>` : '';
     return `<div class="sp-ledger-row sp-ledger-${ledgerTypeClass(e.类型)}" data-id="${escapeAttr(e.id)}">
-        <div class="sp-ledger-r1">${badge}<span class="sp-ledger-gist">${escapeHtml(e.事由)}</span>${lock}${startTag}${cyc}${due}</div>
+        <div class="sp-ledger-r1">${badge}<span class="sp-ledger-gist">${escapeHtml(e.事由)}</span>${lock}</div>
+        ${r15}
         <div class="sp-ledger-r2">${escapeHtml(e.现状 || '（无现状）')}</div>
         ${r3}
     </div>`;
@@ -9519,12 +9524,8 @@ function renderLedgerSheet() {
             <input type="number" class="sp-input sp-interval-input sp-ledger-interval" min="1" max="30" value="${iv}">
             <span>楼自动标注</span>
         </label>
-        <button class="sp-icon-btn sp-ledger-capture-now" title="立即标注一次" aria-label="立即标注一次" ${busy ? 'disabled' : ''}>
-            <i class="fa-solid ${busy ? 'fa-spinner fa-spin' : 'fa-hand-sparkles'}"></i>
-        </button>
-        <button class="sp-icon-btn sp-ledger-judge-now" title="立即判定一次（更新现状/了结）" aria-label="立即判定一次" ${judging ? 'disabled' : ''}>
-            <i class="fa-solid ${judging ? 'fa-spinner fa-spin' : 'fa-gavel'}"></i>
-        </button>
+        <button class="sp-mini-btn sp-ledger-pill sp-ledger-capture-now" title="立即标注一次" ${busy ? 'disabled' : ''}>${busy ? '标注中…' : '标注'}</button>
+        <button class="sp-mini-btn sp-ledger-pill sp-ledger-judge-now" title="立即判定一次（更新现状 / 了结）" ${judging ? 'disabled' : ''}>${judging ? '更新中…' : '更新'}</button>
     </div>`;
     const entries = ledger.listEntries();
     if (!entries.length) {

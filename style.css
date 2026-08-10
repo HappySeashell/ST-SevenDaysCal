@@ -2826,6 +2826,14 @@ select.sp-input { appearance: none; cursor: pointer; }
     color        : #d98a3d;
     border-color : #d98a3d;
 }
+/* 暗历「标注 / 更新」文字胶囊：原来是俩图标按钮、用户看不懂，改纯文字俩字、更省地方。 */
+.sp-ledger-pill {
+    border-radius: 999px;
+    padding      : 3px 11px;
+    white-space  : nowrap;
+}
+.sp-ledger-pill:disabled { opacity: 0.55; cursor: default; }
+.sp-ledger-pill:disabled:hover { background: transparent; color: var(--sp-on-surface); border-color: var(--sp-divider); }
 
 
 /* ─── Space chat widget cards (间 → 点/线 转换预览) ────────────────────────── */
@@ -4416,6 +4424,14 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     white-space: nowrap;
 }
 .sp-ledger-lock { font-size: 0.68rem; color: var(--sp-subtle); flex-shrink: 0; }
+/* 起/周期/终独占一行（在事由行下方）：胶囊左对齐、超多则自然折行，不再和事由/锁抢横向空间。 */
+.sp-ledger-dates {
+    display    : flex;
+    align-items: center;
+    flex-wrap  : wrap;
+    gap        : 6px;
+    margin-top : 3px;
+}
 .sp-ledger-meta {
     font-size    : 0.63rem;
     font-weight  : 600;
