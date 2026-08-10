@@ -53,6 +53,7 @@ const DEFAULT_SETTINGS = {
     storyClockEnabled: true,
     storyClockPrompt : '',       // 时间戳·强注词二改：空=用内置默认（随插件更新走）；非空=整段替换。用户自负 SDC 标签结构，改坏只是时间戳读空、不影响历/点兜底
     themeMode: 'auto',   // 'auto' | 'day' | 'night' — 'auto' follows ST theme; day/night force
+    uiScale: 1.0,        // 界面字号缩放倍率：--sp-scale 的持久值（设置里 −/＋ 步进，默认 1.0＝100%），脱钩酒馆 Font Scale
     notifyMode: 'lite',  // 通知提醒档：'off'=全静音 / 'lite'(默认)=仅你手动生成·刷新时提示 / 'full'=另在后台自动改动点线面历时提示（真改动才弹）
     linesEnabled : true, // master switch: false disables both auto-advance AND inline block rendering
     linesInterval: 2,
@@ -283,6 +284,8 @@ const _stListeners = { chat: null, char: null };
 let _bbbReadyListener = null;
 
 jQuery(async () => {
+    // 界面字号缩放：把持久化的 uiScale 写进 --sp-scale，令牌即刻按此缩放（早于注入 UI，防首帧闪错号）
+    document.documentElement.style.setProperty('--sp-scale', String(Number(getSettings().uiScale) || 1));
     injectExtButton();
     injectModal();
     injectFab();
@@ -3058,7 +3061,7 @@ function injectModal() {
                         <div class="sp-head-tools">
                             <button class="sp-icon-btn sp-theme-toggle-btn" title="${themeToggleTitle()}"><i class="fa-solid ${themeToggleIcon()}"></i></button>
                             <button class="sp-icon-btn sp-fab-toggle-btn${fabEnabled() ? ' sp-btn-active' : ''}" title="悬浮按钮"><i class="fa-regular fa-circle-dot"></i></button>
-                            <button class="sp-icon-btn sp-close-btn"    title="关闭"><i class="fa-solid fa-xmark" style="font-size:1rem"></i></button>
+                            <button class="sp-icon-btn sp-close-btn"    title="关闭"><i class="fa-solid fa-xmark" style="font-size:var(--sp-fs-100)"></i></button>
                         </div>
                         <div class="sp-module-intro-pop" id="sp-module-intro-pop" style="display:none"></div>
                     </header>
@@ -3298,6 +3301,14 @@ function injectModal() {
                                         <input id="sp-inline-render-depth" class="sp-input sp-interval-input" type="number" min="0" value="${escapeAttr(String(Number(getSettings().inlineRenderDepth) || 0))}">
                                         <span>层（0=跟随酒馆助手）</span>
                                     </label>
+
+                                    <label class="sp-mode-opt" style="margin-top:12px">
+                                        <span>界面字号</span>
+                                        <button type="button" id="sp-uiscale-minus" class="sp-uiscale-btn">−</button>
+                                        <span id="sp-uiscale-val" class="sp-uiscale-val">${Math.round((Number(getSettings().uiScale) || 1) * 100)}%</span>
+                                        <button type="button" id="sp-uiscale-plus" class="sp-uiscale-btn">＋</button>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">整套面板字号按此百分比缩放，<b>独立于酒馆「字体缩放」</b>。每档 5%，范围 80%–130%，默认 100%。</p>
 
                                     <hr class="sp-mem-divider">
                                     <label class="sp-cfg-group">通知提醒</label>
@@ -4735,6 +4746,16 @@ function injectModal() {
         saveSettingsDebounced();
         almanacJudgeCounter = 0;
     });
+    // 界面字号缩放：−/＋ 各 ±5%，夹 0.8–1.3、吸附到 0.05 网格；写 --sp-scale（即时生效）+ 存 uiScale + 回填读数。
+    function applyUiScale(v) {
+        const s = Math.min(1.3, Math.max(0.8, Math.round(v * 20) / 20));
+        getSettings().uiScale = s;
+        document.documentElement.style.setProperty('--sp-scale', String(s));
+        $('#sp-uiscale-val').text(Math.round(s * 100) + '%');
+        saveSettingsDebounced();
+    }
+    $('#sp-uiscale-minus').on('click', () => applyUiScale((Number(getSettings().uiScale) || 1) - 0.05));
+    $('#sp-uiscale-plus').on('click',  () => applyUiScale((Number(getSettings().uiScale) || 1) + 0.05));
     // 点·后台自动跟随「今天」：只写值。点无独立判定车，跟随经 runAnchorAftermath 门控，无计数器可重置。
     $('#sp-schedule-autodetect').on('change', function () {
         getSettings().scheduleAutoDetect = this.checked;
