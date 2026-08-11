@@ -160,6 +160,20 @@
     text-shadow: none !important;
 }
 
+/* 基准字号：把这些"根级注入子树"钉在 px 基线（=旧 1rem@16px，随 --sp-scale 缩放），
+   彻底脱离酒馆 Font Scale。没显式写 font-size 的后代（部分图标字形 / em 方框）本会
+   继承 <html> 根字号→被酒馆放大变形；补基准后一律回落到本插件基线。只挂根容器、不带
+   后代 *——靠继承兜底，各处显式 --sp-fs-* 令牌仍优先（继承是最弱来源，不被这条盖掉）。 */
+.sp-root,
+.sp-lines-inline,
+.sp-almanac-inline,
+.sp-schedule-inline,
+.sp-anchor-btn,
+.sp-tagpicker,
+.sp-toast {
+    font-size: var(--sp-fs-100);
+}
+
 /* ─── Root — desktop: no backdrop, floating ─────────────────────────────────── */
 .sp-root {
     position  : fixed;
@@ -1838,7 +1852,7 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-beat-actions {
     display    : flex;
     align-items: center;
-    gap        : 7px;
+    gap        : 2px;
     flex-shrink: 0;
     margin-left: auto;
 }
@@ -1929,6 +1943,23 @@ select.sp-input { appearance: none; cursor: pointer; }
     overflow     : hidden;
     text-overflow: ellipsis;
     white-space  : nowrap;
+}
+/* 面·线名独占一行：storyline 名（「xxxx线」）原挤在头部行末、被右侧图标组压成省略号。
+   拎出头部、单独成行后完整显示；inline-block 让蓝胶囊只贴合文字、不撑满整行。
+   （区别于共享类 .sp-beat-line——那个仍供线模块头部内的类型字段做截断用。） */
+.sp-beat-linerow {
+    display      : inline-block;
+    max-width    : 100%;
+    box-sizing   : border-box;
+    font-size    : var(--sp-fs-68);
+    font-weight  : 500;
+    padding      : 2px 7px;
+    border-radius: 99px;
+    background   : rgba(79,195,247,0.12);
+    color        : #4fc3f7;
+    margin       : -1px 0 6px;
+    line-height  : 1.35;
+    word-break   : break-word;
 }
 /* 其余头部字段固定尺寸，不参与收缩——保证收缩只发生在类型字段上 */
 .sp-beat-head > .sp-seq-badge,
@@ -3105,6 +3136,11 @@ select.sp-input { appearance: none; cursor: pointer; }
 /* 已锁定：不必 hover 也常驻亮出，一眼看清锁没锁 */
 .sp-event.sp-event-pinned .sp-point-pin-toggle { opacity: 0.85; color: var(--sp-primary); }
 
+/* 点·操作三钮收拢：注入/锁/删挤在一起（对齐 .sp-beat-actions 的 2px），
+   只收钮间距、不动徽章↔标题↔时间的 7px。注入钮带 margin-left:auto 仍把整簇推到最右。 */
+.sp-event-head .sp-point-pin-toggle,
+.sp-event-head .sp-sch-del-one { margin-left: -5px; }
+
 /* 锁定态点卡片：左内边框主色 + 轻微底色，一眼看出"保留项" */
 .sp-event.sp-event-pinned {
     background : rgba(125, 125, 235, 0.06);
@@ -3123,8 +3159,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     align-items: center;
 }
 .sp-inline-summary-actions button {
-    width          : 20px;
-    height         : 20px;
+    width          : 22px;
+    height         : 22px;
     padding        : 0;
     background     : transparent;
     border         : none;
@@ -3134,7 +3170,7 @@ select.sp-input { appearance: none; cursor: pointer; }
     display        : flex;
     align-items    : center;
     justify-content: center;
-    font-size      : var(--sp-fs-66);
+    font-size      : var(--sp-fs-68);
     opacity        : 0.55;
     transition     : opacity 0.12s, background 0.12s, color 0.12s;
 }

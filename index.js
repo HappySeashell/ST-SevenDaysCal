@@ -3346,6 +3346,7 @@ function injectModal() {
                                         <span>启用时间戳</span>
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">给整个故事一个<b>跟着剧情走的时间源</b>：向主楼 AI 注入一段指令，让它在<b>每楼正文首尾各打一个隐形时间戳</b>（HTML 注释，聊天里看不到），构画读回它来把握「现在是什么时候」，精确到<b>小时</b>。这是时间系统的地基——默认开。<br><span style="opacity:.75">注：会给每楼多加一小段系统提示词（占少量 token）；导出聊天原文时能看到这些 <code>&lt;!-- … --&gt;</code> 注释。不受「允许潜伏注入」总闸控制——关掉那个总闸不会关掉时间戳。它是让主楼 AI 产出时间数据的地基（与线/面「把数据喂给 AI」方向相反），只由插件总开关和上面这个开关控制。</span></p>
+                                    <p class="sp-cfg-hint" style="margin-top:4px; opacity:.75">另：所有刷新判定都挂钩时间戳；不开启时，遇到楼尾的额外变量计算（如 MVU）可能<b>重复调用 API</b>。</p>
                                     <hr class="sp-mem-divider">
                                     <label class="sp-cfg-group">剧情日期（轴 / 点共用「今天」）</label>
                                     <label class="sp-mode-opt" style="margin-top:6px">
@@ -5440,6 +5441,14 @@ function emptyContentMessage(finishReason = '') {
     return `模型没有返回正文${tail}。若使用 GLM 等推理模型，多是思维链占满了输出预算；可换非推理模型、或稍后重试。`;
 }
 
+// 占位空回：代理常以 <none>/none 之类占位符顶替空正文（GLM 等推理模型正文为空时多见）。这类回复是真值、
+// 会被 extractCompletion 当正文咽下去 → 下游解析无内容、静默空转（判定看似"卡住却不报错"）。统一在此判成空，
+// 让成功路径也抛错、触发失败 toast。精确匹配去空白全文、不用 includes，免误杀正文里恰好提到 <none> 的正常回复。
+function isPlaceholderContent(s) {
+    const t = String(s || '').trim().toLowerCase();
+    return t === '<none>' || t === 'none';
+}
+
 // 从非流式响应里提取正文：优先 content，空则兜底 reasoning_content，仍空则抛可读错误。
 function extractCompletion(data) {
     const choice = data?.choices?.[0];
@@ -5447,7 +5456,7 @@ function extractCompletion(data) {
     let content = msg?.content ?? choice?.text ?? data?.content ?? '';
     if (typeof content !== 'string') content = String(content ?? '');
     content = content.trim();
-    if (content) return content;
+    if (content && !isPlaceholderContent(content)) return content;
     // 正文为空：兜底取推理内容（至少有东西可渲染，而非白屏/报错）
     const reasoning = msg?.reasoning_content ?? msg?.reasoning ?? '';
     if (typeof reasoning === 'string' && reasoning.trim()) return reasoning.trim();
@@ -5620,7 +5629,7 @@ async function postChatCompletion({ cfg, messages, maxTokens, temperature, signa
                 }
             } else if (stream) {
                 const content = await readSseContent(res);
-                if (!content) throw new Error('接口返回空内容');
+                if (!content || isPlaceholderContent(content)) throw new Error(emptyContentMessage(''));
                 return content;
             } else {
                 const data = await res.json();
@@ -7585,9 +7594,9 @@ function renderOutline(raw, cursor = 0) {
                 ${badge}
                 <span class="sp-beat-time">${escapeHtml(b.time)}</span>
                 ${b.type ? `<span class="sp-beat-type">${escapeHtml(b.type)}</span>` : ''}
-                ${b.line ? `<span class="sp-beat-line">${escapeHtml(b.line)}</span>` : ''}
                 <span class="sp-beat-actions">${setcurBtn}${injectBtn}${copyBtn}</span>
             </div>
+            ${b.line ? `<span class="sp-beat-linerow">${escapeHtml(b.line)}</span>` : ''}
             <div class="sp-beat-title">${escapeHtml(b.title)}</div>
             ${b.outcome ? `<div class="sp-beat-outcome">${escapeHtml(cleanText(b.outcome))}</div>` : ''}
             ${b.scene   ? `<div class="sp-beat-scene">${escapeHtml(cleanText(b.scene))}</div>` : ''}
@@ -7652,10 +7661,18 @@ function _applyStoredSwipeLines(mesId, swipeId) {
 }
 // 楼主文本签名（长度 + 首尾 32 字，避免全量哈希）：给「同 mesId 主文本变了 → 原楼重生成 = 重roll」检出用。
 // 不依赖 ST 的 CMR type / GENERATION_STARTED genType——实测流式重roll下 type=undefined、latch 也不触发，三路检测全漏。
+// 有时间戳则只签 <!-- SDC-start --> 与 <!-- SDC-end --> 之间的正文：正文出完后第三方插件在楼尾追加的变量块落在戳外、
+// 不再扰动签名 → 不再把「追加变量块」误判成重 roll、省一次 API。无戳（时钟关/AI 漏戳）回退整条 mes，零回归。
 function _floorSig(mid) {
     try {
         const t = String(getContext().chat?.[Number(mid)]?.mes ?? '');
-        return t.length + '|' + t.slice(0, 32) + '|' + t.slice(-32);
+        const sm = SDC_START_RE.exec(t);
+        const em = SDC_END_RE.exec(t);
+        let body = t;
+        if (sm && em && em.index > sm.index + sm[0].length) {
+            body = t.slice(sm.index + sm[0].length, em.index);
+        }
+        return body.length + '|' + body.slice(0, 32) + '|' + body.slice(-32);
     } catch { return ''; }
 }
 // 上一 AI 楼的定稿快照线（raw）：从 mesId-1 往前找第一条非 user/非 system 楼，读其快照 .line。
@@ -8977,13 +8994,16 @@ function almDateFromChat() {
         const msg = msgs[i];
         if (!msg || msg.is_user || !msg.mes) continue;
         scanned++;
-        const key = extractDayFromTime(String(msg.mes));
+        const raw = String(msg.mes);
+        const key = extractDayFromTime(raw);
         const md  = monthDayFromDayKey(key);
         if (!md) continue;
         let date = null;
         const ymd = /^(\d+)-(\d+)-(\d+)$/.exec(String(key));  // 纯阿拉伯 → 带真实年，可取现实周几；排除 cn-
         if (ymd) { const d = new Date(+ymd[1], +ymd[2] - 1, +ymd[3]); if (!isNaN(d)) date = d; }
-        return { month: md.month, day: md.day, date };
+        // 同楼里紧贴日期的「状态栏周几」token：供上层压过真实 getDay()（写死的剧情周几 > 公历）。缺则 null，退回 getDay。
+        const wd = weekdayAdjacent(raw);
+        return { month: md.month, day: md.day, date, wd };
     }
     return null;
 }
@@ -9076,6 +9096,18 @@ function parseWeekdayToken(text) {
     if (m) return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].indexOf(m[1].toLowerCase());
     return null;
 }
+// 只认「规整状态栏格式」里紧贴日期的周几：一个日号(数字，可带 日/号)后仅隔空格/轻标点(不隔汉字)紧跟
+// 周几 token → 0..6，否则 null。存在意义：让「状态栏写死的周几」压过真实公历 getDay()（RP 用户要剧情
+// 自洽、不在乎真实历是周几）。之所以要求「紧贴日号」而非 parseWeekdayToken 那样认任意周几：正文对白里
+// 游离的「周五我们去吃饭」前面没有紧贴的日号，天然不匹配，避免把闲聊里的周几误当权威锚。
+const _WEEKDAY_ADJ_RE = /\d{1,2}\s*[日号]?[\s·.,，、｜|/／~〜—\-]{0,3}(?:(?:星期|週|周|礼拜|禮拜)\s*([一二三四五六日天])|\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b)/i;
+function weekdayAdjacent(text) {
+    const m = _WEEKDAY_ADJ_RE.exec(String(text || ''));
+    if (!m) return null;
+    if (m[1] != null) return { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0 }[m[1]];
+    if (m[2]) return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].indexOf(m[2].toLowerCase());
+    return null;
+}
 // 从一段时间文本抠「带真实公历年份」的日期，内置公历下用其现实周几当锚（年-正确），返回 {refDoy, refWd}。
 // 自定义历法（cal≠公历）或抠不到真实年（day-N / cn- / 无日期）→ null，交回上层退回「周几 token」。
 // 存在意义：柏宝书/记忆给了「2025年X月X日」时，应当像点 StartDate/正文那样按真实年**算**周几，
@@ -9085,9 +9117,12 @@ function calRealWeekdayRef(timeStr, cal = loadCalDesc()) {
     if (cal !== DEFAULT_CAL) return null;                                     // 自定义历法：现实公历周几无意义
     const m = /^(\d+)-(\d+)-(\d+)$/.exec(extractDayFromTime(timeStr) || '');  // 纯阿拉伯 YYYY-M-D，排除 day-N / cn-
     if (!m) return null;
+    const refDoy = almDayOfYear(+m[2], +m[3], cal);
+    const tok = weekdayAdjacent(timeStr);            // 时间串里紧贴日期写死的周几：剧情自洽 > 真实公历，压过 getDay()
+    if (tok != null) return { refDoy, refWd: tok };
     const d = new Date(+m[1], +m[2] - 1, +m[3]);
     if (isNaN(d)) return null;
-    return { refDoy: almDayOfYear(+m[2], +m[3], cal), refWd: d.getDay() };
+    return { refDoy, refWd: d.getDay() };
 }
 // 取「参照日→周几」锚，优先级：柏宝书/记忆(真实年→现实周几，抠不到退周几token) > 聊天正文真实年 > 点 StartDate > 默认(1月1日=周一)。返回 {refDoy, refWd}。
 // 点 StartDate 排在正文之后：开点自动检测时它的年份是 forceStartDate 钉的固定 POINT_ANCHOR_YEAR，getDay() 为假年周几，不能压过正文里剧情/用户写的真实年。
@@ -9120,14 +9155,17 @@ function almWeekdayRef(cal = loadCalDesc()) {
             if (wd != null) { const a = almTodayAnchor(); return { refDoy: almDayOfYear(a.month, a.day, cal), refWd: wd }; }
         }
     } catch { /* 往下走 */ }
-    // ③ 聊天正文里的真实年份日期 → 现实周几（仅阿拉伯 YYYY-M-D 带年）。
+    // ③ 聊天正文（含状态栏）→ 周几：写死的周几 token 优先(剧情自洽 > 真实公历)，没写才退回真实年 getDay()。
     //    排在点之前：正文年份是剧情/用户写的真实年；点 StartDate 的年份在开了点自动检测时会被
     //    forceStartDate 钉成固定 POINT_ANCHOR_YEAR，其 getDay() 是假年周几，若压过正文就会把历
     //    也拖到那个假年（bug：2021/8/20 周五被算成 2024 的周二）。
     try {
         const hit = almDateFromChat();
-        if (hit?.date instanceof Date && !isNaN(hit.date)) {
-            return { refDoy: almDayOfYear(hit.month, hit.day, cal), refWd: hit.date.getDay() };
+        if (hit) {
+            let refWd = null;
+            if (hit.wd != null) refWd = hit.wd;                                               // 状态栏写死的周几：直接采信
+            else if (hit.date instanceof Date && !isNaN(hit.date)) refWd = hit.date.getDay();  // 没写周几：真实公历兜底
+            if (refWd != null) return { refDoy: almDayOfYear(hit.month, hit.day, cal), refWd };
         }
     } catch { /* 往下走 */ }
     // ④ 点 StartDate：最后的真实年份来源（正文也没给日期时）。开了点自动检测时这里是
