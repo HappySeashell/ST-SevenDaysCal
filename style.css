@@ -154,6 +154,7 @@
 .sp-lines-inline, .sp-lines-inline *,
 .sp-almanac-inline, .sp-almanac-inline *,
 .sp-schedule-inline, .sp-schedule-inline *,
+.sp-ledger-inline, .sp-ledger-inline *,
 .sp-anchor-btn, .sp-anchor-btn *,
 .sp-tagpicker, .sp-tagpicker *,
 .sp-toast, .sp-toast * {
@@ -168,6 +169,7 @@
 .sp-lines-inline,
 .sp-almanac-inline,
 .sp-schedule-inline,
+.sp-ledger-inline,
 .sp-anchor-btn,
 .sp-tagpicker,
 .sp-toast {
@@ -2440,6 +2442,25 @@ select.sp-input { appearance: none; cursor: pointer; }
     overflow     : hidden;
     text-overflow: ellipsis;
     white-space  : nowrap;
+}
+/* ─── 标注打捞（暗历注入回显·只读）─────────────────────────────────────────
+   楼内线块下方一节，逐条列本回合实际喂给主楼 AI 的暗历（编号无意义故不列，只出[类型]事由）。
+   纯只读、无操作钮；行样式贴合 .sp-inline-line 的节奏，类型药丸复用 .sp-inline-type。 */
+.sp-ledger-echo-row {
+    display      : flex;
+    align-items  : baseline;
+    gap          : 6px;
+    padding      : 6px 10px 6px 12px;
+    border-bottom: 1px solid rgba(128,128,128,0.10);
+}
+.sp-ledger-echo-row:last-child { border-bottom: none; }
+.sp-ledger-echo-row > .sp-inline-type { flex: 0 0 auto; align-self: center; }
+.sp-ledger-echo-gist {
+    flex     : 1 1 auto;
+    min-width: 0;
+    font-size: var(--sp-fs-76);
+    opacity  : 0.9;
+    word-break: break-word;
 }
 .sp-inline-head > .sp-inline-stage,
 .sp-inline-head > .sp-inline-dots,

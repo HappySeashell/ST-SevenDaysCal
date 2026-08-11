@@ -80,6 +80,7 @@ const DEFAULT_SETTINGS = {
     ledgerCaptureEnabled : false, // 暗账标注：默认关
     ledgerCaptureInterval: 5,     // 标注节奏：每几条 AI 回复捞一次新事件
     ledgerJudgeInterval  : 4,     // 判定节奏：每几条 AI 回复重算一次现状（与标注同受 ledgerCaptureEnabled 总闸）
+    ledgerInject         : false, // 暗历潜伏注入主楼 AI：默认关（opt-in，多一路注入+略增 token，照 linesInject/outlineInject 的克制）
     // Memory system
     memoryEnabled  : true,
     memoryL0Group  : 5,    // AI floors per L0 entry
@@ -469,6 +470,7 @@ jQuery(async () => {
         // refreshLinesInjection 幂等（关/无活跃线时内部自清），与 backfill 内那次重复无副作用。
         refreshLinesInjection();
         refreshStoryClockInjection();   // 时间戳：切 chat 重设常驻注入（ST 切 chat 会清 extensionPrompt）
+        refreshLedgerInjection();       // 暗历注入：切 chat → 账随 chat_metadata 变，重设（关/空时内部自清）
     };
     eventSource.on(event_types.CHAT_CHANGED, _stListeners.chat);
     // 首屏补迁移：扩展初始化时当前 chat 往往已 ready（CHAT_CHANGED 早已错过），
@@ -693,6 +695,20 @@ jQuery(async () => {
         runLedgerJudgeStep();   // fire-and-forget，自带守卫
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerJudge);
+    // 暗历·注入重算（场景感知）：每出一楼就按最新正文重挑注入集——纯 JS 打分、零 API，故不设间隔/单调闸，
+    // 让选择跟着场景走（正文提到谁/什么标签，那条就浮上来）。仅 ledgerInject 开时干活（refresh 内部再兜一层门控）。
+    if (_stListeners.ledgerInjectRescore) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerInjectRescore);
+    _stListeners.ledgerInjectRescore = async (messageId) => {
+        if (!pluginEnabled()) return;
+        if (getSettings().ledgerInject !== true) return;
+        const chat = getContext().chat;
+        if (!Array.isArray(chat) || messageId !== chat.length - 1) return;   // 只跟最新楼，别为改旧楼空转
+        // 先重挑注入集（更新 _ledgerInjectEcho），再刷窗——本监听器在 char 之后触发，char 那趟冻的是
+        // 上一楼的旧回显；这里重挑后刷窗，让最新楼的「标注打捞」框读到本楼实际注入的那几条并重冻快照。
+        try { refreshLedgerInjection(); } catch {}
+        try { refreshInlineWindow(true); } catch {}
+    };
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerInjectRescore);
     // 聊天改名（酒馆改 chat 文件名 = chatId 变）→ 把坐标收藏里旧 chatId 的记录迁到新名，
     // 否则收藏夹里那个聊天桶名不跟新、且跳转来源失效。newFileName/oldFileName 均不带后缀，
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
@@ -902,6 +918,7 @@ function applyPluginEnabled(on) {
         try { ctx.setExtensionPrompt?.(LINES_INJECT_KEY, ''); } catch {}
         try { ctx.setExtensionPrompt?.(OUTLINE_INJECT_KEY, ''); } catch {}
         try { ctx.setExtensionPrompt?.(SDC_CLOCK_INJECT_KEY, ''); } catch {}
+        try { ctx.setExtensionPrompt?.(LEDGER_INJECT_KEY, ''); _ledgerInjectEcho = []; } catch {}
     }
 }
 
@@ -1023,7 +1040,9 @@ function captureSnapshot() {
         const a = almTodayAnchor();
         if (a && Number.isFinite(+a.month) && Number.isFinite(+a.day)) anchorMD = { month: +a.month, day: +a.day };
     } catch { /* null */ }
-    return { point, line, almanac, anchor: anchorMD };
+    // 暗历回显：封存本回合实际注入的那几条（关注入时 _ledgerInjectEcho 恒为空 → 该楼不挂「标注打捞」框）。
+    const ledgerEcho = Array.isArray(_ledgerInjectEcho) ? _ledgerInjectEcho.slice() : [];
+    return { point, line, almanac, anchor: anchorMD, ledger: ledgerEcho };
 }
 
 // 把当前最新态封存进第 mesId 层 AI 楼（幂等：内容没变不写、不触发保存）。
@@ -1112,6 +1131,22 @@ function _buildLinesBlockHtml(rawArg = null, readOnly = false) {
     return dashedSub ? `${emptySummary}<div class="sp-inline-body">${dashedSub}</div>` : emptySummary;
 }
 
+// 楼内「标注打捞」框：只读回显本回合注入了哪几条暗历（供用户核对 AI 收到了啥）。
+// snapLedgerArg：历史楼传快照里冻的 [{id,事由,类型}]；最新楼传 null → 读活态 _ledgerInjectEcho
+//   （与线/点/历「null=读活缓存」同款：最新楼恒反映当前注入集，historical 楼看当时冻结的）。
+// 空 → 返回 ''（该楼不挂此段，关注入的楼天然无此块）。无操作钮（纯只读）；外壳 <details> 由 region() 加。
+function _buildLedgerBlockHtml(snapLedgerArg = null, _readOnly = false) {
+    const src = snapLedgerArg != null ? snapLedgerArg : _ledgerInjectEcho;
+    const items = Array.isArray(src) ? src.filter(x => x && x.事由) : [];
+    if (!items.length) return '';
+    const rows = items.map(it => {
+        const type = it.类型 ? `<span class="sp-inline-type">${escapeHtml(it.类型)}</span>` : '';
+        return `<div class="sp-ledger-echo-row">${type}<span class="sp-ledger-echo-gist">${escapeHtml(it.事由)}</span></div>`;
+    }).join('');
+    return `<summary class="sp-inline-summary"><span class="sp-inline-title">标注打捞</span><span class="sp-inline-count">${items.length} 条注入</span></summary><div class="sp-inline-body">${rows}</div>`;
+}
+
+
 // Remove inline lines block from ALL AI messages — enforces "only the latest floor holds it".
 // 虚线冷知识已折进 .sp-lines-inline 的 body（合并成一个楼内块），清线块即连虚线一并清；
 // 仍带上 .sp-dashed-inline 兜底，扫掉合并前旧版本残留在 DOM 里的独立虚线块。
@@ -1143,6 +1178,7 @@ async function appendLinesInlineBlock(messageId, shouldAdvance) {
 async function backfillLinesInlineBlocks() {
     refreshLinesInjection();   // chat 切换/初始化/主开关切换 → 重设潜伏注入（关闭时内部会清空）
     refreshStoryClockInjection();   // 时间戳：首屏/切 chat/主开关一并重设常驻注入
+    refreshLedgerInjection();       // 暗历注入：首屏/切 chat/主开关一并重设（关/空时内部自清）
     refreshInlineWindow(true);
 }
 
@@ -1587,10 +1623,12 @@ function _buildInlineBoxHtml(snap, isLatest) {
     const alm        = _buildAlmanacBlockHtml(snap ? (snap.almanac || []) : null, snap ? snap.anchor : null);
     const schInner   = _buildScheduleBlockHtml(snap ? (snap.point || '') : null, readOnly);
     const linesInner = _buildLinesBlockHtml(snap ? (snap.line || '') : null, readOnly);
+    // 标注打捞：只读回显本回合实际注入主楼 AI 的暗历条目（快照 ledger 字段驱动，空则不出块）。
+    const ledgerInner = _buildLedgerBlockHtml(snap ? (snap.ledger || []) : null, readOnly);
 
     // 日期是否真实存在（与显示开关无关）：决定折叠条头 + 纯日期扁条兜底。
     const hasDateData = _hasDateData(snap);
-    if (!alm && !schInner && !linesInner && !hasDateData) return '';   // 啥也没有 → 不挂框
+    if (!alm && !schInner && !linesInner && !ledgerInner && !hasDateData) return '';   // 啥也没有 → 不挂框
 
     // 展开面板里的大头 masthead：仅当有「历/点」区在场时出现（线独存时不显大头——edge case A）。
     const hasDateRegion = !!alm || !!schInner;
@@ -1614,8 +1652,9 @@ function _buildInlineBoxHtml(snap, isLatest) {
     }
     const schRegion   = region('sp-schedule-inline', 'schedule', schInner);
     const linesRegion = region('sp-lines-inline', 'lines', linesInner);
+    const ledgerRegion = region('sp-ledger-inline', 'ledger', ledgerInner);
 
-    const body = `${top}${almStripRow}${schRegion}${linesRegion}`;
+    const body = `${top}${almStripRow}${schRegion}${linesRegion}${ledgerRegion}`;
     // 面板体为空但有日期数据（三区都关，只剩日期）→ 纯日期扁条：不可折叠，只显今头缩写。
     if (!body) {
         const flatBar = _dashSummaryHtml(snap, true, false, false, false, true, isLatest);
@@ -2347,6 +2386,7 @@ async function runLedgerCaptureStep(manual = false) {
         if (manual || getSettings().notifyMode === 'full') {
             showToast(`暗历标注 ${added.length} 条：${added.map(e => e.事由).join('、')} · 请注意查看`);
         }
+        refreshLedgerInjection();   // 新条目入账 → 重算注入集（关/空时内部自清）
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     } catch (err) {
         if (ledgerCaptureAbort !== myCtrl) return;         // 被更新的标注取代 → 新的接管，别动
@@ -2394,6 +2434,119 @@ function fmtLedgerForJudge(e) {
     const who = e.牵扯?.length ? `·涉及 ${e.牵扯.join('、')}` : '';
     return `[${e.id}] ${e.事由}（${e.类型}）：现状「${e.现状 || '—'}」｜${sinceStr}${dueStr}${cyc}${who}`;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  检索·注入前置选择器（挑「哪几条」喂主楼 AI——全亮注入会撑爆 token 且喧宾夺主）
+// ═══════════════════════════════════════════════════════════════════════════
+// 策略＝场景感知：读最近几楼正文，正文提到某条的牵扯/标签就加权，叠在「临近到期/用户锁/
+// 近期登记」基础权重上，砍到 N 条上限；活跃条少于上限时全带（兜底）。已了结由 listEntries
+// 天然排除。留 RAG 口子：scoreLedgerEntry 整个可换（将来接 arg 检索只改这一处打分器）。
+
+// 最近 N 楼 AI 正文拼成一段（去标记）。供场景加权命中判断；只读、无副作用。
+function _recentLedgerSceneText(nFloors = LEDGER_JUDGE_FLOORS) {
+    const chat = getContext().chat || [];
+    const s = getSettings();
+    const stripOpts = { keepTags: s.keepTags, extraTags: s.extraTags };
+    const parts = [];
+    for (let i = chat.length - 1; i >= 0 && parts.length < nFloors; i--) {
+        const m = chat[i];
+        if (!m || m.is_user || m.is_system) continue;   // 只读 AI 楼，跳隐藏行
+        const raw = String(m.mes || '');
+        if (!raw.trim()) continue;
+        const cleaned = memory.stripTags(raw, stripOpts).trim();
+        if (cleaned) parts.unshift(cleaned);
+    }
+    return parts.join('\n');
+}
+
+// 单条打分（RAG 可换钩子·整体可替换）：基础权重 + 场景加权。分越高越该注入。
+//   基础：用户锁（用户在意）> 临近/过期到期 > 近期登记 > 持续状态活跃底分。
+//   场景：牵扯∪标签 任一命中最近正文 → 显著加分（正文正谈到 → 此刻最相关）。
+function scoreLedgerEntry(entry, sceneText, _today) {
+    let score = 1;                                   // 活跃即有底分
+    if (entry.锁 === '用户锁') score += 6;           // 用户手动在意的，优先带上
+    const du = ledgerDueInfo(entry);
+    if (du) {
+        if (du.过期) score += 8;                     // 已过期没兑现，最该提醒
+        else if (du.天数 <= 1) score += 7;           // 今天/明天到期
+        else if (du.天数 <= 3) score += 4;
+        else if (du.天数 <= 7) score += 2;
+    }
+    const since = ledgerDaysSince(entry);
+    if (since != null) {
+        if (since <= 2) score += 3;                  // 刚登记，热
+        else if (since <= 7) score += 1;
+    }
+    if (entry.类型 === '周期') score += 1;           // 周期事项易被忽略，略抬
+    if (sceneText) {
+        const keys = [...(entry.牵扯 || []), ...(entry.标签 || [])].filter(Boolean);
+        if (keys.some(k => sceneText.includes(k))) score += 6;   // 正文正谈到 → 场景命中
+    }
+    return score;
+}
+
+// 选注入集：打分降序取前 limit；活跃 ≤ limit 时全带。空进空出。
+// RAG 口子：将来换外部检索，替换本函数体的排序来源即可（打分器 scoreLedgerEntry 单点可换）。
+function selectLedgerForInject(entries, sceneText, today, limit = 8) {
+    const active = (entries || []).filter(e => e && e.状态 !== '已了结');
+    if (active.length <= limit) return active;
+    return active
+        .map(e => ({ e, s: scoreLedgerEntry(e, sceneText, today) }))
+        .sort((a, b) => b.s - a.s)
+        .slice(0, limit)
+        .map(x => x.e);
+}
+
+// 组注入文本：分两组（①持续身心状态·带距今天数+现应如何 ②约定/周期·倒计时）。
+// 天数由 CODE 用 ledgerDaysSince/ledgerDueInfo 算好塞进去，主楼 AI 只据此表达、不自算日期。
+function buildLedgerInjectionText(picked, _cal) {
+    const states = picked.filter(e => e.类型 === '持续状态');
+    const timed  = picked.filter(e => e.类型 !== '持续状态');
+    const fmtState = e => {
+        const since = ledgerDaysSince(e);
+        const sinceStr = since == null ? '' : (since === 0 ? '（今天）' : `（距今 ${since} 天）`);
+        const who = e.牵扯?.length ? `${e.牵扯.join('、')}：` : '';
+        return `- ${who}${e.事由}${sinceStr}——当前应为「${e.现状 || '—'}」`;
+    };
+    const fmtTimed = e => {
+        const du = ledgerDueInfo(e);
+        const dueStr = !du ? '（未定期）' : (du.天数 === 0 ? '（今天到期）' : (du.过期 ? `（已过期 ${du.天数} 天未了）` : `（还有 ${du.天数} 天到期）`));
+        const cyc = e.周期长度 ? `·约 ${e.周期长度} 天一轮` : '';
+        const who = e.牵扯?.length ? `${e.牵扯.join('、')}：` : '';
+        return `- ${who}${e.事由}${dueStr}${cyc}——现状「${e.现状 || '—'}」`;
+    };
+    const blocks = [
+        '【暗线·时间账·仅供你把握角色此刻的身心与待办，切勿直接念出编号或「系统」字样】',
+        '以下是随剧情时间推移、此刻仍牵动角色的事。请把它们自然融进叙事与角色状态，别生硬罗列、别让角色开口谈论这套记录本身。',
+    ];
+    if (states.length) blocks.push('◆ 正持续的身心状态（按登记至今的天数，表现出它此刻该有的样子）：\n' + states.map(fmtState).join('\n'));
+    if (timed.length)  blocks.push('◆ 临近的约定与周期（按倒计时，该临近就流露惦记、该发生就顺势发生）：\n' + timed.map(fmtTimed).join('\n'));
+    return blocks.join('\n');
+}
+
+// ─── 暗历·主楼潜伏注入（镜像 refreshLinesInjection）────────────────────────────
+const LEDGER_INJECT_KEY   = 'sp_ledger_remind';
+const LEDGER_INJECT_DEPTH = 2;   // 浅层（别到 depth 0 盖用户 input）；比线/面(4)更贴身，让「此刻状态」离生成更近
+
+// 本回合实际注入的条目回显（[{id,事由,类型}]）——供楼内「标注打捞」框冻进快照核对。
+// refreshLedgerInjection 每次重算时刷新；清空/关闭时置空。
+let _ledgerInjectEcho = [];
+
+// 重设暗历潜伏注入。受注入总闸 injectEnabled + 本模块 ledgerInject opt-in 双门控；关/空清空。幂等，可随处多调。
+function refreshLedgerInjection() {
+    const ctx = getContext();
+    if (typeof ctx.setExtensionPrompt !== 'function') return;
+    const clear = () => { ctx.setExtensionPrompt(LEDGER_INJECT_KEY, ''); _ledgerInjectEcho = []; };
+    if (!injectEnabled()) { clear(); return; }               // 注入总闸（含插件总关）→ 一律不注入
+    if (getSettings().ledgerInject !== true) { clear(); return; }
+    const picked = selectLedgerForInject(ledger.listEntries(), _recentLedgerSceneText(), almTodayAnchor());
+    if (!picked.length) { clear(); return; }
+    const pt = ctx.constants?.promptTypes?.IN_CHAT ?? 1;
+    const pr = ctx.constants?.promptRoles?.SYSTEM  ?? 0;
+    ctx.setExtensionPrompt(LEDGER_INJECT_KEY, buildLedgerInjectionText(picked, loadCalDesc()), pt, LEDGER_INJECT_DEPTH, false, pr);
+    _ledgerInjectEcho = picked.map(e => ({ id: e.id, 事由: e.事由, 类型: e.类型 }));
+}
+
 
 function buildLedgerJudgePrompt() {
     const lines = listJudgeableLedger().map(fmtLedgerForJudge).join('\n');
@@ -2485,6 +2638,7 @@ async function runLedgerJudgeStep(manual = false) {
         if (manual || getSettings().notifyMode === 'full') {
             showToast(`暗历刷新 ${applied.length} 条：${applied.join('、')} · 请注意查看`);
         }
+        refreshLedgerInjection();   // 现状/了结变了 → 重算注入集（关/空时内部自清）
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     } catch (err) {
         if (ledgerJudgeAbort !== myCtrl) return;           // 被更新的判定取代 → 新的接管，别动
@@ -3369,6 +3523,20 @@ function injectModal() {
                                     <p class="sp-cfg-hint" style="margin-top:2px">给整个故事一个<b>跟着剧情走的时间源</b>：向主楼 AI 注入一段指令，让它在<b>每楼正文首尾各打一个隐形时间戳</b>（HTML 注释，聊天里看不到），构画读回它来把握「现在是什么时候」，精确到<b>小时</b>。这是时间系统的地基——默认开。<br><span style="opacity:.75">注：会给每楼多加一小段系统提示词（占少量 token）；导出聊天原文时能看到这些 <code>&lt;!-- … --&gt;</code> 注释。不受「允许潜伏注入」总闸控制——关掉那个总闸不会关掉时间戳。它是让主楼 AI 产出时间数据的地基（与线/面「把数据喂给 AI」方向相反），只由插件总开关和上面这个开关控制。</span></p>
                                     <p class="sp-cfg-hint" style="margin-top:4px; opacity:.75">另：所有刷新判定都挂钩时间戳；不开启时，遇到楼尾的额外变量计算（如 MVU）可能<b>重复调用 API</b>。</p>
                                     <hr class="sp-mem-divider">
+                                    <label class="sp-cfg-group" style="margin-top:10px">强制注入提示词（可二改）</label>
+                                    <p class="sp-cfg-hint"><strong>留空＝用内置默认</strong>（默认词随插件更新走）。想自定义就点「载入默认再改」把默认全文拉进编辑框，<strong>改成什么就整段注入什么</strong>；想回到跟随更新的原版，点「恢复默认」清空即可。⚠️ 务必保留 <code>&lt;!-- SDC-start … --&gt;</code> / <code>&lt;!-- SDC-end … --&gt;</code> 这对注释结构——构画靠它读回时间戳；改坏了只是时间戳读空、轴 / 点仍照常兜底，不影响其它。</p>
+                                    <textarea id="sp-storyclock-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="留空＝用内置默认强制词。"></textarea>
+                                    <div style="display:flex; gap:8px; margin-top:6px">
+                                        <button id="sp-storyclock-prompt-load" class="sp-mem-btn" type="button">载入默认再改</button>
+                                        <button id="sp-storyclock-prompt-reset" class="sp-mem-btn" type="button">恢复默认</button>
+                                    </div>
+                                </div>
+                            </details>
+
+                            <!-- 模块设置：轴（历法时间轴 · 剧情日期判定 + 暗历潜伏注入） -->
+                            <details class="sp-settings-section" id="sp-axis-section">
+                                <summary class="sp-settings-section-title">轴</summary>
+                                <div class="sp-settings-section-body">
                                     <label class="sp-cfg-group">剧情日期（轴 / 点共用「今天」）</label>
                                     <label class="sp-mode-opt" style="margin-top:6px">
                                         <input type="checkbox" id="sp-almanac-autodetect" ${getSettings().almanacAutoDetect !== false ? 'checked' : ''}>
@@ -3383,14 +3551,14 @@ function injectModal() {
                                         <span>点：后台自动跟随「今天」</span>
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">开＝「今天」一推进就<b>自动在后台重排点</b>到今天（<b>每次多一趟 API</b>）。<b>关（默认）＝点原地不动、不后台调 API</b>；你想让点对齐今天时，去点面板<b>手动刷新一次</b>即可（刷新出来的点就从今天起排）。不常用点、想省 API 的就别开。</p>
+
                                     <hr class="sp-mem-divider">
-                                    <label class="sp-cfg-group" style="margin-top:10px">强制注入提示词（可二改）</label>
-                                    <p class="sp-cfg-hint"><strong>留空＝用内置默认</strong>（默认词随插件更新走）。想自定义就点「载入默认再改」把默认全文拉进编辑框，<strong>改成什么就整段注入什么</strong>；想回到跟随更新的原版，点「恢复默认」清空即可。⚠️ 务必保留 <code>&lt;!-- SDC-start … --&gt;</code> / <code>&lt;!-- SDC-end … --&gt;</code> 这对注释结构——构画靠它读回时间戳；改坏了只是时间戳读空、轴 / 点仍照常兜底，不影响其它。</p>
-                                    <textarea id="sp-storyclock-prompt" class="sp-input sp-theater-cfg-textarea" placeholder="留空＝用内置默认强制词。"></textarea>
-                                    <div style="display:flex; gap:8px; margin-top:6px">
-                                        <button id="sp-storyclock-prompt-load" class="sp-mem-btn" type="button">载入默认再改</button>
-                                        <button id="sp-storyclock-prompt-reset" class="sp-mem-btn" type="button">恢复默认</button>
-                                    </div>
+                                    <label class="sp-cfg-group">暗历 · 潜伏注入主楼 AI</label>
+                                    <label class="sp-mode-opt" style="margin-top:6px">
+                                        <input type="checkbox" id="sp-ledger-inject" ${getSettings().ledgerInject === true ? 'checked' : ''}>
+                                        <span>潜伏注入主楼 AI</span>
+                                    </label>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">按剧情挑几条此刻最相关的账（伤情 / 约定 / 周期），隐形注入主楼 AI（聊天不显示），让它<b>记得</b>角色身上的账、随天数表现出该有的样子（不生硬点破）。会改 AI 行为、略增 token，默认关。开后楼内「线」块下方会多一个只读<b>标注打捞</b>框，可核对本回合实际注入了哪几条。</p>
                                 </div>
                             </details>
 
@@ -4729,12 +4897,13 @@ function injectModal() {
         stSaveSettings();
         applyPluginEnabled(this.checked);
     });
-    // 潜伏注入总闸：立刻生效——重设线 / 面两路注入（关时内部各自清空）。
+    // 潜伏注入总闸：立刻生效——重设线 / 面 / 暗历三路注入（关时内部各自清空）。
     $('#sp-inject-enabled').on('change', function () {
         getSettings().injectEnabled = this.checked;
         saveSettingsDebounced();
         refreshLinesInjection();
         refreshOutlineInjection();
+        refreshLedgerInjection();
     });
     // Master switch: apply immediately so the user sees inline blocks appear/
     // disappear the moment they toggle, not on next AI message.
@@ -4838,6 +5007,13 @@ function injectModal() {
     $('#sp-schedule-autodetect').on('change', function () {
         getSettings().scheduleAutoDetect = this.checked;
         saveSettingsDebounced();
+    });
+    // 暗历·潜伏注入开关（原挂暗历 sheet，2.x 挪进设置「轴」区）：on → 按当前账+场景立即注入；off → 清空扩展 prompt + 回显。
+    $('#sp-ledger-inject').on('change', function () {
+        getSettings().ledgerInject = this.checked;
+        saveSettingsDebounced();
+        refreshLedgerInjection();
+        refreshInlineWindow(true);   // 回显框随注入集变——开/关即时刷窗，让「标注打捞」出现/消失
     });
     // 楼内渲染框·主开关：关 → 整框全清、停观察；开 → 重算窗口挂回。三个子开关只在它开时才起效。
     $('#sp-inline-render-enabled').on('change', function () {

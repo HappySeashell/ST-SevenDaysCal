@@ -45,11 +45,12 @@ function messageAt(mesId) {
 
 // ── 写 ────────────────────────────────────────────────────────────────────
 // snap 形状（全部可空，缺哪块渲染端就不渲哪段）：
-//   { v, ts, point, line, almanac, anchor }
+//   { v, ts, point, line, almanac, anchor, ledger }
 //     point   : 点 raw 字符串（<calendar_widget>…）
 //     line    : 线 raw 字符串（含 <line_widget>… 或线缓存 raw）
 //     almanac : 历条目数组（loadAlmanac() 的归一化结果）
 //     anchor  : { month, day } 当时的「今天」锚点
+//     ledger  : 本回合暗历注入回显数组 [{id,事由,类型}]（「标注打捞」框用；新字段·末尾·可选）
 //
 // 幂等/省写：与现存快照 JSON 相等则跳过（不 touch extra、不触发保存），
 //   避免每次 sync 都把 chat 标脏、debounce 永远够不到落盘。
@@ -67,6 +68,7 @@ export function writeSnapshot(mesId, snap) {
         anchor:  (snap?.anchor && Number.isFinite(+snap.anchor.month) && Number.isFinite(+snap.anchor.day))
             ? { month: +snap.anchor.month, day: +snap.anchor.day }
             : null,
+        ledger:  Array.isArray(snap?.ledger) ? snap.ledger : [],
     };
 
     // 幂等：内容没变就不写（ts 不参与比较，否则永远"变了"）。
@@ -93,6 +95,10 @@ function _sameSnapContent(a, b) {
     // 历条目：粗比 JSON（数组，量小；顺序由 loadAlmanac 稳定给出）。
     try {
         if (JSON.stringify(a.almanac || []) !== JSON.stringify(b.almanac || [])) return false;
+    } catch { return false; }
+    // 暗历回显：同粗比 JSON（[{id,事由,类型}]，量小、顺序由 select 稳定给出）。
+    try {
+        if (JSON.stringify(a.ledger || []) !== JSON.stringify(b.ledger || [])) return false;
     } catch { return false; }
     return true;
 }
@@ -126,6 +132,7 @@ export function readSnapshot(mesId) {
         anchor:  (snap.anchor && Number.isFinite(+snap.anchor.month) && Number.isFinite(+snap.anchor.day))
             ? { month: +snap.anchor.month, day: +snap.anchor.day }
             : null,
+        ledger:  Array.isArray(snap.ledger) ? snap.ledger : [],
     };
 }
 
