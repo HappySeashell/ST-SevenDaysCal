@@ -561,6 +561,21 @@ jQuery(async () => {
         _applyStoredSwipeLines(mid, Number(info?.nextSwipeId ?? getContext().chat?.[mid]?.swipe_id ?? 0));
     };
     eventSource.on(event_types.MESSAGE_SWIPED, _stListeners.swiped);
+    // 线·编辑盖章：用户小铅笔改正文 → 只把该楼签名基线刷成编辑后正文，绝不重算/生成。
+    // 堵的漏洞：编辑只发 MESSAGE_EDITED（线不监听→当场不动，合预期），但旧签名还停在编辑前；
+    // 若这楼随后又触发一次 CMR（紧接着 swipe/🔄，或 MVU 类改写插件重渲染），就会拿「编辑后正文」比
+    // 「编辑前签名」→ 误判 contentChanged=重roll、多算一次线。此处提前把签名对齐到编辑后即根除。
+    // 照 swiped 的盖章同款：编辑要不要更新线交给用户手点刷新键，与「编辑不自动重算」一致。
+    // emit 时机：messageEditDone 先 renderEditedMessage 再 emit，故 chat[mid].mes 已是新正文，_floorSig 拿到的即新签名。
+    if (_stListeners.edited) eventSource.removeListener?.(event_types.MESSAGE_EDITED, _stListeners.edited);
+    _stListeners.edited = (mesId) => {
+        if (!pluginEnabled()) return;           // 插件总关
+        if (getSettings().linesEnabled === false) return;
+        const mid = Number(mesId);
+        if (!Number.isFinite(mid)) return;
+        _floorTextSig[mid] = _floorSig(mid);    // 盖章：对齐到编辑后正文，别让随后 CMR 把这次编辑误判成重roll
+    };
+    eventSource.on(event_types.MESSAGE_EDITED, _stListeners.edited);
     // 线·固定：用户发出下一条消息 → 上一 AI 楼层定稿，清掉它的 swipe 临时层（store 已是当前 swipe 的线）。
     if (_stListeners.sent) eventSource.removeListener?.(event_types.MESSAGE_SENT, _stListeners.sent);
     _stListeners.sent = (insertAt) => {
@@ -2206,7 +2221,8 @@ function listActiveLedgerBrief() {
 const LEDGER_EVENT_TYPES = `【什么算暗账事件】会随时间推移改变状态、或到某天该发生的事，典型三类：
 - 持续状态：身体伤情 / 病症、怀孕、显著且会延续的情绪等——会随天数自然演变（如割伤→结痂→愈合）。
 - 约定待办：约好要做的事（哪天见面、答应帮忙），无论有没有定下具体日期都要记。
-- 周期：规律反复发生的事（月经、发薪、值班），带大致周期天数。`;
+- 周期：规律反复发生的事（月经、发薪、值班），带大致周期天数。
+【主语永远是「人」】每条都登记在某个人物身上——记 TA 的状态，或 TA 牵扯的约定/周期。不要给物品单独立条（如「桌上有把枪」「仓库存着粮」不记）；但物品作用到人身上的状态要记（如「A 中了毒、尚未解」「B 戴着诅咒项链、受其束缚」）。`;
 
 const LEDGER_FIELD_SPEC = `- 每个事件一行，用全角竖线「｜」分隔 7 个字段，顺序固定：
   事由｜类型｜牵扯｜标签｜现状｜到期｜周期
@@ -2386,6 +2402,7 @@ ${lines || '（暂无活跃事件）'}
 - 持续状态：随天数自然演变（如割伤：当天流血→两三天结痂→约一周愈合；病症、孕期同理）。到该愈合/该缓解的天数了就更新现状；已彻底痊愈/结束的标「了结」。
 - 约定待办：到期或已过期还没兑现→在现状里点出「今天该…／已过 X 天未…」；正文里已兑现→标「了结」。
 - 周期：到期即本轮该发生（如月经）；正文印证发生了→更新现状并标「滚周期」（系统会把下次到期顺延一个周期）。
+- 退场／翻篇（跨类型通用，务必保守）：某条对应的人物或事件已明显退出当前剧情（角色离场且短期不会回、情节段落翻篇、长期不再牵动剧情）——即便没有明确结果，也标「了结」让它淡出，账只留此刻仍牵动剧情的事。反过来：只是最近几楼碰巧没提、但人物仍在场或事情仍悬着的，一律「维持」，别误清还悬着的事。
 
 【输出格式】只输出状态**有变化**的条目，每条一行，全角竖线「｜」分隔 4 段，顺序固定：
   编号｜新现状｜动作｜新到期
