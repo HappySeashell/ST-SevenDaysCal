@@ -65,7 +65,8 @@ const DEFAULT_SETTINGS = {
     almanacInlineEnabled: true, // 历·日程块：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是未来七天（周X+日期，有节日可点开看当天安排）；只读，独立于线主开关；默认开，关掉即不注入聊天
     linesInlineEnabled  : true, // 线·楼内块：最新 AI 楼底部展示活跃线块（只读展示，独立于线主开关 linesEnabled）；默认开，关掉只隐藏楼内块、不影响线的推进与隐形注入
     scheduleInlineEnabled: true, // 点·楼内日程条：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是每天一格（周X+日期+天气+待办数，可点开看当天事件）；只读，反映当前视角的点，默认开
-    inlineRenderEnabled : true, // 楼内渲染框·主开关：关掉则整框不渲（点/线/历三个子开关一并失效）；默认开。子开关只在主开关开时才起作用
+    ledgerInlineEnabled : true, // 暗历·楼内「标注打捞」框：接线块下方，只读回显本回合注入了哪几条暗历（供用户核对 AI 收到了啥）；与注入功能 ledgerInject 解耦——关掉只隐藏这只读框、不影响注入本身；默认开
+    inlineRenderEnabled : true, // 楼内渲染框·主开关：关掉则整框不渲（点/线/轴/标注打捞四个子开关一并失效）；默认开。子开关只在主开关开时才起作用
     // 楼内仪表盘：布局固定（今头 + 历/点/线三区），无需配序；旧的 inlineOrder 已随仪表盘重构退役。
     // 楼内统一框·渲染深度：只在最新 N 层 AI 楼挂 DOM，更早的楼只留 message.extra 快照、滑回再秒重建。
     // 0 或缺 = 跟随酒馆助手 render_depth（读不到再退 INLINE_RENDER_DEPTH_FALLBACK）。默认 0=跟随。
@@ -1136,6 +1137,7 @@ function _buildLinesBlockHtml(rawArg = null, readOnly = false) {
 //   （与线/点/历「null=读活缓存」同款：最新楼恒反映当前注入集，historical 楼看当时冻结的）。
 // 空 → 返回 ''（该楼不挂此段，关注入的楼天然无此块）。无操作钮（纯只读）；外壳 <details> 由 region() 加。
 function _buildLedgerBlockHtml(snapLedgerArg = null, _readOnly = false) {
+    if (getSettings().ledgerInlineEnabled === false) return '';   // 显隐开关单独关 → 不渲这段（与线/点/历子开关自门控对齐；与注入 ledgerInject 解耦）
     const src = snapLedgerArg != null ? snapLedgerArg : _ledgerInjectEcho;
     const items = Array.isArray(src) ? src.filter(x => x && x.事由) : [];
     if (!items.length) return '';
@@ -3366,6 +3368,20 @@ function injectModal() {
                                     <div id="sp-wi-list" class="sp-wi-list">
                                         <span class="sp-cfg-hint">（打开设置时自动加载）</span>
                                     </div>
+                                    <hr class="sp-mem-divider">
+                                    <details class="sp-wi-exclude-drawer">
+                                        <summary class="sp-wi-exclude-drawer-head">
+                                            <span class="sp-wi-exclude-drawer-title">全局排除</span>
+                                            <span id="sp-wi-exclude-count" class="sp-wi-exclude-drawer-count"></span>
+                                        </summary>
+                                        <div class="sp-wi-exclude-drawer-body">
+                                            <p class="sp-cfg-hint">勾选的世界书构画<strong>一律不读</strong>——优先级高于上面的挑选，即便某角色卡关联或全局启用了它也照样跳过。适合把「只给主楼 AI 读」的大部头设定书排除在点/线/轴/暗历判定之外。<strong>全局生效，对所有角色卡通用。</strong></p>
+                                            <input type="text" id="sp-wi-exclude-search" class="sp-input sp-wi-exclude-search" placeholder="查找世界书名…" autocomplete="off">
+                                            <div id="sp-wi-exclude-list" class="sp-wi-exclude-list">
+                                                <span class="sp-cfg-hint">（展开时自动加载）</span>
+                                            </div>
+                                        </div>
+                                    </details>
                                 </div>
                             </details>
 
@@ -3442,7 +3458,7 @@ function injectModal() {
                                 </div>
                             </details>
 
-                            <!-- 显示管理：两个总开关（收藏此楼入口 / 楼内渲染框），渲染框下三个子开关（点·线·历）。都不注入 AI、不请求 API，纯只读展示。 -->
+                            <!-- 显示管理：两个总开关（收藏此楼入口 / 楼内渲染框），渲染框下四个子开关（点·线·轴·标注打捞）。都不注入 AI、不请求 API，纯只读展示。 -->
                             <details class="sp-settings-section" id="sp-display-section">
                                 <summary class="sp-settings-section-title">显示与通知管理</summary>
                                 <div class="sp-settings-section-body">
@@ -3468,6 +3484,10 @@ function injectModal() {
                                         <label class="sp-mode-opt sp-mode-opt-sub">
                                             <input type="checkbox" id="sp-almanac-inline-enabled" ${getSettings().almanacInlineEnabled !== false ? 'checked' : ''}>
                                             <span>轴</span>
+                                        </label>
+                                        <label class="sp-mode-opt sp-mode-opt-sub">
+                                            <input type="checkbox" id="sp-ledger-inline-enabled" ${getSettings().ledgerInlineEnabled !== false ? 'checked' : ''}>
+                                            <span>标注打捞</span>
                                         </label>
                                     </div>
 
@@ -4932,6 +4952,12 @@ function injectModal() {
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
+    // 标注打捞·显隐开关：只控这只读回显框显/隐，与注入 ledgerInject 解耦（关它注入照旧、只是不回显）。
+    $('#sp-ledger-inline-enabled').on('change', function () {
+        getSettings().ledgerInlineEnabled = this.checked;
+        saveSettingsDebounced();
+        refreshInlineWindow(true);
+    });
     // 统一框渲染深度：0=跟随酒馆助手（读不到再兜底），正数=用它。改了立即重算窗口。
     $('#sp-inline-render-depth').on('change', function () {
         const n = Math.max(0, Math.floor(Number(this.value) || 0));
@@ -6004,6 +6030,28 @@ function setDisabledKeys(charKey, disabledSet) {
     saveSettingsDebounced();
 }
 
+// ─── World-book global exclusion (B方案) ─────────────────────────────────────
+// 全局、按书名（非按条目、也非按角色卡）。被排除的书构画**一律不读**——优先级高于「角色卡
+// 关联 / 全局启用 / persona 链接」任何一条收录途径（这类书通常是给主楼 AI 读的，不该混进
+// 点/线/轴/暗历的判定）。剔除发生在 getCharBookEntries 末尾这一咽喉处，故连设置里「按角色卡
+// 挑选」列表也不再显示被排除的书。存 extension_settings[PLUGIN_ID].wiExcludeBooks = [书名,…]
+// （书名即 ctx.getWorldInfoNames() 的项）。照 wiFilter 的懒创建：无 DEFAULT_SETTINGS 项，getter 兜空。
+function getWiExcludeSet() {
+    const s = getSettings();
+    const arr = Array.isArray(s.wiExcludeBooks) ? s.wiExcludeBooks : [];
+    return new Set(arr.filter(x => typeof x === 'string' && x));
+}
+
+function setWiExcluded(bookName, excluded) {
+    const name = String(bookName || '').trim();
+    if (!name) return;
+    const s = getSettings();
+    const set = new Set(Array.isArray(s.wiExcludeBooks) ? s.wiExcludeBooks : []);
+    if (excluded) set.add(name); else set.delete(name);
+    s.wiExcludeBooks = [...set];
+    saveSettingsDebounced();
+}
+
 // Manual/auto "today" anchor for 历 + 点 (per-character). Stores {month, day}
 // (year is meaningless in RP). Two writers: the user pinning a date by hand, and
 // the auto-confirm judge writing the date it detected from recent floors. Read as
@@ -6255,7 +6303,10 @@ async function getCharBookEntries(ctx) {
         } catch { /* ignore persona book load failure */ }
     }
 
-    return items;
+    // 全局排除（B方案）：被拉黑的书名一律剔除——优先级压过上面任何一条收录途径。放在最末统一
+    // 过滤，故设置里「按角色卡挑选」列表也看不到这些书（buildWorldInfoContext 与 renderWiList 共用本函数）。
+    const excluded = getWiExcludeSet();
+    return excluded.size ? items.filter(e => !excluded.has(e.source)) : items;
 }
 
 // Recent chat context — fills the gap between memory (delayed L0/L1 summaries)
@@ -10937,6 +10988,7 @@ function toggleSettings() {
     const $overlay = $('#sp-settings-overlay');
     if (settingsOpen) {
         renderWiList();     // async, fire-and-forget — fills list when done
+        renderWiExcludeList();   // 全局排除清单（同步；勾选 = 构画一律不读该书）
         renderScaleRow();   // per-character scale radios (sync)
         renderMemorySection();   // memory status + settings sync
         renderTheaterSection();  // 棱 settings + cache usage + template manager
@@ -11481,6 +11533,64 @@ function syncWiSelectAll() {
         $groupCb.checked       = gChecked === gTotal;
         $groupCb.indeterminate = gChecked > 0 && gChecked < gTotal;
     });
+}
+
+// 全局排除清单（B方案）：列出 ST 里所有世界书（ctx.getWorldInfoNames()，与角色卡无关），
+// 勾选 = 拉黑、构画一律不读。存 s.wiExcludeBooks（全局），与 renderWiList 的按角色卡挑选正交。
+// 书多（三四十本）时套进内联抽屉 + 查找框：本函数只铺行，查找靠 _filterWiExcludeList 纯前端隐/显，
+// 不重渲（重渲会打断查找框输入焦点）。
+function renderWiExcludeList() {
+    const $list = $('#sp-wi-exclude-list');
+    if (!$list.length) return;
+    const ctx = getContext();
+    let names = [];
+    try { names = typeof ctx.getWorldInfoNames === 'function' ? ctx.getWorldInfoNames() : []; } catch {}
+    names = [...new Set(names.filter(n => typeof n === 'string' && n))].sort((a, b) => a.localeCompare(b, 'zh'));
+    const excluded = getWiExcludeSet();
+    _syncWiExcludeCount(excluded.size, names.length);
+    if (!names.length) {
+        $list.html('<span class="sp-cfg-hint">当前没有任何世界书。</span>');
+        return;
+    }
+    const rows = names.map(name => {
+        const on = excluded.has(name);
+        return `<label class="sp-wi-exclude-row${on ? ' sp-wi-exclude-on' : ''}" data-name="${escapeAttr(name)}">
+            <input type="checkbox" class="sp-wi-exclude-cb" data-name="${escapeAttr(name)}"${on ? ' checked' : ''}>
+            <span class="sp-wi-exclude-name">${escapeHtml(name)}</span>
+        </label>`;
+    }).join('');
+    $list[0].innerHTML = rows;
+    $list.off('.wix').on('change.wix', '.sp-wi-exclude-cb', function () {
+        const name = String($(this).data('name') || '');
+        setWiExcluded(name, this.checked);
+        $(this).closest('.sp-wi-exclude-row').toggleClass('sp-wi-exclude-on', this.checked);
+        _syncWiExcludeCount(getWiExcludeSet().size, names.length);
+        renderWiList();   // 排除变化即时反映到上面的按角色卡挑选列表（被排除的书从中消失/重现）
+    });
+    // 查找框：一次性绑定（每次 render 都重绑，off 先解旧的），输入即隐/显匹配行。
+    const $search = $('#sp-wi-exclude-search');
+    $search.off('.wix').on('input.wix', function () {
+        _filterWiExcludeList(String(this.value || '').trim().toLowerCase());
+    });
+    if ($search.val()) _filterWiExcludeList(String($search.val()).trim().toLowerCase());
+}
+
+// 查找框纯前端过滤：名字含关键词的行显示、其余隐藏；空词全显。
+function _filterWiExcludeList(kw) {
+    const $rows = $('#sp-wi-exclude-list .sp-wi-exclude-row');
+    if (!kw) { $rows.show(); return; }
+    $rows.each(function () {
+        const name = String(this.getAttribute('data-name') || '').toLowerCase();
+        this.style.display = name.includes(kw) ? '' : 'none';
+    });
+}
+
+// 抽屉标题右侧的计数徽标：「已排除 M / 共 N」，M=0 时只显总数、淡化。
+function _syncWiExcludeCount(excludedN, totalN) {
+    const $c = $('#sp-wi-exclude-count');
+    if (!$c.length) return;
+    $c.text(excludedN > 0 ? `已排除 ${excludedN} / 共 ${totalN}` : `共 ${totalN}`)
+      .toggleClass('sp-wi-exclude-count-active', excludedN > 0);
 }
 
 // Full-text popup for a single world-info entry

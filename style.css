@@ -879,6 +879,80 @@ select.sp-input { appearance: none; cursor: pointer; }
     opacity   : 0.7;
 }
 
+/* 全局排除清单（B方案）：按书名整本拉黑，比按条目挑选（sp-wi-card）更朴素 */
+/* 内联抽屉：书多时折起来，标题右侧带计数徽标 */
+.sp-wi-exclude-drawer {
+    border       : 1px solid var(--sp-divider);
+    border-radius: 8px;
+    overflow     : hidden;
+}
+.sp-wi-exclude-drawer-head {
+    display     : flex;
+    align-items : center;
+    gap         : 8px;
+    padding     : 9px 12px;
+    cursor      : pointer;
+    user-select : none;
+    list-style  : none;
+    font-size   : var(--sp-fs-80);
+    font-weight : 600;
+    color       : var(--sp-on-surface);
+}
+.sp-wi-exclude-drawer-head::-webkit-details-marker { display: none; }
+.sp-wi-exclude-drawer-head::before {
+    content    : '›';
+    font-size  : var(--sp-fs-90);
+    color      : var(--sp-subtle);
+    transition : transform 0.15s;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.sp-wi-exclude-drawer[open] > .sp-wi-exclude-drawer-head::before { transform: rotate(90deg); }
+.sp-wi-exclude-drawer-head:hover { background: var(--sp-hover-bg); }
+.sp-wi-exclude-drawer-title { flex: 1 1 auto; min-width: 0; }
+.sp-wi-exclude-drawer-count {
+    flex-shrink   : 0;
+    font-size     : var(--sp-fs-70);
+    font-weight   : 400;
+    color         : var(--sp-subtle);
+    opacity       : 0.7;
+}
+.sp-wi-exclude-count-active { color: var(--sp-primary); opacity: 1; font-weight: 500; }
+.sp-wi-exclude-drawer-body {
+    display       : flex;
+    flex-direction: column;
+    gap           : 8px;
+    padding       : 4px 12px 12px;
+}
+.sp-wi-exclude-search { margin: 0; }
+.sp-wi-exclude-list {
+    display       : flex;
+    flex-direction: column;
+    gap           : 4px;
+    max-height    : 260px;
+    overflow-y    : auto;
+}
+.sp-wi-exclude-row {
+    display     : flex;
+    align-items : center;
+    gap         : 8px;
+    padding     : 7px 10px;
+    border      : 1px solid var(--sp-divider);
+    border-radius: 8px;
+    cursor      : pointer;
+    user-select : none;
+    font-size   : var(--sp-fs-78);
+    color       : var(--sp-on-surface);
+}
+.sp-wi-exclude-row:hover { border-color: var(--sp-surface-high); background: var(--sp-hover-bg); }
+.sp-wi-exclude-on        { border-color: var(--sp-primary); background: var(--sp-hover-bg); }
+.sp-wi-exclude-on .sp-wi-exclude-name { color: var(--sp-primary); font-weight: 500; }
+.sp-wi-exclude-name {
+    flex      : 1 1 auto;
+    min-width : 0;
+    word-break: break-word;
+}
+
 /* Scope group (角色卡 / 全局) — outer group above sp-wi-group */
 .sp-wi-scope {
     display       : flex;
@@ -1210,10 +1284,11 @@ select.sp-input { appearance: none; cursor: pointer; }
     flex-shrink : 0;
     margin      : 0;
 }
-/* 楼内渲染框的三个子开关（点·线·历）：缩进到主开关下面、横排一行。 */
+/* 楼内渲染框的四个子开关（点·线·轴·标注打捞）：缩进到主开关下面、横排可换行。 */
 .sp-inline-subtoggles {
     display    : flex;
-    gap        : 18px;
+    flex-wrap  : wrap;
+    gap        : 12px 18px;
     margin     : 5px 0 0 26px;
 }
 .sp-mode-opt-sub { gap: 4px; opacity: 0.9; }
@@ -4588,8 +4663,8 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-ledger-archived { opacity: 0.62; }
 .sp-ledger-archived:hover { opacity: 0.85; }
 /* 暗历编辑窗字段：直接沿用轴编辑窗（.sp-alm-field）视觉，见下方多选择器规则已把 .sp-led-field 并入。 */
-.sp-led-field-row { display: flex; gap: 10px; }
-.sp-led-field-sm  { flex: 1; }
+.sp-led-field-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.sp-led-field-sm  { flex: 1 1 80px; min-width: 0; }
 /* 起始锚折叠行：默认只读展示 + 展开链接；advanced 警示语。 */
 .sp-led-adv-row {
     display    : flex;
@@ -4803,8 +4878,8 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-led-field input:focus,
 .sp-led-field select:focus,
 .sp-led-field textarea:focus { border-color: var(--sp-primary); }
-.sp-alm-field-row    { display: flex; gap: 10px; }
-.sp-alm-field-sm     { flex: 1; }
+.sp-alm-field-row    { display: flex; flex-wrap: wrap; gap: 10px; }
+.sp-alm-field-sm     { flex: 1 1 80px; min-width: 0; }
 /* 编辑器只读周几提示（随月/日/天数实时刷新，纯提示不入库） */
 .sp-alm-wd-hint {
     font-size  : var(--sp-fs-72);
