@@ -151,6 +151,11 @@ export function closeEntry(id) {
     return updateEntry(id, { 状态: '已了结' });
 }
 
+// 捞回：已了结 → 活跃（closeEntry 的逆操作；归档区手动复活，判定车重新跟进）。
+export function reopenEntry(id) {
+    return updateEntry(id, { 状态: '活跃' });
+}
+
 // 用户编辑即锁死 AI 判定车（照点/线的锁机制）。
 export function lockEntry(id) {
     return updateEntry(id, { 锁: '用户锁' });

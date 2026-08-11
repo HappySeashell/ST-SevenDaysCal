@@ -255,6 +255,8 @@ let _almanacSheet        = 'upcoming';   // 历子视图：'upcoming'（即将�
 let _almanacCalMonth     = null;   // 月历当前月份（0-11）；null → 首次渲染取真实今天所在月。历不挂年，只按月/日
 let _almanacCalDay       = null;   // 月历里选中的某天（1-31）；null → 详情区显示整月
 let _almanacEditor       = null;   // 内联添加/编辑态：{ id, prefill } 或 null（历的表单走内联窗，不用弹窗）
+let _ledgerEditor        = null;   // 暗历内联编辑态：{ id, advanced } 或 null（照 _almanacEditor 同款，改现有条目；起始锚默认折叠、advanced 才展开）
+let _ledgerArchiveOpen   = false;  // 暗历「已了结」归档折叠区是否展开（默认收起，切档/退窗重置）
 let _almanacManager      = null;   // 历法管理子页：编辑草稿与局部错误状态
 let _almTodayEditing     = false;  // 历面板「今天」栏的内联改日期态：true → 显示月/日输入框 + ✓/✗（同样不弹窗）
 let _almSyncingPoint     = false;  // 历面板「同步到点」进行态：true → 今天条按钮显示「同步中…」并禁用（后台正把点重生成到今天）
@@ -406,6 +408,8 @@ jQuery(async () => {
         _almanacCalMonth = null;
         _almanacCalDay = null;
         _almanacEditor = null;
+        _ledgerEditor = null;
+        _ledgerArchiveOpen = false;
         _almanacManager = null;
         _almTodayEditing = false;
         _almSyncingPoint = false;
@@ -4152,6 +4156,62 @@ function injectModal() {
         renderAlmanacPanel();                    // 立刻渲染成 busy 态（spinner + 禁用）
         p.then(() => { if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel(); });
     });
+    // 暗历行操作：编辑 / 锁·解锁 / 了结（软删·可捞回）。id 从行容器取。
+    $almanac.on('click', '.sp-ledger-edit', function (e) {
+        e.stopPropagation();
+        const id = $(this).closest('.sp-ledger-row').attr('data-id');
+        if (id) openLedgerEditor(id);
+    });
+    $almanac.on('click', '.sp-ledger-lock-toggle', function (e) {
+        e.stopPropagation();
+        const id = $(this).closest('.sp-ledger-row').attr('data-id');
+        const it = id && ledger.getEntry(id);
+        if (!it) return;
+        if (it.锁 === '用户锁') { ledger.unlockEntry(id); showToast('已解锁 · AI 判定可再更新此条'); }
+        else { ledger.lockEntry(id); showToast('已锁定 · AI 判定不再改动此条'); }
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
+    $almanac.on('click', '.sp-ledger-close', async function (e) {
+        e.stopPropagation();
+        const id = $(this).closest('.sp-ledger-row').attr('data-id');
+        const it = id && ledger.getEntry(id);
+        if (!it) return;
+        const ok = await spConfirm({ title: '了结条目', body: `把「${it.事由}」移出活跃账？可在归档里捞回。`, confirmText: '了结', cancelText: '取消' });
+        if (!ok) return;
+        ledger.closeEntry(id);
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
+    // 归档折叠区：标题条切换展开/收起。
+    $almanac.on('click', '.sp-ledger-archive-head', function (e) {
+        e.stopPropagation();
+        _ledgerArchiveOpen = !_ledgerArchiveOpen;
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
+    // 归档条：捞回（回活跃）/ 彻底删（物理删·带确认·不可逆）。
+    $almanac.on('click', '.sp-ledger-reopen', function (e) {
+        e.stopPropagation();
+        const id = $(this).closest('.sp-ledger-row').attr('data-id');
+        if (!id || !ledger.getEntry(id)) return;
+        ledger.reopenEntry(id);
+        showToast('已捞回 · 回到活跃、判定车重新跟进');
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
+    $almanac.on('click', '.sp-ledger-remove', async function (e) {
+        e.stopPropagation();
+        const id = $(this).closest('.sp-ledger-row').attr('data-id');
+        const it = id && ledger.getEntry(id);
+        if (!it) return;
+        const ok = await spConfirm({ title: '彻底删除', body: `「${it.事由}」将被永久删除，无法恢复。确定？`, confirmText: '删除', cancelText: '取消' });
+        if (!ok) return;
+        ledger.removeEntry(id);
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
+    // 暗历编辑窗内：保存 / 取消 / 返回 / 展开改起始锚。
+    $almanac.on('click', '.sp-led-editor-save', saveLedgerEditor);
+    $almanac.on('click', '.sp-led-editor-cancel, .sp-led-editor-back', closeLedgerEditor);
+    $almanac.on('click', '.sp-led-adv-open', function () {
+        if (_ledgerEditor) { _ledgerEditor.advanced = true; renderAlmanacPanel(); }
+    });
     $almanac.on('click', '.sp-alm-add', function () { openAlmanacEditor(null); });
     $almanac.on('click', '.sp-alm-gen', triggerGenerateAlmanac);
     $almanac.on('click', '.sp-alm-manage', openCalendarManager);
@@ -4999,6 +5059,8 @@ function resetPanelToScheduleHome() {
     $('#sp-anchor-wrap').hide();
     $('#sp-almanac-wrap').hide();
     _almanacEditor = null;
+    _ledgerEditor = null;
+    _ledgerArchiveOpen = false;
     _almanacManager = null;
     $('#sp-body').show();
     $('#sp-sub-toggle').show();
@@ -9495,6 +9557,11 @@ function renderAlmanacPanel(options = {}) {
         setTimeout(() => $('#sp-alm-f-name').trigger('focus'), 30);
         return;
     }
+    if (_ledgerEditor) {
+        $wrap.html(renderLedgerEditor());
+        setTimeout(() => $('#sp-led-f-gist').trigger('focus'), 30);
+        return;
+    }
     if (isGeneratingAlmanac) {
         $wrap.html(almToolbarHtml() + `<div class="sp-alm-body">${loadingHtml('正在编排历法', 'sp-abort-almanac')}</div>`);
         return;
@@ -9566,27 +9633,141 @@ function fmtLedgerAnchorDate(md, cal) {
     if (!md || typeof md !== 'object' || !Number.isFinite(+md.month) || !Number.isFinite(+md.day)) return '';
     return `${calMonthName(cal, +md.month)}${+md.day}日`;
 }
-function ledgerRowHtml(e, cal) {
+function ledgerRowHtml(e, cal, archived = false) {
     const badge = `<span class="sp-ledger-type">${escapeHtml(e.类型)}</span>`;
     const start = fmtLedgerAnchorDate(e.起始锚?.历日期, cal);
     const startTag = start ? `<span class="sp-ledger-meta">起 ${escapeHtml(start)}</span>` : '';
     const cyc = e.周期长度 ? `<span class="sp-ledger-meta">周期${e.周期长度}天</span>` : '';
     const due = e.到期锚?.历日期 ? `<span class="sp-ledger-meta">终 ${escapeHtml(fmtLedgerAnchorDate(e.到期锚.历日期, cal))}</span>` : '';
-    const lock = e.锁 === '用户锁' ? '<i class="fa-solid fa-lock sp-ledger-lock" title="已锁定，AI 判定不动"></i>' : '';
+    const locked = e.锁 === '用户锁';
+    // 牵扯人物上提到第一行（跟类型徽章同排、填首行空档）；标签仍留末行。
     const who = (e.牵扯 || []).length ? `<span class="sp-ledger-who">${escapeHtml(e.牵扯.join('、'))}</span>` : '';
     const tags = (e.标签 || []).map(t => `<span class="sp-ledger-tag">${escapeHtml(t)}</span>`).join('');
-    const r3 = (who || tags) ? `<div class="sp-ledger-r3">${who}${tags}</div>` : '';
+    const r3 = tags ? `<div class="sp-ledger-r3">${tags}</div>` : '';
+    // 行操作钮组（照点/面紧凑范式，靠右）。归档条走「捞回 / 彻底删」；活跃条走「编辑 / 锁解锁 / 了结」。
+    const acts = archived
+        ? `<span class="sp-ledger-actions">`
+            + `<button class="sp-ledger-reopen" title="捞回 · 回到活跃、判定车重新跟进"><i class="fa-solid fa-rotate-left"></i></button>`
+            + `<button class="sp-ledger-remove" title="彻底删除 · 不可恢复"><i class="fa-solid fa-trash"></i></button>`
+            + `</span>`
+        : `<span class="sp-ledger-actions">`
+            + `<button class="sp-ledger-edit" title="编辑"><i class="fa-solid fa-pen"></i></button>`
+            + `<button class="sp-ledger-lock-toggle" title="${locked ? '已锁定 · AI 判定不动（点击解锁）' : '锁定 · 锁后 AI 判定不动'}"><i class="fa-solid ${locked ? 'fa-lock' : 'fa-lock-open'}"></i></button>`
+            + `<button class="sp-ledger-close" title="了结 · 从活跃移除（可在归档捞回）"><i class="fa-solid fa-check"></i></button>`
+            + `</span>`;
     // 起/周期/终固定独占一行：这仨凑一起（尤其古风长日期「大梁二十九年十一月廿六未时」）放进事由那行会挤爆，
     // 无条件挪到第二行、换行标准统一（不再靠 flex-wrap 超出才折）。三者全空则整行不渲染。
     const dates = `${startTag}${cyc}${due}`;
     const r15 = dates ? `<div class="sp-ledger-dates">${dates}</div>` : '';
-    return `<div class="sp-ledger-row sp-ledger-${ledgerTypeClass(e.类型)}" data-id="${escapeAttr(e.id)}">
-        <div class="sp-ledger-r1">${badge}<span class="sp-ledger-gist">${escapeHtml(e.事由)}</span>${lock}</div>
+    // 第一行＝元信息头（类型 + 人物 + 操作钮）；事由独占整行放在头下方，长了就自己逐行换、不再挤钮组。
+    const cls = `sp-ledger-row sp-ledger-${ledgerTypeClass(e.类型)}${locked ? ' sp-ledger-locked' : ''}${archived ? ' sp-ledger-archived' : ''}`;
+    return `<div class="${cls}" data-id="${escapeAttr(e.id)}">
+        <div class="sp-ledger-r1">${badge}${who}${acts}</div>
+        <div class="sp-ledger-gist-row"><span class="sp-ledger-gist">${escapeHtml(e.事由)}</span></div>
         ${r15}
         <div class="sp-ledger-r2">${escapeHtml(e.现状 || '（无现状）')}</div>
         ${r3}
     </div>`;
 }
+// ── 暗历·内联编辑窗（照 _almanacEditor 同款：渲进 #sp-almanac-wrap，不用弹窗，跟 CHAT_CHANGED 一起清）──
+// 只改现有条目（新增走 AI 标注，不在此手加）。保存即上「用户锁」——判定车 gate 掉锁条、不再动你手改的。
+// 起始锚是底账·判定车算「距今几天」的基准，默认折叠只读、advanced 才可改，防手滑改崩时间基线。
+function openLedgerEditor(id) {
+    if (!ledger.getEntry(id)) { showToast('条目已不存在', null, true); return; }
+    _ledgerEditor = { id, advanced: false };
+    if (almanacMode) renderAlmanacPanel();
+}
+function closeLedgerEditor() {
+    _ledgerEditor = null;
+    if (almanacMode) renderAlmanacPanel();
+}
+// {month,day} → "3/15" 紧凑输入回填用；缺/坏 → 空串。
+function ledgerMdToInput(md) {
+    if (!md || typeof md !== 'object' || !Number.isFinite(+md.month) || !Number.isFinite(+md.day)) return { m: '', d: '' };
+    return { m: String(+md.month), d: String(+md.day) };
+}
+function renderLedgerEditor() {
+    const e = ledger.getEntry(_ledgerEditor.id);
+    if (!e) { closeLedgerEditor(); return ''; }
+    const adv = !!_ledgerEditor.advanced;
+    const cal = loadCalDesc();
+    const mc = calMonthCount(cal);
+    const typeOpts = ledger.TYPES.map(t => `<option value="${t}"${e.类型 === t ? ' selected' : ''}>${t}</option>`).join('');
+    const start = ledgerMdToInput(e.起始锚?.历日期);
+    const due = ledgerMdToInput(e.到期锚?.历日期);
+    // 起始锚：默认只读展示 + 「改起始锚」链接展开；advanced 时给月/日输入。
+    const startBlock = adv
+        ? `<div class="sp-led-field-row">
+                <label class="sp-led-field sp-led-field-sm"><span>起始·月</span><input type="number" id="sp-led-f-start-m" min="1" max="${mc}" value="${escapeAttr(start.m)}"></label>
+                <label class="sp-led-field sp-led-field-sm"><span>日</span><input type="number" id="sp-led-f-start-d" min="1" max="31" value="${escapeAttr(start.d)}"></label>
+                <span class="sp-led-adv-warn">改起始锚＝改「距今几天」基准，慎改</span>
+           </div>`
+        : `<div class="sp-led-adv-row"><span class="sp-led-adv-label">起始：${escapeHtml(fmtLedgerAnchorDate(e.起始锚?.历日期, cal) || '未记')}</span><button class="sp-led-adv-open" type="button">改起始锚</button></div>`;
+    return `<div class="sp-alm-editor-head">
+        <button class="sp-icon-btn sp-led-editor-back" title="返回"><i class="fa-solid fa-arrow-left"></i></button>
+        <span class="sp-alm-editor-title">编辑暗历条目</span>
+    </div>
+    <div class="sp-alm-body">
+        <div class="sp-alm-editor-body">
+            <label class="sp-led-field"><span>事由</span><input type="text" id="sp-led-f-gist" maxlength="60" placeholder="一句话说清是什么事" value="${escapeAttr(e.事由)}"></label>
+            <label class="sp-led-field"><span>类型</span><select id="sp-led-f-type">${typeOpts}</select></label>
+            <label class="sp-led-field"><span>现状 <small>此刻状态一句话</small></span><textarea id="sp-led-f-now" rows="2" maxlength="200" placeholder="如「伤口已结痂，隐隐作痒」">${escapeHtml(e.现状 || '')}</textarea></label>
+            <label class="sp-led-field"><span>牵扯 <small>涉及的人，顿号分隔</small></span><input type="text" id="sp-led-f-who" maxlength="80" placeholder="如 阿露、店主" value="${escapeAttr((e.牵扯 || []).join('、'))}"></label>
+            <label class="sp-led-field"><span>标签 <small>检索关键词，顿号分隔</small></span><input type="text" id="sp-led-f-tags" maxlength="80" placeholder="如 伤、左手、身体" value="${escapeAttr((e.标签 || []).join('、'))}"></label>
+            <div class="sp-led-field-row">
+                <label class="sp-led-field sp-led-field-sm"><span>到期·月 <small>选填</small></span><input type="number" id="sp-led-f-due-m" min="1" max="${mc}" value="${escapeAttr(due.m)}"></label>
+                <label class="sp-led-field sp-led-field-sm"><span>日</span><input type="number" id="sp-led-f-due-d" min="1" max="31" value="${escapeAttr(due.d)}"></label>
+                <label class="sp-led-field sp-led-field-sm"><span>周期天数 <small>仅周期</small></span><input type="number" id="sp-led-f-cyc" min="1" max="366" value="${e.周期长度 || ''}"></label>
+            </div>
+            ${startBlock}
+            <p class="sp-cfg-hint" style="opacity:.7">保存后此条会<b>上锁</b>，AI 判定车不再自动改动它（可在行上点锁图标解锁）。</p>
+        </div>
+        <div class="sp-alm-editor-actions">
+            <button class="sp-mini-btn sp-led-editor-cancel">取消</button>
+            <button class="sp-gen-btn sp-led-editor-save">保存</button>
+        </div>
+    </div>`;
+}
+// 读窗内月/日两框 → {month,day} 或 null（两者都要有效才成锚；越界按历法夹取）。
+function ledgerReadMd(mSel, dSel, cal) {
+    const m = parseInt($(mSel).val(), 10);
+    const d = parseInt($(dSel).val(), 10);
+    if (!Number.isFinite(m) || !Number.isFinite(d) || m < 1 || d < 1) return null;
+    const mm = Math.min(Math.max(1, m), calMonthCount(cal));
+    const dd = Math.min(Math.max(1, d), calMonthDays(cal, mm));
+    return { month: mm, day: dd };
+}
+function saveLedgerEditor() {
+    if (!_ledgerEditor) return;
+    const e = ledger.getEntry(_ledgerEditor.id);
+    if (!e) { closeLedgerEditor(); return; }
+    const gist = String($('#sp-led-f-gist').val() || '').trim();
+    if (!gist) { showToast('请填写事由', null, true); $('#sp-led-f-gist').trigger('focus'); return; }
+    const cal = loadCalDesc();
+    const type = ledger.TYPES.includes($('#sp-led-f-type').val()) ? $('#sp-led-f-type').val() : e.类型;
+    const patch = {
+        事由: gist,
+        类型: type,
+        现状: String($('#sp-led-f-now').val() || '').trim(),
+        牵扯: splitCnList($('#sp-led-f-who').val()),
+        标签: splitCnList($('#sp-led-f-tags').val()),
+        锁: '用户锁',   // 手改即锁，判定车不再动
+    };
+    // 周期天数：仅周期类有意义；填了就写，清空则置 null。
+    const cyc = parseInt($('#sp-led-f-cyc').val(), 10);
+    patch.周期长度 = (Number.isFinite(cyc) && cyc > 0) ? cyc : null;
+    // 到期锚：两框都有效则成锚，否则清空（约定/周期可留空＝未定档）。
+    const dueMd = ledgerReadMd('#sp-led-f-due-m', '#sp-led-f-due-d', cal);
+    patch.到期锚 = dueMd ? { 历日期: dueMd } : null;
+    // 起始锚：仅 advanced 展开时才读、才改；未展开保持原值不动（防手滑改基准）。
+    if (_ledgerEditor.advanced) {
+        const startMd = ledgerReadMd('#sp-led-f-start-m', '#sp-led-f-start-d', cal);
+        if (startMd) patch.起始锚 = { 楼层: e.起始锚?.楼层 ?? null, 历日期: startMd };
+    }
+    ledger.updateEntry(e.id, patch);
+    closeLedgerEditor();
+}
+
 function renderLedgerSheet() {
     const s = getSettings();
     const on = s.ledgerCaptureEnabled === true;
@@ -9604,13 +9785,24 @@ function renderLedgerSheet() {
         <button class="sp-mini-btn sp-ledger-pill sp-ledger-judge-now" title="立即判定一次（更新现状 / 了结）" ${judging ? 'disabled' : ''}>${judging ? '更新中…' : '更新'}</button>
     </div>`;
     const entries = ledger.listEntries();
+    const cal = loadCalDesc();
+    const closed = ledger.listEntries({ includeClosed: true }).filter(e => e.状态 === '已了结');
+    // 归档折叠区：有已了结条目才渲染。默认收起，点标题条 _ledgerArchiveOpen 切换。
+    const archive = closed.length
+        ? `<div class="sp-ledger-archive">
+                <button class="sp-ledger-archive-head" title="${_ledgerArchiveOpen ? '收起归档' : '展开已了结条目'}">
+                    <i class="fa-solid fa-chevron-${_ledgerArchiveOpen ? 'down' : 'right'}"></i>
+                    <span>已了结 ${closed.length} 条</span>
+                </button>
+                ${_ledgerArchiveOpen ? `<div class="sp-ledger-list sp-ledger-archive-list">${closed.map(e => ledgerRowHtml(e, cal, true)).join('')}</div>` : ''}
+           </div>`
+        : '';
     if (!entries.length) {
         const hint = busy ? '正在标注…'
-            : `暂无暗历条目。聊几楼后${on ? '自动标注' : '（先勾上「自动标注」）'}，或点右上「立即标注」。`;
-        return ctrl + `<div class="sp-ledger-empty">${hint}</div>`;
+            : `暂无活跃暗历条目。聊几楼后${on ? '自动标注' : '（先勾上「自动标注」）'}，或点右上「立即标注」。`;
+        return ctrl + `<div class="sp-ledger-empty">${hint}</div>` + archive;
     }
-    const cal = loadCalDesc();
-    return ctrl + `<div class="sp-ledger-list">${entries.map(e => ledgerRowHtml(e, cal)).join('')}</div>`;
+    return ctrl + `<div class="sp-ledger-list">${entries.map(e => ledgerRowHtml(e, cal)).join('')}</div>` + archive;
 }
 
 // 历不挂年：年在实际游玩里是极模糊的概念（绝大多数卡都不是现实年份），只按月/日排。

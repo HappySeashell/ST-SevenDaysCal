@@ -4485,11 +4485,11 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 }
 .sp-ledger-row:hover { background: var(--sp-hover-bg); }
 
-/* 第一行：类型徽章 + 事由 + 锁 + 起/周期/期 元信息（可换行） */
+/* 第一行＝元信息头：类型徽章 + 牵扯人物（靠左）+ 操作钮组（靠右）。事由不在此行，故短、不折。 */
 .sp-ledger-r1 {
     display    : flex;
     align-items: center;
-    flex-wrap  : wrap;
+    flex-wrap  : nowrap;
     gap        : 6px;
     min-width  : 0;
 }
@@ -4503,16 +4503,91 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     line-height  : 1.5;
     flex-shrink  : 0;
 }
+/* 事由独占整行（在元信息头下方）：长了就自己逐行铺开，不再和徽章/钮组抢横向。 */
+.sp-ledger-gist-row { min-width: 0; }
 .sp-ledger-gist {
     font-size  : var(--sp-fs-82);
     font-weight: 600;
     color      : var(--sp-on-surface);
     min-width  : 0;
-    overflow   : hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
 }
-.sp-ledger-lock { font-size: var(--sp-fs-68); color: var(--sp-subtle); flex-shrink: 0; }
+/* 暗历行操作钮组（编辑/锁/了结）：靠右，紧凑，hover 才显主色，照点/面钮组语言。 */
+.sp-ledger-actions {
+    display     : inline-flex;
+    align-items : center;
+    gap         : 2px;
+    flex-shrink : 0;
+    margin-left : auto;
+}
+.sp-ledger-actions button {
+    width          : 24px;
+    height         : 24px;
+    padding        : 0;
+    background     : transparent;
+    border         : none;
+    border-radius  : 6px;
+    color          : var(--sp-subtle);
+    cursor         : pointer;
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : var(--sp-fs-72);
+    opacity        : 0.6;
+    transition     : opacity 0.12s, color 0.12s, background 0.12s;
+}
+.sp-ledger-actions button:hover { opacity: 1; color: var(--sp-primary); background: color-mix(in oklab, var(--sp-primary) 12%, transparent); }
+.sp-ledger-actions .sp-ledger-close:hover { color: var(--sp-success, #4caf50); background: color-mix(in oklab, var(--sp-success, #4caf50) 14%, transparent); }
+.sp-ledger-actions .sp-ledger-remove:hover { color: var(--sp-danger, #e05555); background: color-mix(in oklab, var(--sp-danger, #e05555) 14%, transparent); }
+/* 已锁条：整行左缘主色竖条 + 锁钮常亮，一眼看出「AI 不动它」。 */
+.sp-ledger-locked { border-left: 2px solid var(--sp-primary); }
+.sp-ledger-locked .sp-ledger-lock-toggle { opacity: 0.9; color: var(--sp-primary); }
+/* ── 归档折叠区（已了结）：标题条一行点开/收起，展开后列出已了结条目（捞回/彻底删）。 ── */
+.sp-ledger-archive { margin-top: 9px; }
+.sp-ledger-archive-head {
+    display    : flex;
+    align-items: center;
+    gap        : 7px;
+    width      : 100%;
+    padding    : 5px 4px;
+    background : transparent;
+    border     : 0;
+    border-top : 1px dashed var(--sp-divider);
+    color      : var(--sp-subtle);
+    font-size  : var(--sp-fs-76);
+    font-weight: 500;
+    cursor     : pointer;
+    transition : color 0.12s;
+}
+.sp-ledger-archive-head:hover { color: var(--sp-on-surface); }
+.sp-ledger-archive-head i { font-size: var(--sp-fs-68); width: 10px; text-align: center; }
+.sp-ledger-archive-list { margin-top: 6px; }
+/* 归档条整体压暗，一眼区分于活跃条。 */
+.sp-ledger-archived { opacity: 0.62; }
+.sp-ledger-archived:hover { opacity: 0.85; }
+/* 暗历编辑窗字段：直接沿用轴编辑窗（.sp-alm-field）视觉，见下方多选择器规则已把 .sp-led-field 并入。 */
+.sp-led-field-row { display: flex; gap: 10px; }
+.sp-led-field-sm  { flex: 1; }
+/* 起始锚折叠行：默认只读展示 + 展开链接；advanced 警示语。 */
+.sp-led-adv-row {
+    display    : flex;
+    align-items: center;
+    gap        : 8px;
+    font-size  : var(--sp-fs-76);
+    color      : var(--sp-subtle);
+}
+.sp-led-adv-label { flex: 1; min-width: 0; }
+.sp-led-adv-open {
+    border    : 0;
+    padding   : 0;
+    background : transparent;
+    color     : var(--sp-primary);
+    cursor    : pointer;
+    font      : inherit;
+    flex-shrink: 0;
+}
+.sp-led-adv-warn { font-size: var(--sp-fs-68); color: var(--sp-warn, #e0a030); align-self: center; }
 /* 起/周期/终独占一行（在事由行下方）：胶囊左对齐、超多则自然折行，不再和事由/锁抢横向空间。 */
 .sp-ledger-dates {
     display    : flex;
@@ -4533,9 +4608,19 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 }
 /* 第二行：现状整行铺开 */
 .sp-ledger-r2 { font-size: var(--sp-fs-76); color: var(--sp-subtle); line-height: 1.5; overflow-wrap: anywhere; }
-/* 第三行：牵扯人物 + 标签 */
+/* 末行：标签胶囊（牵扯人物已上提到第一行） */
 .sp-ledger-r3 { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.sp-ledger-who { font-size: var(--sp-fs-70); color: var(--sp-subtle); font-weight: 500; }
+/* 牵扯人物：内联在第一行、吃掉徽章与钮组间的空档；过长省略不换行（首行保持一行高）。 */
+.sp-ledger-who {
+    font-size  : var(--sp-fs-70);
+    color      : var(--sp-subtle);
+    font-weight: 500;
+    flex       : 1;
+    min-width  : 0;
+    overflow   : hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .sp-ledger-tag {
     font-size    : var(--sp-fs-63);
     font-weight  : 600;
@@ -4668,12 +4753,15 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 }
 .sp-alm-editor-title { font-size: var(--sp-fs-90); font-weight: 600; color: var(--sp-on-surface); }
 .sp-alm-editor-body  { display: flex; flex-direction: column; gap: 11px; }
-.sp-alm-field        { display: flex; flex-direction: column; gap: 5px; }
-.sp-alm-field > span { font-size: var(--sp-fs-76); color: var(--sp-subtle); font-weight: 500; }
-.sp-alm-field > span small { font-weight: 400; opacity: 0.75; }
+.sp-alm-field, .sp-led-field        { display: flex; flex-direction: column; gap: 5px; }
+.sp-alm-field > span, .sp-led-field > span { font-size: var(--sp-fs-76); color: var(--sp-subtle); font-weight: 500; }
+.sp-alm-field > span small, .sp-led-field > span small { font-weight: 400; opacity: 0.75; }
 .sp-alm-field input,
 .sp-alm-field select,
-.sp-alm-field textarea {
+.sp-alm-field textarea,
+.sp-led-field input,
+.sp-led-field select,
+.sp-led-field textarea {
     width        : 100%;
     padding      : 7px 11px;
     background   : var(--sp-sheet-bg);
@@ -4686,11 +4774,14 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     box-sizing   : border-box;
     transition   : border-color 0.15s;
 }
-.sp-alm-field textarea { resize: vertical; line-height: 1.5; }
-.sp-alm-field select   { appearance: none; cursor: pointer; }
+.sp-alm-field textarea, .sp-led-field textarea { resize: vertical; line-height: 1.5; }
+.sp-alm-field select, .sp-led-field select   { appearance: none; cursor: pointer; }
 .sp-alm-field input:focus,
 .sp-alm-field select:focus,
-.sp-alm-field textarea:focus { border-color: var(--sp-primary); }
+.sp-alm-field textarea:focus,
+.sp-led-field input:focus,
+.sp-led-field select:focus,
+.sp-led-field textarea:focus { border-color: var(--sp-primary); }
 .sp-alm-field-row    { display: flex; gap: 10px; }
 .sp-alm-field-sm     { flex: 1; }
 /* 编辑器只读周几提示（随月/日/天数实时刷新，纯提示不入库） */
