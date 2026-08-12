@@ -423,6 +423,8 @@ jQuery(async () => {
         $('.sp-sub-btn').removeClass('sp-view-active');
         $(`.sp-sub-btn[data-view="user"]`).addClass('sp-view-active');
         $('#sp-sub-toggle').show();
+        closeTaDrawer();            // 换 chat：收起可能开着的 TA▾ 抽屉
+        updateTaTriggerLabel();     // charViewName 已清 → 标签回落「TA」
         $('#sp-content-title').text('点');
         cachedSchedule = loadCachedForCurrentChat();
         if ($(`#${MODAL_ID}`).is(':visible') && !isGenerating) {
@@ -560,6 +562,9 @@ jQuery(async () => {
     _stListeners.swiped = async (mesId, info) => {
         if (!pluginEnabled()) return;   // 插件总关
         // 历·七天条：swipe 可能改动剧情内时间锚点 → 按现锚点重建（只读，无生成，独立于线主开关）
+        // 戳优先·先落地：滑到的变体戳可能不同（如 920→919），先把锚点追到活戳再重建，否则轴仍读旧锚。
+        // pendingGeneration 的 swipe 此刻新回复还没好、正文无新戳，跳过（等它的 CMR 再落地）。
+        if (!info?.pendingGeneration) relandStoryClockAnchor();
         syncLatestAlmanacBlock();
         syncLatestScheduleBlock();   // 点·日程条：swipe 后一并重挂（点本身不随 swipe 变，纯补块）
         if (getSettings().linesEnabled === false) return;
@@ -643,22 +648,20 @@ jQuery(async () => {
         runJudgeOutlineStep();   // fire-and-forget，自带守卫
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.outlineJudge);
-    // 历·确认当前剧情日期：末楼 + 单调闸。戳优先——戳开且本楼有可解析戳 → 每楼直读落地、零 API；
-    // 读不到戳（漏打 / 「谷雨」无月日）才由 almanacAutoDetect 决定是否攒够 N 楼调一次 API 兜底 → 写共享 dateAnchor。
+    // 历·确认当前剧情日期。戳优先——戳开且本楼有可解析戳 → **每次**最新楼定型都直读落地、零 API、不进单调闸；
+    // 读不到戳（漏打 / 「谷雨」无月日）才走单调闸 + almanacAutoDetect 决定是否攒够 N 楼调一次 API 兜底 → 写共享 dateAnchor。
     if (_stListeners.almanacJudge) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.almanacJudge);
     _stListeners.almanacJudge = async (messageId) => {
         if (!pluginEnabled()) return;   // 插件总关：停后台历日期判定
         const chat = getContext().chat;
         if (!Array.isArray(chat)) return;
         if (messageId !== chat.length - 1) return;
+        // 戳优先：戳开且本楼有戳 → 每次最新楼定型都直读落地（零 API、幂等），**不进单调闸**——
+        // 重roll/swipe 复用同 messageId，若被闸挡掉，戳从 919 翻 920 时显示跟了、锚点没跟（论坛 bug）。
+        if (relandStoryClockAnchor()) return;
+        // 到这＝戳关，或戳开但本楼读不到戳（漏打 / 「谷雨」无月日）→ API judge 兜底才需单调闸防重放/重算。
         if (messageId <= almanacLastJudgedMsgId) return;
         almanacLastJudgedMsgId = messageId;
-        // 戳优先：戳开着且本楼扫到可解析戳 → 一线落地，不受「API 兜底」开关约束、零 API。
-        if (storyClockEnabled()) {
-            const md = storyClockDate();
-            if (md) { applyDetectedDate(charStableKey(getContext()), md); return; }
-        }
-        // 到这＝戳关，或戳开但本楼读不到戳（漏打 / 「谷雨」无月日）→ 是否调 API judge 兜底由 almanacAutoDetect 决定。
         if (getSettings().almanacAutoDetect === false) return;
         if (++almanacJudgeCounter < getAlmanacJudgeInterval()) return;
         almanacJudgeCounter = 0;
@@ -2308,6 +2311,18 @@ function applyDetectedDate(charKey, md) {
     runAnchorAftermath();   // 共享善后：刷历条/点条/历面板 + 点连带跟随今天
 }
 
+// 戳优先·落地：戳开且最新楼扫到可解析戳 → 直读落地到 dateAnchor（零 API、幂等，未变即 no-op）。
+// 必须在**每次**最新楼定型时跑（新楼 / 重roll / swipe），否则显示读活戳跳了、轴读陈旧锚点没跟——
+// 锚点是 almTodayAnchor ①′ 最高优先，压过活戳，刷新也不会自愈（论坛：戳 920、轴停 919、刷新无效）。
+// 返回 true=已走戳优先路（无论是否真改锚点），false=戳关/无戳（交回 API 兜底判断）。
+function relandStoryClockAnchor() {
+    if (!storyClockEnabled()) return false;
+    const md = storyClockDate();
+    if (!md) return false;
+    applyDetectedDate(charStableKey(getContext()), md);
+    return true;
+}
+
 // 历·API 兜底判定当前剧情日期（仅在读不到戳、almanacAutoDetect 开时调用）：抄 runJudgeOutlineStep 的 abort/chatId/重入守卫。
 // fire-and-forget，失败静默。识别不到日期 → 不动锚点（保留上次值），符合「无信号不动」的兜底。
 async function runJudgeDateStep() {
@@ -3355,9 +3370,12 @@ function injectModal() {
                     <header class="sp-content-head">
                         <h1 class="sp-content-title" id="sp-content-title">点</h1>
                         <button class="sp-module-intro-btn" id="sp-module-intro-btn" title="这个模块是干嘛的？" aria-label="模块介绍"><i class="fa-regular fa-circle-question"></i></button>
-                        <div class="sp-sub-toggle" id="sp-sub-toggle">
-                            <button class="sp-view-btn sp-sub-btn sp-view-active" data-view="user">我</button>
-                            <button class="sp-view-btn sp-sub-btn" data-view="char">TA</button>
+                        <div class="sp-sub-toggle-wrap" id="sp-sub-toggle-wrap">
+                            <div class="sp-sub-toggle" id="sp-sub-toggle">
+                                <button class="sp-view-btn sp-sub-btn sp-view-active" data-view="user">我</button>
+                                <button class="sp-view-btn sp-sub-btn sp-ta-trigger" data-view="char" id="sp-ta-trigger"><span class="sp-ta-label">TA</span><i class="fa-solid fa-caret-down sp-ta-caret"></i></button>
+                            </div>
+                            <div class="sp-ta-drawer" id="sp-ta-drawer" style="display:none"></div>
                         </div>
                         <div class="sp-head-tools">
                             <button class="sp-icon-btn sp-theme-toggle-btn" title="${themeToggleTitle()}"><i class="fa-solid ${themeToggleIcon()}"></i></button>
@@ -4087,6 +4105,26 @@ function injectModal() {
     $('#sp-outline-beats').on('click', '#sp-gen-outline-now', triggerGenerateOutline);
     $('#sp-lines-list').on('click', '#sp-gen-lines-now', triggerGenerateLines);
     $('#sp-body').on('click', '#sp-gen-schedule-now, .sp-refresh-schedule', onRegenClick);
+    // 点视图头部 📌：固定/取消固定当前 char（只在 char 视角出现）。名字取按钮 data-name，兜底 charViewName。
+    $('#sp-body').on('click', '.sp-point-pin-char', function () {
+        onCharPinToggle($(this).attr('data-name'));
+    });
+    // TA▾ 抽屉委托：点固定槽切人 / ✕ 移除槽 / 「添加·查看角色」开填写框。
+    $('#sp-ta-drawer').on('click', '.sp-ta-slot-del', function (e) {
+        e.stopPropagation();   // 别冒泡到槽本身的「切人」
+        const name = $(this).attr('data-name');
+        store.removePinnedChar(name);
+        if (store.readPinnedChars().length) openTaDrawer();   // 还有槽 → 重渲；空了 → 收起
+        else closeTaDrawer();
+        refreshCharPinIcon();   // 若删的正是当前 char，头部 📌 同步回未固定态
+    });
+    $('#sp-ta-drawer').on('click', '.sp-ta-slot', function () {
+        activateCharView($(this).attr('data-name'));
+    });
+    $('#sp-ta-drawer').on('click', '.sp-ta-add', function () {
+        closeTaDrawer();
+        switchToCharView();
+    });
     $('#sp-outline-beats').on('click', '.sp-refresh-outline', triggerGenerateOutline);
     // 手选当前剧情点：写游标 → 重渲染（高亮跟着走）→ 刷注入（开着自动注入才真注入，否则只清）。
     // 再点已选中的节点 = 取消狙击（游标→0：清高亮、清注入、停自动推进判定，直到再次手选）。
@@ -4868,6 +4906,17 @@ function injectModal() {
         const isSideTab = $btn.hasClass('sp-side-tab');
         const isSubBtn  = $btn.hasClass('sp-sub-btn');
 
+        // 切模块（历/线/面/棱/锚/轴）会藏掉 sub-toggle → 顺手收起可能开着的 TA▾ 抽屉，免得它残留浮在别处。
+        if (isSideTab) closeTaDrawer();
+
+        // TA▾ 触发器：不直接切视角，而是开/关「固定槽抽屉」（换人入口，已与刷新解耦）。
+        // 生成途中锁子切换（沿用 isSubBtn 分支原守卫）。active 态 / 标签由抽屉内真正切到某 char 时再落。
+        if ($btn.hasClass('sp-ta-trigger')) {
+            if (isGenerating) return;
+            toggleTaDrawer();
+            return;
+        }
+
         // Update active state within the button's group
         if (isSideTab) {
             $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
@@ -5040,6 +5089,7 @@ function injectModal() {
             $('#sp-content-title').text('点');
             $('.sp-sub-btn').removeClass('sp-view-active');
             $(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
+            updateTaTriggerLabel();   // 回点视图：TA▾ 标签跟随当前视角（char 显名 / user 回落 TA）
             // 生成在途/切走再切回：从状态重建正文（镜像 线/面/棱），别露上次残留或僵尸转圈
             if (isGenerating) setBody(loadingHtml('正在规划', 'sp-abort-generate'));
             else if (cachedSchedule) setBody(cachedSchedule);
@@ -5047,23 +5097,14 @@ function injectModal() {
             return;
         }
 
-        // Sub-toggle clicks: user / char (only meaningful when schedule mode)
+        // Sub-toggle clicks：走到这里只剩「我」（TA▾ 触发器已在上面拦截并 return）。
         if (isSubBtn) {
             if (isGenerating) return;   // 点生成途中不切视角：本次生成绑定当前视角，中途换「我/TA」无意义
+            closeTaDrawer();            // 切回「我」顺手收起 TA 抽屉
             if (view === currentView) return;
-            if (view === 'char') {
-                if (charViewName) {
-                    setView('char', charViewName);
-                    if (cachedSchedule) setBody(cachedSchedule);
-                    else showEmptyGenerate();
-                } else {
-                    switchToCharView();
-                }
-            } else {
-                setView('user');
-                if (cachedSchedule) setBody(cachedSchedule);
-                else showEmptyGenerate();
-            }
+            setView('user');
+            if (cachedSchedule) setBody(cachedSchedule);
+            else showEmptyGenerate();
             return;
         }
     });
@@ -5306,18 +5347,12 @@ function onRegenClick() {
         triggerGenerateOutline();
         return;
     }
-    if (_almSyncingPoint) { showToast('点正在同步到今天，稍候再刷新', null, true); return; }   // 同步在飞：别让点这边的刷新/重选跟后台同步抢 store（否则重选清点会被同步写回）
+    if (_almSyncingPoint) { showToast('点正在同步到今天，稍候再刷新', null, true); return; }   // 同步在飞：别让点这边的刷新跟后台同步抢 store（否则重排点会被同步写回）
     if (isGenerating) return;
-    if (currentView === 'char') {
-        // Clear char cache and re-show picker so user can pick a different char.
-        // Stash the name first — switchToCharView reads charViewName for pre-fill.
-        removeStore(getCacheKey());
-        cachedSchedule = null;
-        switchToCharView();   // pre-fills with current charViewName (or guesses)
-        charViewName   = null; // clear after picker is rendered
-    } else {
-        triggerGenerate();
-    }
+    // 刷新 = 对当前视角（我 / 当前 char）原地重排，永不弹填写框。
+    // 「换人」已彻底交给 TA▾ 抽屉，与刷新解耦——故 user / char 两视角在此完全对称，同走 triggerGenerate。
+    // （char 视角靠 charViewName 定主体，triggerGenerate→runGenerate 内部按 currentView/charViewName 取 subject。）
+    triggerGenerate();
 }
 
 function guessCharName(ctx) {
@@ -5381,11 +5416,11 @@ function switchToCharView() {
         <p class="sp-char-picker-hint"><i class="fa-solid fa-user-pen"></i> 输入要查看点的角色名</p>
         <div class="sp-char-picker-row">
             <input id="sp-char-name-input" class="sp-input" type="text"
-                   placeholder="角色名" value="${escapeAttr(guessed)}">
+                   placeholder="角色 / NPC / 反派皆可" value="${escapeAttr(guessed)}">
             <button id="sp-char-name-confirm" class="sp-save-btn">确认</button>
         </div>
         ${chipsHtml}
-        ${guessed ? `<p class="sp-char-picker-sub">根据近期对话预填，可直接修改</p>` : ''}
+        <p class="sp-char-picker-sub">${guessed ? '根据近期对话预填，可直接修改。' : ''}不必是主角，任何出场人物、NPC、反派都能查看其点；查看不占固定槽，想常驻再去 📌 固定</p>
     </div>`);
     $('.sp-view-btn').removeClass('sp-view-active');
     $(`.sp-view-btn[data-view="char"]`).addClass('sp-view-active');
@@ -5404,6 +5439,7 @@ function confirmCharView() {
     if (!name) { $('#sp-char-name-input').focus(); return; }
     store.pushRecentCharName(name);   // 记进"最近填过的名字"，供多人卡下次预填
     setView('char', name);
+    updateTaTriggerLabel();
     if (cachedSchedule) {
         setBody(cachedSchedule);
     } else {
@@ -5414,6 +5450,103 @@ function confirmCharView() {
             runGenerate();
         }
     }
+}
+
+// ─── TA▾ 固定槽抽屉（换人入口，已与「刷新」解耦）───────────────────────────────
+// TA▾ 展开固定槽列表：点槽=切到该 char（读缓存、不弹框、不重生成）、✕=移除该槽、
+// 「添加/查看角色」=开填写框查任意角色（含 NPC/反派）。查看不占槽，想固定去点视图头部 📌。
+// 固定槽为空时点 TA▾ 直接开填写框（等于旧行为），钉了第一个才有列表可展开。
+let _taDrawerOpen = false;
+
+// TA▾ 标签：在 char 视角且有名字时显当前 char 名，否则回落「TA」。
+function updateTaTriggerLabel() {
+    const label = (currentView === 'char' && charViewName) ? charViewName : 'TA';
+    $('#sp-ta-trigger .sp-ta-label').text(label);
+}
+
+function renderTaDrawerHtml() {
+    const pins = store.readPinnedChars();
+    const slots = pins.map(n => `
+        <div class="sp-ta-slot${currentView === 'char' && charViewName === n ? ' sp-ta-slot-active' : ''}" data-name="${escapeAttr(n)}">
+            <span class="sp-ta-slot-name">${escapeHtml(n)}</span>
+            <button type="button" class="sp-ta-slot-del" data-name="${escapeAttr(n)}" title="移除固定"><i class="fa-solid fa-xmark"></i></button>
+        </div>`).join('');
+    return `${slots}<button type="button" class="sp-ta-add"><i class="fa-solid fa-user-plus"></i> 添加 / 查看角色</button>`;
+}
+
+function openTaDrawer() {
+    $('#sp-ta-drawer').html(renderTaDrawerHtml()).css('display', 'block');
+    _taDrawerOpen = true;
+    $('#sp-ta-trigger').addClass('sp-ta-open');
+    // 外点即收：点抽屉/触发器以外任意处关闭（触发器自身的 toggle 另管，故排除它避免双触发）。
+    $(document).off('click.tadrawer').on('click.tadrawer', function (e) {
+        if ($(e.target).closest('#sp-ta-drawer, #sp-ta-trigger').length) return;
+        closeTaDrawer();
+    });
+}
+
+function closeTaDrawer() {
+    $('#sp-ta-drawer').css('display', 'none').empty();
+    _taDrawerOpen = false;
+    $('#sp-ta-trigger').removeClass('sp-ta-open');
+    $(document).off('click.tadrawer');
+}
+
+function toggleTaDrawer() {
+    if (_taDrawerOpen) { closeTaDrawer(); return; }
+    if (store.readPinnedChars().length) { openTaDrawer(); return; }
+    // 无固定槽的两条便利路径（都为了单 char 卡：确认过一次后，「我 ↔ TA」来回切永不再弹填写框）：
+    //   · 此刻不在 char 视角、但记得上次看的 char → 直接回到它（读缓存、不弹框），等价于「切回 TA」；
+    //   · 否则（从没看过任何 char，或已在 char 视角想换人）→ 开填写框。
+    if (currentView !== 'char' && charViewName) { activateCharView(charViewName); return; }
+    switchToCharView();
+}
+
+// 切到某固定槽 char：读缓存、不弹框、不重生成（无缓存 → 落「生成点」空态，不自动烧 API）。
+function activateCharView(name) {
+    const n = String(name || '').trim();
+    if (!n) return;
+    if (isGenerating) { showToast('点正在生成，稍候再换人', null, true); return; }
+    closeTaDrawer();
+    setView('char', n);          // 内部置 currentView/charViewName + active 态 + 载 cachedSchedule
+    updateTaTriggerLabel();
+    if (cachedSchedule) setBody(cachedSchedule);
+    else showEmptyGenerate();
+}
+
+// 点视图头部 📌 切换：固定/取消固定当前 char（查看与固定解耦，此按钮是唯一的「固定」动作）。
+// name 由调用方从按钮 data-name 传入（本卡渲染时的真名），兜底 charViewName——避免全局漂移致「没反应」。
+function onCharPinToggle(name) {
+    const n = String(name || charViewName || '').trim();
+    if (!n) return;
+    if (store.isPinnedChar(n)) {
+        store.removePinnedChar(n);
+        showToast(`已取消固定「${n}」`);
+    } else {
+        const r = store.addPinnedChar(n);
+        if (r === 'full') { showToast(`固定槽已满（最多 ${store.PIN_CAP} 个），先在 TA▾ 里移除一个`, null, true); return; }
+        showToast(`已固定「${n}」到 TA▾`);
+    }
+    // 固定态活在 store（独立于点 raw），故不重写 raw；但要用当前 raw 重跑 renderSchedule（内部读
+    // isPinnedChar 定钉子高亮）刷新 cachedSchedule——否则重开面板/切视图回放旧字符串，钉态丢失
+    // （对齐兄弟 triggerTogglePointPin：改完必更 cachedSchedule，别只改就地 DOM）。
+    const saved = readStore(getCacheKey());
+    if (saved?.raw) {
+        cachedSchedule = renderSchedule(saved.raw, saved.userName || '用户', currentView);
+        setBody(cachedSchedule);
+    } else {
+        refreshCharPinIcon();   // 无 raw（罕见）→ 至少就地刷图标
+    }
+    if (_taDrawerOpen) openTaDrawer();   // 抽屉开着则同步重渲（槽增减/高亮）
+}
+
+// 就地刷新 📌 图标态（不重渲整份点正文）。图标恒 solid，只切颜色类 .sp-pinned（见 renderSchedule 注释）。
+// 以 DOM 上按钮的 data-name 为准（兜底 charViewName）。
+function refreshCharPinIcon() {
+    const $btn = $('#sp-body .sp-point-pin-char');
+    const pinned = store.isPinnedChar(String($btn.attr('data-name') || charViewName || '').trim());
+    $btn.attr('title', pinned ? '已固定·点击取消固定' : '固定 TA 到 TA▾ 抽屉');
+    $btn.toggleClass('sp-pinned', pinned);
 }
 
 // ─── Open / close ─────────────────────────────────────────────────────────────
@@ -12370,9 +12503,17 @@ function renderSchedule(raw, userName, perspective = 'user') {
 
     // 历「同步到点」在飞时，点刷新圆圈置灰禁点（同步会后台重写点，此刻手动刷新会跟它抢 store）
     const refreshBusy = _almSyncingPoint ? ' sp-refresh-busy' : '';
+    // char 视角头部多一个 📌：把当前 char 固定/取消固定到 TA▾ 抽屉（查看与固定解耦，此为唯一固定动作）。
+    const isPinned = perspective === 'char' && store.isPinnedChar(String(userName || '').trim());
+    // 固定态只用**颜色**区分，图标恒 fa-solid fa-thumbtack：FA 免费版无 fa-regular fa-thumbtack，
+    // 用 regular 会静默回落到 solid → 固定/未固定长得一模一样（老 bug「图标没变化」）。照 .sp-alm-today-pin 套路。
+    const pinBtn = perspective === 'char'
+        ? `<button class="sp-panel-refresh sp-point-pin-char${isPinned ? ' sp-pinned' : ''}" data-name="${escapeAttr(String(userName || '').trim())}" title="${isPinned ? '已固定·点击取消固定' : '固定 TA 到 TA▾ 抽屉'}"><i class="fa-solid fa-thumbtack"></i></button>`
+        : '';
     const header = `<div class="sp-schedule-header">
         <span class="${chipCls}">${escapeHtml(userName)}</span>
         <span class="sp-schedule-label">的点</span>
+        ${pinBtn}
         <button class="sp-panel-refresh sp-refresh-schedule${refreshBusy}" title="${_almSyncingPoint ? '点正在同步中，稍候…' : '重新生成点'}"><i class="fa-solid fa-rotate-right"></i></button>
     </div>` + SP_JUMP_HINT_POINT;
 

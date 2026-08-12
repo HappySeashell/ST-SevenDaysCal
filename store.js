@@ -190,6 +190,50 @@ export function pushRecentCharName(name, max = 3) {
     persist();
 }
 
+// char 固定槽（每卡一份，随 sp-store 走）：与上面的「最近填过」语义不同——
+//   recent = 自动滚动的历史（新名挤旧名），只当填写框预填快捷 chip；
+//   pins   = 用户**手动钉/删**的常驻抽屉槽，绝不自动滚动、绝不因「查看某人」被动增删。
+// 查看任意角色（含 NPC/反派）都不占槽；想固定才主动 addPinnedChar，满 PIN_CAP 就拒绝加。
+// 同存原始子键 'char-pins'——不属 KINDS，用量统计/按 kind 清理都跳过，只随整份 sp-store 清空。
+const CHARPINS_SUBKEY = 'char-pins';
+export const PIN_CAP = 3;
+export function readPinnedChars() {
+    const s = store();
+    if (!s) return [];
+    const v = s.data[CHARPINS_SUBKEY];
+    return Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).slice(0, PIN_CAP) : [];
+}
+// 加一个固定槽。已在槽内 → 返回 'exists'（幂等，不重复）；已满 → 返回 'full'（拒绝，调用端提示）；
+// 成功追加到末尾（保持钉入顺序，不前移）→ 返回 'ok'。
+export function addPinnedChar(name) {
+    const n = String(name || '').trim();
+    if (!n) return 'full';
+    const s = store(true);
+    if (!s) return 'full';
+    const prev = Array.isArray(s.data[CHARPINS_SUBKEY]) ? s.data[CHARPINS_SUBKEY].filter(x => typeof x === 'string' && x.trim()) : [];
+    if (prev.includes(n)) return 'exists';
+    if (prev.length >= PIN_CAP) return 'full';
+    s.data[CHARPINS_SUBKEY] = [...prev, n];
+    persist();
+    return 'ok';
+}
+// 移除一个固定槽（幂等：不在槽内也算成功）。返回是否有实际删除。
+export function removePinnedChar(name) {
+    const n = String(name || '').trim();
+    const s = store();
+    if (!s) return false;
+    const prev = Array.isArray(s.data[CHARPINS_SUBKEY]) ? s.data[CHARPINS_SUBKEY] : [];
+    const next = prev.filter(x => x !== n);
+    if (next.length === prev.length) return false;
+    s.data[CHARPINS_SUBKEY] = next;
+    persist();
+    return true;
+}
+export function isPinnedChar(name) {
+    const n = String(name || '').trim();
+    return !!n && readPinnedChars().includes(n);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  用量统计 / 清理（供存储管理面板）
 // ═══════════════════════════════════════════════════════════════════════════

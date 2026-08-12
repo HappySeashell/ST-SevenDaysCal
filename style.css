@@ -457,6 +457,106 @@
 }
 .sp-sub-btn + .sp-sub-btn { border-left: 1px solid var(--sp-divider); }
 
+/* ─── TA▾ 固定槽下拉抽屉 ─────────────────────────────────────────────────────
+   换人入口（已与刷新解耦）。wrap 提供定位上下文让抽屉溢出 sub-toggle 的 overflow:hidden；
+   抽屉绝对定位挂在触发器下方，尺寸随 --sp-scale 令牌走，视觉沿用 sub-toggle 的描边/圆角语言。 */
+.sp-sub-toggle-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+.sp-ta-trigger { display: inline-flex; align-items: center; gap: 4px; }
+.sp-ta-caret { font-size: var(--sp-fs-62); transition: transform 140ms ease; }
+.sp-ta-trigger.sp-ta-open .sp-ta-caret { transform: rotate(180deg); }
+/* TA▾ 标签是当前 char 名（可能较长）：不再 uppercase/大字距，且限宽省略，别把头部撑破。 */
+.sp-ta-trigger .sp-ta-label {
+    text-transform: none;
+    letter-spacing: 0.02em;
+    max-width: 8em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sp-ta-drawer {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 30;
+    min-width: 140px;
+    max-width: 220px;
+    padding: 4px;
+    /* 双层背景（照 .sp-sheet）：不透明底板 + 覆一层酒馆 tint，避免透明酒馆主题下抽屉透底看不清。
+       不能只用 --sp-surface：它=酒馆模糊着色变量，半透明、本该配 backdrop-blur，单用即透。*/
+    background-color: var(--sp-sheet-bg-legacy);
+    background-image: linear-gradient(var(--sp-sheet-bg), var(--sp-sheet-bg));
+    border: 1px solid var(--sp-divider);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.sp-ta-slot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 120ms ease;
+}
+.sp-ta-slot:hover { background: var(--sp-surface-high); }
+.sp-ta-slot-active { background: color-mix(in oklab, var(--sp-primary) 16%, transparent); }
+.sp-ta-slot-name {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--sp-fs-82);
+    color: var(--sp-on-surface);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sp-ta-slot-del {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--sp-btn-22);
+    height: var(--sp-btn-22);
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
+    color: var(--sp-subtle);
+    font-size: var(--sp-fs-75);
+    cursor: pointer;
+    transition: color 120ms ease, background 120ms ease;
+}
+.sp-ta-slot-del:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); }
+.sp-ta-add {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    margin-top: 2px;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--sp-divider);
+    border-radius: 0 0 4px 4px;
+    color: var(--sp-primary);
+    font-size: var(--sp-fs-82);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 120ms ease;
+}
+.sp-ta-add:hover { background: var(--sp-surface-high); }
+
+/* 点视图头部 📌（固定当前 char 到 TA▾）：跟刷新钮并排，沿用 .sp-panel-refresh 底样。
+   图标恒 solid（FA 免费版无 regular 图钉），固定/未固定只靠颜色+透明度区分：
+   未固定=暗淡描边感（低透明度），固定=主色高亮实心。*/
+.sp-point-pin-char { opacity: 0.45; }
+.sp-point-pin-char:hover { opacity: 0.8; }
+.sp-point-pin-char.sp-pinned { opacity: 1; color: var(--sp-primary); }
+
+
 /* Locked state (during generation) — reused for sub-toggle + sidebar */
 .sp-locked { pointer-events: none; opacity: 0.4; }
 
