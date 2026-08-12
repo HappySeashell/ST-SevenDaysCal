@@ -45,19 +45,23 @@ function messageAt(mesId) {
 
 // ── 写 ────────────────────────────────────────────────────────────────────
 // snap 形状（全部可空，缺哪块渲染端就不渲哪段）：
-//   { v, ts, point, line, almanac, anchor, ledger }
+//   { v, ts, point, line, almanac, anchor, pool, recall }
 //     point   : 点 raw 字符串（<calendar_widget>…）
 //     line    : 线 raw 字符串（含 <line_widget>… 或线缓存 raw）
 //     almanac : 历条目数组（loadAlmanac() 的归一化结果）
 //     anchor  : { month, day } 当时的「今天」锚点
-//     ledger  : 本回合暗历注入回显数组 [{id,事由,类型}]（「标注打捞」框用；新字段·末尾·可选）
+//     pool    : 【AI 楼】当时的暗账「标注池」精简条目 [{id,事由,类型,起始锚,周期长度,到期锚,标签,锁}]（新字段·末尾·可选）
+//     recall  : 【用户楼】当轮召回注入回显 [{id,事由,类型,起始锚,现状}]（丰富版；新字段·末尾·可选）
+//   （旧字段 ledger＝早期只读回显，已退役；老快照的 ledger 读取端直接忽略，孤立无害。）
+//
+// 用户楼也存快照：召回框挂在用户楼、需要历史楼看当轮召回，故放开原「只给 AI 楼挂」限制。
+// 用户楼的 point/line/almanac 恒空（只有 recall 有料），AI 楼反之只有 pool——两类互斥、同一 schema 承载。
 //
 // 幂等/省写：与现存快照 JSON 相等则跳过（不 touch extra、不触发保存），
 //   避免每次 sync 都把 chat 标脏、debounce 永远够不到落盘。
 export function writeSnapshot(mesId, snap) {
     const msg = messageAt(mesId);
     if (!msg) return false;
-    if (msg.is_user) return false;   // 只给 AI 楼挂
 
     const payload = {
         v: SNAP_VERSION,
@@ -68,7 +72,8 @@ export function writeSnapshot(mesId, snap) {
         anchor:  (snap?.anchor && Number.isFinite(+snap.anchor.month) && Number.isFinite(+snap.anchor.day))
             ? { month: +snap.anchor.month, day: +snap.anchor.day }
             : null,
-        ledger:  Array.isArray(snap?.ledger) ? snap.ledger : [],
+        pool:    Array.isArray(snap?.pool)   ? snap.pool   : [],
+        recall:  Array.isArray(snap?.recall) ? snap.recall : [],
     };
 
     // 幂等：内容没变就不写（ts 不参与比较，否则永远"变了"）。
@@ -96,9 +101,10 @@ function _sameSnapContent(a, b) {
     try {
         if (JSON.stringify(a.almanac || []) !== JSON.stringify(b.almanac || [])) return false;
     } catch { return false; }
-    // 暗历回显：同粗比 JSON（[{id,事由,类型}]，量小、顺序由 select 稳定给出）。
+    // 标注池（AI 楼）/召回（用户楼）：同粗比 JSON（量小、顺序由取数端稳定给出）。
     try {
-        if (JSON.stringify(a.ledger || []) !== JSON.stringify(b.ledger || [])) return false;
+        if (JSON.stringify(a.pool   || []) !== JSON.stringify(b.pool   || [])) return false;
+        if (JSON.stringify(a.recall || []) !== JSON.stringify(b.recall || [])) return false;
     } catch { return false; }
     return true;
 }
@@ -132,7 +138,8 @@ export function readSnapshot(mesId) {
         anchor:  (snap.anchor && Number.isFinite(+snap.anchor.month) && Number.isFinite(+snap.anchor.day))
             ? { month: +snap.anchor.month, day: +snap.anchor.day }
             : null,
-        ledger:  Array.isArray(snap.ledger) ? snap.ledger : [],
+        pool:    Array.isArray(snap.pool)   ? snap.pool   : [],
+        recall:  Array.isArray(snap.recall) ? snap.recall : [],
     };
 }
 

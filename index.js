@@ -65,8 +65,9 @@ const DEFAULT_SETTINGS = {
     almanacInlineEnabled: true, // 历·日程块：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是未来七天（周X+日期，有节日可点开看当天安排）；只读，独立于线主开关；默认开，关掉即不注入聊天
     linesInlineEnabled  : true, // 线·楼内块：最新 AI 楼底部展示活跃线块（只读展示，独立于线主开关 linesEnabled）；默认开，关掉只隐藏楼内块、不影响线的推进与隐形注入
     scheduleInlineEnabled: true, // 点·楼内日程条：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是每天一格（周X+日期+天气+待办数，可点开看当天事件）；只读，反映当前视角的点，默认开
-    ledgerInlineEnabled : true, // 暗历·楼内「标注打捞」框：接线块下方，只读回显本回合注入了哪几条暗历（供用户核对 AI 收到了啥）；与注入功能 ledgerInject 解耦——关掉只隐藏这只读框、不影响注入本身；默认开
-    inlineRenderEnabled : true, // 楼内渲染框·主开关：关掉则整框不渲（点/线/轴/标注打捞四个子开关一并失效）；默认开。子开关只在主开关开时才起作用
+    ledgerInlineEnabled : true, // 标注池·楼内框开关：AI 楼挂「标注池」（活跃暗历条目 + 打捞/更新/锁定/归档操作）；与注入 ledgerInject 解耦、与用户楼召回(recallInlineEnabled)各自独立；默认开
+    recallInlineEnabled : true, // 召回·楼内框开关：用户楼挂「召回」框（本回合注入回显·丰富版：类型+标题+起始+推测应至状态）；与 AI 楼标注池独立、与注入解耦；默认开
+    inlineRenderEnabled : true, // 楼内渲染框·主开关：关掉则整框不渲（点/线/轴/标注池/召回子开关一并失效）；默认开。子开关只在主开关开时才起作用
     // 楼内仪表盘：布局固定（今头 + 历/点/线三区），无需配序；旧的 inlineOrder 已随仪表盘重构退役。
     // 楼内统一框·渲染深度：只在最新 N 层 AI 楼挂 DOM，更早的楼只留 message.extra 快照、滑回再秒重建。
     // 0 或缺 = 跟随酒馆助手 render_depth（读不到再退 INLINE_RENDER_DEPTH_FALLBACK）。默认 0=跟随。
@@ -1041,16 +1042,42 @@ function captureSnapshot() {
         const a = almTodayAnchor();
         if (a && Number.isFinite(+a.month) && Number.isFinite(+a.day)) anchorMD = { month: +a.month, day: +a.day };
     } catch { /* null */ }
-    // 暗历回显：封存本回合实际注入的那几条（关注入时 _ledgerInjectEcho 恒为空 → 该楼不挂「标注打捞」框）。
-    const ledgerEcho = Array.isArray(_ledgerInjectEcho) ? _ledgerInjectEcho.slice() : [];
-    return { point, line, almanac, anchor: anchorMD, ledger: ledgerEcho };
+    // 标注池：封存当前活跃暗历条目 → 该 AI 楼「当时的标注池」。字段照标注池闭环：
+    //   起始/周期/终止锚 + 标签 + 锁态（供高亮），不冻现状（现状是「召回」框的活、标注池只摆台账事实）。
+    let pool = [];
+    try {
+        const cloneAnchor = a => (a && typeof a === 'object') ? { ...a } : null;
+        pool = (ledger.listEntries() || []).map(e => ({
+            id: e.id, 事由: e.事由, 类型: e.类型,
+            起始锚: cloneAnchor(e.起始锚), 周期长度: e.周期长度, 到期锚: cloneAnchor(e.到期锚),
+            标签: Array.isArray(e.标签) ? e.标签.slice() : [], 锁: e.锁,
+        }));
+    } catch { pool = []; }
+    return { point, line, almanac, anchor: anchorMD, pool };
 }
 
-// 把当前最新态封存进第 mesId 层 AI 楼（幂等：内容没变不写、不触发保存）。
-// 挂在各 syncLatest* 的「最新楼」路径上——数据一有变化就汇流到这，达成最终一致。
+// 用户楼快照：封存本回合召回注入回显（丰富版 [{id,事由,类型,起始锚,现状}]）。
+// 与 captureSnapshot 分工：AI 楼冻标注池、用户楼冻召回，各挂各的框（见 freezeSnapshotToFloor 分派）。
+function captureRecallSnapshot() {
+    const recall = Array.isArray(_ledgerInjectEcho) ? _ledgerInjectEcho.slice() : [];
+    return { recall };
+}
+
+// 把当前最新态封存进第 mesId 层（幂等：内容没变不写、不触发保存）。按楼性质分派：
+//   AI 楼 → captureSnapshot()（点/线/历/锚点/标注池）；用户楼 → captureRecallSnapshot()（召回）。
+// 挂在各「最新楼」路径上——数据一有变化就汇流到这，达成最终一致。
 function freezeSnapshotToFloor(mesId) {
     if (mesId == null) return;
-    try { snapshot.writeSnapshot(Number(mesId), captureSnapshot()); } catch { /* 存档失败不影响渲染 */ }
+    try {
+        const msg = getContext()?.chat?.[Number(mesId)];
+        if (msg?.is_user) {
+            const snap = captureRecallSnapshot();
+            if (!snap.recall.length) return;   // 用户楼无召回 → 不建空快照（不挂框、不占存档）
+            snapshot.writeSnapshot(Number(mesId), snap);
+        } else {
+            snapshot.writeSnapshot(Number(mesId), captureSnapshot());
+        }
+    } catch { /* 存档失败不影响渲染 */ }
 }
 
 // ─── Storylines inline block (appended to AI messages) ────────────────────────
@@ -1132,20 +1159,56 @@ function _buildLinesBlockHtml(rawArg = null, readOnly = false) {
     return dashedSub ? `${emptySummary}<div class="sp-inline-body">${dashedSub}</div>` : emptySummary;
 }
 
-// 楼内「标注打捞」框：只读回显本回合注入了哪几条暗历（供用户核对 AI 收到了啥）。
-// snapLedgerArg：历史楼传快照里冻的 [{id,事由,类型}]；最新楼传 null → 读活态 _ledgerInjectEcho
-//   （与线/点/历「null=读活缓存」同款：最新楼恒反映当前注入集，historical 楼看当时冻结的）。
-// 空 → 返回 ''（该楼不挂此段，关注入的楼天然无此块）。无操作钮（纯只读）；外壳 <details> 由 region() 加。
-function _buildLedgerBlockHtml(snapLedgerArg = null, _readOnly = false) {
+// 楼内「标注池」框（AI 楼，镜像线块 _buildLinesBlockHtml）：显示当前实际打捞到的暗历条目。
+// poolArg：历史楼传快照里冻的 pool [{id,事由,类型,起始锚,周期长度,到期锚,标签,锁}]；最新楼传 null → 读活账 ledger.listEntries()
+//   （与线/点/历「null=读活缓存」同款：最新楼恒反映当前标注池，historical 楼看当时冻结的）。
+// readOnly=false（最新楼）：summary 带「标注/更新」两文字胶囊、每条带「锁定/归档了结」；true（历史楼）：纯只读。
+// 空池 → 返回 ''（该楼不挂此段；与线/点/历子块空态、及旧「空回显不挂」一致，默认开关下不冒空条）。
+// 字段照标注池闭环：类型胶囊(上色) + 事由 + 起始/周期/终止 + 标签；不显现状（现状归「召回」框）。
+function _buildLedgerBlockHtml(poolArg = null, readOnly = false) {
     if (getSettings().ledgerInlineEnabled === false) return '';   // 显隐开关单独关 → 不渲这段（与线/点/历子开关自门控对齐；与注入 ledgerInject 解耦）
-    const src = snapLedgerArg != null ? snapLedgerArg : _ledgerInjectEcho;
-    const items = Array.isArray(src) ? src.filter(x => x && x.事由) : [];
-    if (!items.length) return '';
+    let items;
+    if (poolArg != null) {
+        items = Array.isArray(poolArg) ? poolArg.filter(x => x && x.事由) : [];
+    } else {
+        try { items = (ledger.listEntries() || []).filter(x => x && x.事由); } catch { items = []; }
+    }
+    if (!items.length) return '';   // 空池 → 不挂
+
+    const cal = loadCalDesc();
+    // 打捞/更新：照主面板改文字胶囊（图标看不懂）——复用 .sp-mini-btn.sp-ledger-pill，CSS 里另有覆盖免被 summary 22px 方钮规则压扁。
+    const actions = readOnly ? '' : `<span class="sp-inline-summary-actions">
+            <button class="sp-mini-btn sp-ledger-pill sp-inline-ledger-capture" title="打捞新标注">标注</button>
+            <button class="sp-mini-btn sp-ledger-pill sp-inline-ledger-judge" title="按时间更新现状">更新</button>
+        </span>`;
     const rows = items.map(it => {
-        const type = it.类型 ? `<span class="sp-inline-type">${escapeHtml(it.类型)}</span>` : '';
-        return `<div class="sp-ledger-echo-row">${type}<span class="sp-ledger-echo-gist">${escapeHtml(it.事由)}</span></div>`;
+        const tcls = ledgerTypeClass(it.类型);   // 行挂类型类 → --ledger-c 级联给类型胶囊上色（持续状态/约定/周期各一色）
+        const type = it.类型 ? `<span class="sp-ledger-type">${escapeHtml(it.类型)}</span>` : '';
+        const locked = it.锁 === '用户锁';
+        let rowActions = '';
+        if (!readOnly) {
+            rowActions = `<span class="sp-beat-actions">
+                    <button class="sp-inline-ledger-lock${locked ? ' sp-inline-locked' : ''}" data-id="${escapeAttr(it.id)}" title="${locked ? '已锁定 · 点击解锁' : '锁定 · AI 判定不再改动此条'}"><i class="fa-solid fa-${locked ? 'lock' : 'lock-open'}"></i></button>
+                    <button class="sp-inline-ledger-close" data-id="${escapeAttr(it.id)}" title="归档了结 · 移出活跃、可捞回"><i class="fa-solid fa-box-archive"></i></button>
+                </span>`;
+        }
+        const start = fmtLedgerAnchorDate(it.起始锚?.历日期, cal);
+        const startTag = start ? `<span class="sp-ledger-meta">起 ${escapeHtml(start)}</span>` : '';
+        const cyc = it.周期长度 ? `<span class="sp-ledger-meta">周期${escapeHtml(String(it.周期长度))}天</span>` : '';
+        const dueStr = fmtLedgerAnchorDate(it.到期锚?.历日期, cal);
+        const due = dueStr ? `<span class="sp-ledger-meta">终 ${escapeHtml(dueStr)}</span>` : '';
+        const dates = `${startTag}${cyc}${due}`;
+        const datesRow = dates ? `<div class="sp-ledger-dates">${dates}</div>` : '';
+        const tags = (it.标签 || []).map(t => `<span class="sp-ledger-tag">${escapeHtml(t)}</span>`).join('');
+        const tagsRow = tags ? `<div class="sp-ledger-r3">${tags}</div>` : '';
+        return `<div class="sp-ledger-inline-row sp-ledger-${tcls}${locked ? ' sp-line-pinned' : ''}" data-id="${escapeAttr(it.id)}">
+                <div class="sp-inline-head">${type}${rowActions}</div>
+                <div class="sp-inline-name">${escapeHtml(it.事由)}</div>
+                ${datesRow}
+                ${tagsRow}
+            </div>`;
     }).join('');
-    return `<summary class="sp-inline-summary"><span class="sp-inline-title">标注打捞</span><span class="sp-inline-count">${items.length} 条注入</span></summary><div class="sp-inline-body">${rows}</div>`;
+    return `<summary class="sp-inline-summary"><span class="sp-inline-title">标注池</span><span class="sp-inline-count">${items.length} 条</span>${actions}</summary><div class="sp-inline-body sp-ledger-inline-body">${rows}</div>`;
 }
 
 
@@ -1625,8 +1688,8 @@ function _buildInlineBoxHtml(snap, isLatest) {
     const alm        = _buildAlmanacBlockHtml(snap ? (snap.almanac || []) : null, snap ? snap.anchor : null);
     const schInner   = _buildScheduleBlockHtml(snap ? (snap.point || '') : null, readOnly);
     const linesInner = _buildLinesBlockHtml(snap ? (snap.line || '') : null, readOnly);
-    // 标注打捞：只读回显本回合实际注入主楼 AI 的暗历条目（快照 ledger 字段驱动，空则不出块）。
-    const ledgerInner = _buildLedgerBlockHtml(snap ? (snap.ledger || []) : null, readOnly);
+    // 标注池：AI 楼实际打捞到的暗历条目（快照 pool 字段驱动；最新楼读活账，空则不出块）。
+    const ledgerInner = _buildLedgerBlockHtml(snap ? (snap.pool || []) : null, readOnly);
 
     // 日期是否真实存在（与显示开关无关）：决定折叠条头 + 纯日期扁条兜底。
     const hasDateData = _hasDateData(snap);
@@ -1656,7 +1719,8 @@ function _buildInlineBoxHtml(snap, isLatest) {
     const linesRegion = region('sp-lines-inline', 'lines', linesInner);
     const ledgerRegion = region('sp-ledger-inline', 'ledger', ledgerInner);
 
-    const body = `${top}${almStripRow}${schRegion}${linesRegion}${ledgerRegion}`;
+    // 段序：轴(top) → 标注池 → 点 → 线。标注池与日历同属「轴」范畴，紧贴轴放；点/线在其下。
+    const body = `${top}${almStripRow}${ledgerRegion}${schRegion}${linesRegion}`;
     // 面板体为空但有日期数据（三区都关，只剩日期）→ 纯日期扁条：不可折叠，只显今头缩写。
     if (!body) {
         const flatBar = _dashSummaryHtml(snap, true, false, false, false, true, isLatest);
@@ -1668,6 +1732,32 @@ function _buildInlineBoxHtml(snap, isLatest) {
     const cls = 'sp-inline-box sp-dash' + (readOnly ? ' sp-inline-box-ro' : '');
     // 默认折叠成一小条（不带 open）：只显摘要「今 M/D 周X ☀ · 历N 点N 线N」，点开才展开完整面板。
     return `<details class="${cls}">${summary}<div class="sp-dash-body">${body}</div></details>`;
+}
+
+// 用户楼「召回框」：外壳复用 .sp-inline-box/.sp-dash（与 AI 楼一摸一样形式），内含本回合召回注入回显（丰富版）。
+// snap：历史用户楼传快照（读 snap.recall [{id,事由,类型,起始锚,现状}]）；最新用户楼传 null → 读活态 _ledgerInjectEcho。
+// 字段照召回闭环：类型胶囊(上色) + 事由 + 起始 + 推测应至状态(现状)。纯只读——召回是给用户核对「AI 这轮收到了啥」，无逐条操作。
+// 空召回 → 返回 ''（该用户楼不挂框；关注入/无召回的楼天然无此块）。
+function _buildUserRecallBoxHtml(snap, isLatest) {
+    if (getSettings().recallInlineEnabled === false) return '';   // 召回显隐开关（独立于 AI 楼标注池）关 → 不渲
+    const src = snap ? snap.recall : _ledgerInjectEcho;
+    const items = Array.isArray(src) ? src.filter(x => x && x.事由) : [];
+    if (!items.length) return '';
+    const cal = loadCalDesc();
+    const rows = items.map(it => {
+        const tcls = ledgerTypeClass(it.类型);   // 行挂类型类 → --ledger-c 级联给类型胶囊上色
+        const type = it.类型 ? `<span class="sp-ledger-type">${escapeHtml(it.类型)}</span>` : '';
+        const start = fmtLedgerAnchorDate(it.起始锚?.历日期, cal);
+        const startTag = start ? `<span class="sp-inline-when">起 ${escapeHtml(start)}</span>` : '';
+        return `<div class="sp-recall-row sp-ledger-${tcls}">
+                <div class="sp-inline-head">${type}${startTag}</div>
+                <div class="sp-inline-name">${escapeHtml(it.事由)}</div>
+                ${it.现状 ? `<div class="sp-inline-desc">推测应为「${escapeHtml(it.现状)}」</div>` : ''}
+            </div>`;
+    }).join('');
+    const summary = `<summary class="sp-inline-summary"><span class="sp-inline-title">召回</span><span class="sp-inline-count">${items.length} 条</span></summary>`;
+    const cls = 'sp-inline-box sp-dash sp-recall-box' + (isLatest ? '' : ' sp-inline-box-ro');
+    return `<details class="${cls}">${summary}<div class="sp-inline-body sp-recall-body">${rows}</div></details>`;
 }
 
 // strip 委托（历/点的 per-day tap）共用：从被点元素回溯它所在的框，判断是否历史楼只读框，
@@ -1723,40 +1813,56 @@ function inlineIgnoreHidden() {
     } catch { return true; }
 }
 
-// 当前深度窗内的 AI 楼元素集合（从最新往前数 N 层可见 AI 楼；忽略隐藏楼——不计数、不入窗）。
-// depth=0 → 窗口 = 全部可见 AI 楼。返回 { winSet:Set<Element>, latestEl:Element|null }。
+// 当前深度窗内的楼元素集合（含 user 楼）。深度按 AI 楼数算（保原 AI 覆盖不变）：取最新 N 层可见 AI 楼，
+// 窗口 = 从其中最早那层起、到 chat 末尾的连续尾段——自然含其间夹的 user 楼与末尾尚未回复的 user 楼。
+// 忽略隐藏楼——不计数、不入窗。depth=0 → 窗口 = 全部可见楼。
+// 返回 { winSet, latestAiEl, latestUserEl }：两个「最新」各自读活态（AI 楼活缓存/池，user 楼活召回）。
 function computeInlineWindow() {
     const ignoreHidden = inlineIgnoreHidden();
-    const sel = ignoreHidden
+    const allSel = ignoreHidden
+        ? '#chat .mes:not([is_system="true"])'
+        : '#chat .mes';
+    const aiSel = ignoreHidden
         ? '#chat .mes:not([is_user="true"]):not([is_system="true"])'
         : '#chat .mes:not([is_user="true"])';
-    const aiFloors = [...document.querySelectorAll(sel)];
-    const latestEl = aiFloors.length ? aiFloors[aiFloors.length - 1] : null;
+    const allFloors = [...document.querySelectorAll(allSel)];
+    const aiFloors  = [...document.querySelectorAll(aiSel)];
+    const userFloors = allFloors.filter(el => el.getAttribute('is_user') === 'true');
+    const latestAiEl   = aiFloors.length   ? aiFloors[aiFloors.length - 1]     : null;
+    const latestUserEl = userFloors.length ? userFloors[userFloors.length - 1] : null;
     const depth = effectiveRenderDepth();
-    const win = depth > 0 ? aiFloors.slice(-depth) : aiFloors;
-    return { winSet: new Set(win), latestEl };
+    let win;
+    if (depth > 0 && aiFloors.length > depth) {
+        const earliestAi = aiFloors[aiFloors.length - depth];
+        const startIdx = allFloors.indexOf(earliestAi);
+        win = startIdx >= 0 ? allFloors.slice(startIdx) : allFloors;
+    } else {
+        win = allFloors;
+    }
+    return { winSet: new Set(win), latestAiEl, latestUserEl };
 }
 
-// 在某层 AI 楼 el 上挂/更新统一框。isLatest 决定全功能/只读、活缓存/快照。
+// 在某层楼 el 上挂/更新框。isLatest 决定全功能/只读、活缓存/快照；is_user 决定挂 AI 框(点/线/历/池)还是用户召回框。
 // 幂等：内容 HTML 没变则不动 DOM（保住 <details> 展开态、断自激循环）。
 function mountInlineBox(el, isLatest) {
     if (!pluginEnabled()) return;   // 插件总关：兜住 IO 回调直呼此处的路径
     const msgEl = el.querySelector('.mes_text');
     if (!msgEl) return;
+    const isUser = el.getAttribute('is_user') === 'true';
     let snap = null;
     if (isLatest) {
-        // 最新楼：先把当前活缓存态冻进本楼快照（幂等），使「最新楼活态」与「该楼死历史」一致——
-        // 将来滑走、它变历史楼时，读到的快照正是此刻这一屏。
+        // 最新楼：先把当前活态冻进本楼快照（幂等），使「最新楼活态」与「该楼死历史」一致——
+        // 将来滑走、它变历史楼时，读到的快照正是此刻这一屏（AI 楼冻点/线/历/池，用户楼冻召回）。
         const mid = el.getAttribute('mesid');
         if (mid != null) freezeSnapshotToFloor(mid);
     } else {
         const mid = el.getAttribute('mesid');
         snap = mid != null ? snapshot.readSnapshot(Number(mid)) : null;
-        if (!snap) { unmountInlineBox(el); return; }   // 历史楼无快照（老楼）→ 不显框
+        if (!snap) { unmountInlineBox(el); return; }   // 历史楼无快照（老楼 / 用户楼无召回）→ 不显框
     }
-    const html = _buildInlineBoxHtml(snap, isLatest);
+    const html = isUser ? _buildUserRecallBoxHtml(snap, isLatest) : _buildInlineBoxHtml(snap, isLatest);
     const existing = msgEl.querySelector(':scope > ' + INLINE_BOX_SELECTOR);
-    if (!html) { if (existing) existing.remove(); return; }   // 三段全空 → 不挂
+    if (!html) { if (existing) existing.remove(); return; }   // 全空 → 不挂
     if (existing && existing.dataset.sig === _boxSig(html, isLatest)) return;   // 幂等：签名没变不重建
     if (existing) existing.remove();
     const box = document.createElement('div');
@@ -1783,13 +1889,14 @@ function _recomputeInlineWindow() {
     if (!pluginEnabled()) { _clearAllInlineBoxes(); return; }   // 插件总关：兜住防抖定时器直呼此处的路径
     if (!_anyInlineSegOn()) { _clearAllInlineBoxes(); return; }   // 三段全关 → 清干净、不观察
     _ensureInlineIO();
-    const { winSet, latestEl } = computeInlineWindow();
-    const allBoxes = document.querySelectorAll('#chat .mes:not([is_user="true"])');
+    const { winSet, latestAiEl, latestUserEl } = computeInlineWindow();
+    const allBoxes = document.querySelectorAll('#chat .mes:not([is_system="true"])');
     for (const el of allBoxes) {
+        const isLatest = (el === latestAiEl || el === latestUserEl);
         if (winSet.has(el)) {
             _inlineIO.observe(el);   // 窗内：交给视口决定挂不挂（重复 observe 无害）
             // 已在视口内的窗内楼立即挂（IO 首帧可能延迟；最新楼尤其要秒出）
-            if (el === latestEl || _inViewport(el)) mountInlineBox(el, el === latestEl);
+            if (isLatest || _inViewport(el)) mountInlineBox(el, isLatest);
         } else {
             _inlineIO.unobserve(el);
             unmountInlineBox(el);    // 窗外：卸框、停观察，只留 extra 快照
@@ -1818,14 +1925,14 @@ function _inViewport(el) {
 // 懒建 IntersectionObserver：窗内楼进视口→挂框、离视口→卸框。取代旧 anchor MutationObserver 补块。
 function _ensureInlineIO() {
     if (_inlineIO) return;
-    const { latestEl } = computeInlineWindow();
     _inlineIO = new IntersectionObserver((entries) => {
-        // 每次回调都现算「谁是最新楼」（流式/新楼会变）
-        const latest = computeInlineWindow().latestEl;
+        // 每次回调都现算两个「最新楼」（流式/新楼会变）：最新 AI 楼读活缓存/池，最新 user 楼读活召回。
+        const w = computeInlineWindow();
         for (const ent of entries) {
             const el = ent.target;
-            if (ent.isIntersecting) mountInlineBox(el, el === latest);
-            else if (el !== latest) unmountInlineBox(el);   // 最新楼即便暂时离屏也保留（用户随时会滑回、且它在推进）
+            const isLatest = (el === w.latestAiEl || el === w.latestUserEl);
+            if (ent.isIntersecting) mountInlineBox(el, isLatest);
+            else if (!isLatest) unmountInlineBox(el);   // 最新楼即便暂时离屏也保留（用户随时会滑回、且它在推进）
         }
     }, { root: null, rootMargin: '200px 0px', threshold: 0 });
 }
@@ -2263,7 +2370,7 @@ function listActiveLedgerBrief() {
 }
 
 // 两个标注提示词（首次建账 / 日常增量）共用的两段——单一来源，防两处 7 字段格式漂移。
-const LEDGER_EVENT_TYPES = `【什么算暗账事件】会随时间推移改变状态、或到某天该发生的事，典型三类：
+const LEDGER_EVENT_TYPES = `【什么算刻度事件】会随时间推移改变状态、或到某天该发生的事，典型三类：
 - 持续状态：身体伤情 / 病症、怀孕、显著且会延续的情绪等——会随天数自然演变（如割伤→结痂→愈合）。
 - 约定待办：约好要做的事（哪天见面、答应帮忙），无论有没有定下具体日期都要记。
 - 周期：规律反复发生的事（月经、发薪、值班），带大致周期天数。
@@ -2279,15 +2386,15 @@ const LEDGER_FIELD_SPEC = `- 每个事件一行，用全角竖线「｜」分隔
   · 周期：仅周期类填天数（如 30）；其它类型留空`;
 
 function buildLedgerCapturePrompt() {
-    return `请暂停角色扮演，作为剧情分析助手，只做一件事：从以上最近的对话正文里，捞取「需要按时间追踪」的新事件，登记入「暗账」。
+    return `请暂停角色扮演，作为剧情分析助手，只做一件事：从以上最近的对话正文里，捞取「需要按时间追踪」的新事件，记入「刻度」。
 
 ${LEDGER_EVENT_TYPES}
 
-【已在账上的（不要重复登记）】
+【已在刻度上的（不要重复登记）】
 ${listActiveLedgerBrief()}
 
 【规则】
-- 只登记上面对话里【新出现】的，或【虽同名但明显是另一次独立事件】的；已在账上的同一件事跳过。
+- 只登记上面对话里【新出现】的，或【虽同名但明显是另一次独立事件】的；已在刻度上的同一件事跳过。
 - 宁可多记：拿不准也记下，漏记的代价比多记大。
 ${LEDGER_FIELD_SPEC}
 - 若没有任何新事件可登记，只回一个字：无
@@ -2298,7 +2405,7 @@ ${LEDGER_FIELD_SPEC}
 // 额外指向【角色卡背景资料 / 世界书设定】——把开局就存在、却不会在正文里「新冒出来」的既定机制（周期硬规则、
 // 死线、长期状态/契约）一并种进账。角色卡/世界书本就在 buildMessages 的 system 里，故零额外 API，只换这段指令。
 function buildLedgerFirstScanPrompt() {
-    return `请暂停角色扮演，作为剧情分析助手，只做一件事：这是本故事**第一次**建立「暗账」，请把所有【需要长期按时间追踪】的事项一次性登记入账，覆盖两个来源：
+    return `请暂停角色扮演，作为剧情分析助手，只做一件事：这是本故事**第一次**建立「刻度」，请把所有【需要长期按时间追踪】的事项一次性记入刻度，覆盖两个来源：
 
 【来源一·既定机制（最重要，务必别漏）】从【角色卡背景资料 / 场景 / 世界书设定】里，找出开局就存在、需要长期盯着时间的**规则型设定**，尤其：
 - 周期性硬规则：如「每 N 天必须做某事，否则触发严重后果」「每逢某日会发生某事」——务必抓出周期天数。
@@ -2383,12 +2490,13 @@ async function runLedgerCaptureStep(manual = false) {
             const e = ledger.addEntry(p);
             if (e) added.push(e);
         }
-        if (!added.length) { if (manual) showToast('没有新事件（都已在账上）'); return; }
+        if (!added.length) { if (manual) showToast('没有新事件（都已在刻度上）'); return; }
         // 通知：手动必反馈；自动仅 full 档弹（照三档静音约定）。
         if (manual || getSettings().notifyMode === 'full') {
-            showToast(`暗历标注 ${added.length} 条：${added.map(e => e.事由).join('、')} · 请注意查看`);
+            showToast(`刻度标注 ${added.length} 条：${added.map(e => e.事由).join('、')} · 请注意查看`);
         }
         refreshLedgerInjection();   // 新条目入账 → 重算注入集（关/空时内部自清）
+        refreshInlineWindow(true);  // 标注池变了 → 刷楼内框（最新 AI 楼读活账重挂标注池）
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     } catch (err) {
         if (ledgerCaptureAbort !== myCtrl) return;         // 被更新的标注取代 → 新的接管，别动
@@ -2396,7 +2504,7 @@ async function runLedgerCaptureStep(manual = false) {
         if (err?.name === 'AbortError') return;            // 中止 / 切档
         if (err?.spDisabled) return;                       // 插件关闭：静默
         if (getContext().chatId !== chatIdSnap) return;    // 已切 chat
-        showToast('暗历标注失败，请检查 API 或网络', null, true);
+        showToast('刻度标注失败，请检查 API 或网络', null, true);
     }
 }
 
@@ -2530,7 +2638,7 @@ function buildLedgerInjectionText(picked, _cal) {
 const LEDGER_INJECT_KEY   = 'sp_ledger_remind';
 const LEDGER_INJECT_DEPTH = 2;   // 浅层（别到 depth 0 盖用户 input）；比线/面(4)更贴身，让「此刻状态」离生成更近
 
-// 本回合实际注入的条目回显（[{id,事由,类型}]）——供楼内「标注打捞」框冻进快照核对。
+// 本回合实际注入的条目回显（丰富版 [{id,事由,类型,起始锚,现状}]）——供用户楼「召回框」显示起始时间+推测应至状态。
 // refreshLedgerInjection 每次重算时刷新；清空/关闭时置空。
 let _ledgerInjectEcho = [];
 
@@ -2546,7 +2654,8 @@ function refreshLedgerInjection() {
     const pt = ctx.constants?.promptTypes?.IN_CHAT ?? 1;
     const pr = ctx.constants?.promptRoles?.SYSTEM  ?? 0;
     ctx.setExtensionPrompt(LEDGER_INJECT_KEY, buildLedgerInjectionText(picked, loadCalDesc()), pt, LEDGER_INJECT_DEPTH, false, pr);
-    _ledgerInjectEcho = picked.map(e => ({ id: e.id, 事由: e.事由, 类型: e.类型 }));
+    // 回显丰富版（多带起始锚/现状，供召回框显示起始时间+推测应至状态；picked 是完整条目，字段齐）。
+    _ledgerInjectEcho = picked.map(e => ({ id: e.id, 事由: e.事由, 类型: e.类型, 起始锚: e.起始锚, 现状: e.现状 }));
 }
 
 
@@ -2638,9 +2747,10 @@ async function runLedgerJudgeStep(manual = false) {
         if (!applied.length) { if (manual) showToast('没有需要更新的事件'); return; }
         // 通知：手动必反馈；自动仅 full 档弹（照三档静音约定）。
         if (manual || getSettings().notifyMode === 'full') {
-            showToast(`暗历刷新 ${applied.length} 条：${applied.join('、')} · 请注意查看`);
+            showToast(`刻度刷新 ${applied.length} 条：${applied.join('、')} · 请注意查看`);
         }
         refreshLedgerInjection();   // 现状/了结变了 → 重算注入集（关/空时内部自清）
+        refreshInlineWindow(true);  // 标注池现状变了 → 刷楼内框（最新 AI 楼读活账重挂标注池）
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     } catch (err) {
         if (ledgerJudgeAbort !== myCtrl) return;           // 被更新的判定取代 → 新的接管，别动
@@ -2648,7 +2758,7 @@ async function runLedgerJudgeStep(manual = false) {
         if (err?.name === 'AbortError') return;            // 中止 / 切档
         if (err?.spDisabled) return;                       // 插件关闭：静默
         if (getContext().chatId !== chatIdSnap) return;    // 已切 chat
-        showToast('暗历判定失败，请检查 API 或网络', null, true);
+        showToast('刻度判定失败，请检查 API 或网络', null, true);
     }
 }
 
@@ -3263,9 +3373,9 @@ function injectModal() {
 
                                     <label class="sp-mode-opt" style="margin-top:10px">
                                         <input type="checkbox" id="sp-inject-enabled" ${getSettings().injectEnabled !== false ? 'checked' : ''}>
-                                        <span>允许潜伏注入主楼 AI（线 / 面）</span>
+                                        <span>允许潜伏注入主楼 AI（线 / 面 / 刻度）</span>
                                     </label>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">总闸：关闭则线 / 面一律不注入主楼 AI（不影响楼内展示与手动生成）。各模块自身的注入开关仍需分别开启才生效。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">总闸：关闭则线 / 面 / 刻度一律不注入主楼 AI（不影响楼内展示与手动生成）。各模块自身的注入开关仍需分别开启才生效。</p>
                                 </div>
                             </details>
 
@@ -3375,7 +3485,7 @@ function injectModal() {
                                             <span id="sp-wi-exclude-count" class="sp-wi-exclude-drawer-count"></span>
                                         </summary>
                                         <div class="sp-wi-exclude-drawer-body">
-                                            <p class="sp-cfg-hint">勾选的世界书构画<strong>一律不读</strong>——优先级高于上面的挑选，即便某角色卡关联或全局启用了它也照样跳过。适合把「只给主楼 AI 读」的大部头设定书排除在点/线/轴/暗历判定之外。<strong>全局生效，对所有角色卡通用。</strong></p>
+                                            <p class="sp-cfg-hint">勾选的世界书构画<strong>一律不读</strong>——优先级高于上面的挑选，即便某角色卡关联或全局启用了它也照样跳过。适合把「只给主楼 AI 读」的大部头设定书排除在点/线/轴/刻度判定之外。<strong>全局生效，对所有角色卡通用。</strong></p>
                                             <input type="text" id="sp-wi-exclude-search" class="sp-input sp-wi-exclude-search" placeholder="查找世界书名…" autocomplete="off">
                                             <div id="sp-wi-exclude-list" class="sp-wi-exclude-list">
                                                 <span class="sp-cfg-hint">（展开时自动加载）</span>
@@ -3473,6 +3583,7 @@ function injectModal() {
                                         <span>楼内渲染框</span>
                                     </label>
                                     <div class="sp-inline-subtoggles">
+                                        <span class="sp-subtoggle-label">AI 楼</span>
                                         <label class="sp-mode-opt sp-mode-opt-sub">
                                             <input type="checkbox" id="sp-schedule-inline-enabled" ${getSettings().scheduleInlineEnabled !== false ? 'checked' : ''}>
                                             <span>点</span>
@@ -3487,7 +3598,12 @@ function injectModal() {
                                         </label>
                                         <label class="sp-mode-opt sp-mode-opt-sub">
                                             <input type="checkbox" id="sp-ledger-inline-enabled" ${getSettings().ledgerInlineEnabled !== false ? 'checked' : ''}>
-                                            <span>标注打捞</span>
+                                            <span>标注池</span>
+                                        </label>
+                                        <span class="sp-subtoggle-label" style="margin-top:6px">用户楼</span>
+                                        <label class="sp-mode-opt sp-mode-opt-sub">
+                                            <input type="checkbox" id="sp-recall-inline-enabled" ${getSettings().recallInlineEnabled !== false ? 'checked' : ''}>
+                                            <span>召回</span>
                                         </label>
                                     </div>
 
@@ -3573,7 +3689,7 @@ function injectModal() {
                                     <p class="sp-cfg-hint" style="margin-top:2px">开＝「今天」一推进就<b>自动在后台重排点</b>到今天（<b>每次多一趟 API</b>）。<b>关（默认）＝点原地不动、不后台调 API</b>；你想让点对齐今天时，去点面板<b>手动刷新一次</b>即可（刷新出来的点就从今天起排）。不常用点、想省 API 的就别开。</p>
 
                                     <hr class="sp-mem-divider">
-                                    <label class="sp-cfg-group">暗历 · 潜伏注入主楼 AI</label>
+                                    <label class="sp-cfg-group">刻度 · 潜伏注入主楼 AI</label>
                                     <label class="sp-mode-opt" style="margin-top:6px">
                                         <input type="checkbox" id="sp-ledger-inject" ${getSettings().ledgerInject === true ? 'checked' : ''}>
                                         <span>潜伏注入主楼 AI</span>
@@ -4027,6 +4143,40 @@ function injectModal() {
         triggerDeletePointEvent(day === 'future' ? 'future' : Number(day), idx);
     });
 
+    // 楼内「标注池」框（AI 楼）：summary 的打捞/更新 + 每条锁定/归档了结。钮在 <summary>/行内，需 stopPropagation 免折叠。
+    $('#chat').on('click', '.sp-inline-ledger-capture', function (e) {
+        e.stopPropagation();
+        if (isCapturingLedger) { showToast('正在标注中…'); return; }
+        runLedgerCaptureStep(true);   // 手动打捞：无新事件/无 API 时自带 toast
+    });
+    $('#chat').on('click', '.sp-inline-ledger-judge', function (e) {
+        e.stopPropagation();
+        if (isJudgingLedger) { showToast('正在更新中…'); return; }
+        runLedgerJudgeStep(true);     // 手动判定：无活跃条目/无改动时自带 toast
+    });
+    $('#chat').on('click', '.sp-inline-ledger-lock', function (e) {
+        e.stopPropagation();
+        const id = $(this).attr('data-id');
+        const it = id && ledger.getEntry(id);
+        if (!it) return;
+        if (it.锁 === '用户锁') { ledger.unlockEntry(id); showToast('已解锁 · AI 判定可再更新此条'); }
+        else { ledger.lockEntry(id); showToast('已锁定 · AI 判定不再改动此条'); }
+        refreshInlineWindow(true);
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
+    $('#chat').on('click', '.sp-inline-ledger-close', async function (e) {
+        e.stopPropagation();
+        const id = $(this).attr('data-id');
+        const it = id && ledger.getEntry(id);
+        if (!it) return;
+        const ok = await spConfirm({ title: '了结条目', body: `把「${it.事由}」移出活跃刻度？可在刻度页归档里捞回。`, confirmText: '了结', cancelText: '取消' });
+        if (!ok) return;
+        ledger.closeEntry(id);
+        refreshLedgerInjection();
+        refreshInlineWindow(true);
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
+
     // Inject buttons (event delegation)
     $(`#sp-body, #sp-outline-wrap, #sp-lines-wrap, #chat`).on('click', '.sp-inject-btn', function () {
         const text = _injectTexts[$(this).data('iid')];
@@ -4364,7 +4514,7 @@ function injectModal() {
         const id = $(this).closest('.sp-ledger-row').attr('data-id');
         const it = id && ledger.getEntry(id);
         if (!it) return;
-        const ok = await spConfirm({ title: '了结条目', body: `把「${it.事由}」移出活跃账？可在归档里捞回。`, confirmText: '了结', cancelText: '取消' });
+        const ok = await spConfirm({ title: '了结条目', body: `把「${it.事由}」移出活跃刻度？可在归档里捞回。`, confirmText: '了结', cancelText: '取消' });
         if (!ok) return;
         ledger.closeEntry(id);
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
@@ -4952,9 +5102,15 @@ function injectModal() {
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
-    // 标注打捞·显隐开关：只控这只读回显框显/隐，与注入 ledgerInject 解耦（关它注入照旧、只是不回显）。
+    // 标注池·显隐开关（AI 楼）：只控这只读回显框显/隐，与注入 ledgerInject 解耦（关它注入照旧、只是不回显）。
     $('#sp-ledger-inline-enabled').on('change', function () {
         getSettings().ledgerInlineEnabled = this.checked;
+        saveSettingsDebounced();
+        refreshInlineWindow(true);
+    });
+    // 召回·显隐开关（用户楼）：独立于标注池，只控用户楼召回框显/隐；与注入解耦。
+    $('#sp-recall-inline-enabled').on('change', function () {
+        getSettings().recallInlineEnabled = this.checked;
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
@@ -8397,7 +8553,7 @@ const STORAGE_KIND_LABELS = {
 const STORAGE_OWNKEY_LABELS = {
     'sp-memory' : '记忆',
     'sp-theater': '棱永久层',
-    'sp-ledger' : '暗历',
+    'sp-ledger' : '刻度',
 };
 
 function storageRow(label, bytesText, btnHtml = '', extraClass = '') {
@@ -9681,7 +9837,7 @@ function almToolbarHtml() {
         <div class="sp-alm-sheet-toggle">
             <button class="sp-alm-sheet-btn${_almanacSheet === 'upcoming' ? ' sp-alm-sheet-active' : ''}" data-sheet="upcoming">即将到来</button>
             <button class="sp-alm-sheet-btn${_almanacSheet === 'calendar' ? ' sp-alm-sheet-active' : ''}" data-sheet="calendar">日历</button>
-            <button class="sp-alm-sheet-btn${onLedger ? ' sp-alm-sheet-active' : ''}" data-sheet="ledger">暗历</button>
+            <button class="sp-alm-sheet-btn${onLedger ? ' sp-alm-sheet-active' : ''}" data-sheet="ledger">刻度</button>
         </div>
         ${onLedger ? '' : `<div class="sp-alm-tools">
             <button class="sp-icon-btn sp-alm-add" title="手动添加日期" aria-label="手动添加日期"><i class="fa-solid fa-plus"></i></button>
@@ -9932,7 +10088,7 @@ function renderLedgerEditor() {
         : `<div class="sp-led-adv-row"><span class="sp-led-adv-label">起始：${escapeHtml(fmtLedgerAnchorDate(e.起始锚?.历日期, cal) || '未记')}</span><button class="sp-led-adv-open" type="button">改起始锚</button></div>`;
     return `<div class="sp-alm-editor-head">
         <button class="sp-icon-btn sp-led-editor-back" title="返回"><i class="fa-solid fa-arrow-left"></i></button>
-        <span class="sp-alm-editor-title">编辑暗历条目</span>
+        <span class="sp-alm-editor-title">编辑刻度条目</span>
     </div>
     <div class="sp-alm-body">
         <div class="sp-alm-editor-body">
@@ -10026,7 +10182,7 @@ function renderLedgerSheet() {
         : '';
     if (!entries.length) {
         const hint = busy ? '正在标注…'
-            : `暂无活跃暗历条目。聊几楼后${on ? '自动标注' : '（先勾上「自动标注」）'}，或点右上「立即标注」。`;
+            : `暂无活跃刻度条目。聊几楼后${on ? '自动标注' : '（先勾上「自动标注」）'}，或点右上「立即标注」。`;
         return ctrl + `<div class="sp-ledger-empty">${hint}</div>` + archive;
     }
     return ctrl + `<div class="sp-ledger-list">${entries.map(e => ledgerRowHtml(e, cal)).join('')}</div>` + archive;

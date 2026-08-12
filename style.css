@@ -49,6 +49,10 @@
     --sp-fs-115: calc(18.4px  * var(--sp-scale));
     --sp-fs-180: calc(28.8px  * var(--sp-scale));
     --sp-fs-200: calc(32px    * var(--sp-scale));
+
+    /* —— 控件尺寸令牌：图标按钮方框随字号同步缩放。字号挂 --sp-fs-XX、方框此前漏挂，
+       缩放时字变小、22px 方框不动 → 钮显得过大（渲染框内尤明显）。—— */
+    --sp-btn-22: calc(22px * var(--sp-scale));
 }
 
 /* ─── Design tokens — legacy fallback layer (kept as safety net) ─────────────
@@ -116,9 +120,18 @@
 /* .sp-fab-btn 一并纳入：悬浮球 #sp-fab 挂在 <html> 下、在 .sp-root（#sp-modal-root）
    之外，拿不到这里映射的 --sp-primary，会导致 background:var(--sp-primary) 落空→
    悬浮球填充透明（看不见）。它自带 .sp-day/.sp-night 提供 legacy 回退、强制模式下
-   还会被加 .sp-forced-*（在下方、源序靠后→照常覆盖），级联语义与面板完全一致。 */
+   还会被加 .sp-forced-*（在下方、源序靠后→照常覆盖），级联语义与面板完全一致。
+   楼内渲染框（线/轴/点/标注池/召回）同理：注入 #chat、在 .sp-root 之外，若不在此
+   映射 --sp-primary/--sp-subtle/--sp-divider，其内胶囊（约定待办徽章、标签、起始/终止
+   日期块、标注/更新胶囊描边、锁/归档钮）的 var(--sp-*) 会落空→颜色/描边透明。故与
+   FAB 同款纳入本级联（色令牌随 ST 主题走，缺则回退 legacy）。 */
 .sp-root,
-.sp-fab-btn {
+.sp-fab-btn,
+.sp-lines-inline,
+.sp-almanac-inline,
+.sp-schedule-inline,
+.sp-ledger-inline,
+.sp-recall-box {
     --sp-on-surface  : var(--SmartThemeBodyColor,        var(--sp-on-surface-legacy));
     --sp-subtle      : color-mix(in oklab, var(--SmartThemeBodyColor, var(--sp-on-surface-legacy)) 62%, transparent);
     --sp-primary     : var(--SmartThemeQuoteColor,       var(--sp-primary-legacy));
@@ -155,6 +168,7 @@
 .sp-almanac-inline, .sp-almanac-inline *,
 .sp-schedule-inline, .sp-schedule-inline *,
 .sp-ledger-inline, .sp-ledger-inline *,
+.sp-recall-box, .sp-recall-box *,
 .sp-anchor-btn, .sp-anchor-btn *,
 .sp-tagpicker, .sp-tagpicker *,
 .sp-toast, .sp-toast * {
@@ -170,6 +184,7 @@
 .sp-almanac-inline,
 .sp-schedule-inline,
 .sp-ledger-inline,
+.sp-recall-box,
 .sp-anchor-btn,
 .sp-tagpicker,
 .sp-toast {
@@ -1284,12 +1299,20 @@ select.sp-input { appearance: none; cursor: pointer; }
     flex-shrink : 0;
     margin      : 0;
 }
-/* 楼内渲染框的四个子开关（点·线·轴·标注打捞）：缩进到主开关下面、横排可换行。 */
+/* 楼内渲染框的子开关：AI 楼(点·线·轴·标注池) + 用户楼(召回)，缩进到主开关下面、横排可换行。 */
 .sp-inline-subtoggles {
     display    : flex;
     flex-wrap  : wrap;
     gap        : 12px 18px;
     margin     : 5px 0 0 26px;
+}
+/* 分组小标题（「AI 楼」/「用户楼」）：占满一行强制断行，把两组开关分层。 */
+.sp-subtoggle-label {
+    flex-basis : 100%;
+    font-size  : var(--sp-fs-68);
+    font-weight: 600;
+    opacity    : 0.5;
+    margin     : 0;
 }
 .sp-mode-opt-sub { gap: 4px; opacity: 0.9; }
 .sp-input {
@@ -1935,8 +1958,8 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 /* 手选当前剧情点：仿 .sp-inject-btn，hover 卡片才显形；当前节点(.sp-beat-setcur-on)常亮 */
 .sp-beat-setcur {
-    width          : 22px;
-    height         : 22px;
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
     border         : none;
     background     : transparent;
     color          : var(--sp-subtle);
@@ -1955,8 +1978,8 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-beat-setcur-on               { opacity: 1; color: var(--sp-primary); }
 /* 面·逐 step 复制钮：仿 .sp-beat-setcur/.sp-inject-btn，hover 节点卡片才显形 */
 .sp-beat-copy {
-    width          : 22px;
-    height         : 22px;
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
     border         : none;
     background     : transparent;
     color          : var(--sp-subtle);
@@ -2327,8 +2350,8 @@ select.sp-input { appearance: none; cursor: pointer; }
 
 /* ─── Inject button ──────────────────────────────────────────────────────────── */
 .sp-inject-btn {
-    width          : 22px;
-    height         : 22px;
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
     border         : none;
     background     : transparent;
     color          : var(--sp-subtle);
@@ -2518,25 +2541,59 @@ select.sp-input { appearance: none; cursor: pointer; }
     text-overflow: ellipsis;
     white-space  : nowrap;
 }
-/* ─── 标注打捞（暗历注入回显·只读）─────────────────────────────────────────
-   楼内线块下方一节，逐条列本回合实际喂给主楼 AI 的暗历（编号无意义故不列，只出[类型]事由）。
-   纯只读、无操作钮；行样式贴合 .sp-inline-line 的节奏，类型药丸复用 .sp-inline-type。 */
-.sp-ledger-echo-row {
-    display      : flex;
-    align-items  : baseline;
-    gap          : 6px;
-    padding      : 6px 10px 6px 12px;
+/* ─── 暗历·标注池行（AI 楼）+ 召回行（用户楼）──────────────────────────────
+   标注池挂在 .sp-ledger-inline 区（.sp-dash-region 内），召回是独立 .sp-recall-box 外壳；
+   两处行都复用 .sp-inline-head/.sp-inline-name/.sp-inline-desc/.sp-inline-type/.sp-inline-when
+   （已在上方定义），此处只补行容器、内联滑块与标注池的锁定/归档钮。 */
+.sp-ledger-inline-body,
+.sp-recall-body {
+    max-height: calc(240px * var(--sp-scale));   /* 内联滑块：条目多了框内滚，别撑爆整层楼 */
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+.sp-ledger-inline-row,
+.sp-recall-row {
+    padding      : 7px 10px 7px 12px;
     border-bottom: 1px solid rgba(128,128,128,0.10);
 }
-.sp-ledger-echo-row:last-child { border-bottom: none; }
-.sp-ledger-echo-row > .sp-inline-type { flex: 0 0 auto; align-self: center; }
-.sp-ledger-echo-gist {
-    flex     : 1 1 auto;
-    min-width: 0;
-    font-size: var(--sp-fs-76);
-    opacity  : 0.9;
-    word-break: break-word;
+.sp-ledger-inline-row:last-child,
+.sp-recall-row:last-child { border-bottom: none; }
+/* 锁定态行：左内边框主色 + 轻微底色，一眼看出「保命·AI 判定不动」（复用 .sp-line-pinned 语义色）。 */
+.sp-ledger-inline-row.sp-line-pinned {
+    border-left: 2px solid var(--sp-primary);
+    background : rgba(125, 125, 235, 0.05);
 }
+/* 标注池行是「事由→日期行→标签行」堆叠。事由是文字行（line-height 自带半行 leading，视觉间隔≈5px），
+   日期行与标签行都是胶囊（背景填满行盒、无文字 leading），故胶囊行间需把 margin 提到 5px 补足那段 buffer，
+   才能与「事由→日期」的视觉间隔对称（纯 3px 会显窄）。限定 .sp-ledger-inline-row：不碰主面板 r3、也不碰召回行。 */
+.sp-ledger-inline-row .sp-ledger-r3 { margin-top: 5px; }
+
+/* 标注池每条的锁定/归档钮 —— 仿 .sp-line-del-one 骨架，随 --sp-scale 缩放；楼内移动端无 hover，
+   默认淡显（对齐注入按钮 0.55）。锁=主色语义（非危险），归档=红色语义（移出活跃、但可捞回）。 */
+.sp-inline-ledger-lock,
+.sp-inline-ledger-close {
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
+    padding        : 0;
+    border         : none;
+    background     : transparent;
+    color          : var(--sp-subtle);
+    cursor         : pointer;
+    border-radius  : 4px;
+    display        : flex;
+    align-items    : center;
+    justify-content: center;
+    font-size      : var(--sp-fs-68);
+    flex-shrink    : 0;
+    opacity        : 0.55;
+    transition     : opacity 0.15s, color 0.15s, background 0.15s;
+}
+.sp-inline-ledger-lock:hover,
+.sp-inline-ledger-close:hover { opacity: 1; }
+.sp-inline-ledger-lock:hover  { color: var(--sp-primary); background: rgba(125, 125, 235, 0.12); }
+.sp-inline-ledger-close:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); }
+/* 已锁定：常驻亮出主色，一眼看清锁没锁（对齐 .sp-line-card.sp-line-pinned .sp-line-pin-toggle）。 */
+.sp-inline-ledger-lock.sp-inline-locked { opacity: 0.9; color: var(--sp-primary); }
 .sp-inline-head > .sp-inline-stage,
 .sp-inline-head > .sp-inline-dots,
 .sp-inline-head > .sp-inline-when,
@@ -3155,8 +3212,8 @@ select.sp-input { appearance: none; cursor: pointer; }
 /* 单条删除 × —— 放在 head 行内，紧挨注入按钮并排，二者同尺寸。
    不用 absolute，避免跟常驻显示的注入按钮重叠、互相遮挡点击（楼内尤甚）。 */
 .sp-line-del-one {
-    width          : 22px;
-    height         : 22px;
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
     padding        : 0;
     border         : none;
     background     : transparent;
@@ -3182,8 +3239,8 @@ select.sp-input { appearance: none; cursor: pointer; }
 
 /* 锁定切换按钮 —— 仿 .sp-line-del-one 骨架，尺寸/布局一致，颜色语义不同（非危险操作） */
 .sp-line-pin-toggle {
-    width          : 22px;
-    height         : 22px;
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
     padding        : 0;
     border         : none;
     background     : transparent;
@@ -3211,8 +3268,8 @@ select.sp-input { appearance: none; cursor: pointer; }
 
 /* 点·锁定切换按钮 —— 仿 .sp-line-pin-toggle / .sp-inject-btn：hover 点卡片才浮现，已锁常驻亮出 */
 .sp-point-pin-toggle {
-    width          : 22px;
-    height         : 22px;
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
     padding        : 0;
     border         : none;
     background     : transparent;
@@ -3255,8 +3312,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     align-items: center;
 }
 .sp-inline-summary-actions button {
-    width          : 22px;
-    height         : 22px;
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
     padding        : 0;
     background     : transparent;
     border         : none;
@@ -3274,6 +3331,22 @@ select.sp-input { appearance: none; cursor: pointer; }
     opacity   : 1;
     color     : var(--sp-primary);
     background: rgba(127, 127, 127, 0.12);
+}
+/* 标注池 summary 的「标注 / 更新」是文字胶囊（.sp-ledger-pill），别被上面 22px 方钮规则压成方块：
+   放开宽高、恢复胶囊内边距/描边，字号跟楼内缩放令牌。特异度 (0,2,0) 压过 .sp-inline-summary-actions button (0,1,1)。 */
+.sp-inline-summary-actions .sp-ledger-pill {
+    width      : auto;
+    height     : auto;
+    padding    : 3px 11px;
+    opacity    : 1;
+    border     : 1px solid var(--sp-divider);
+    color      : var(--sp-on-surface);
+    font-size  : var(--sp-fs-70);
+}
+.sp-inline-summary-actions .sp-ledger-pill:hover {
+    background  : var(--sp-hover-bg);
+    border-color: var(--sp-primary);
+    color       : var(--sp-primary);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -5304,8 +5377,8 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-sch-drawer-item:hover .sp-inject-btn,
 .sp-sch-drawer-item .sp-inject-btn:hover { opacity: 1; }
 .sp-sch-del-one {
-    width          : 22px;
-    height         : 22px;
+    width          : var(--sp-btn-22);
+    height         : var(--sp-btn-22);
     padding        : 0;
     border         : none;
     background     : transparent;
