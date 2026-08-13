@@ -7635,6 +7635,10 @@ function startSpaceInlineEdit($msg, idx) {
 // 但注入只是多给点上下文，真正改不改由提示词把关，代价可控。平时不命中就不注入，省 token。
 const EDIT_POINT_KEYWORDS = ['日程', '日历', '待办', '点'];
 const EDIT_LINE_KEYWORDS  = ['事件线', '线索', '伏笔', '线'];
+// 刻度（暗历·时间账）触发词：命中才把活跃条目喂进「间」（省 token，与点/线同套路）。
+const LEDGER_READ_KEYWORDS = ['刻度', '暗历', '暗账', '状态', '伤', '病', '孕', '约定', '周期', '待办', '身心', '现在怎', '好了没', '没了结'];
+// 排障/答疑触发词：命中才把「插件功能 FAQ + 当前开关状态」喂进「间」，让它当客服答「XX 在哪 / 怎么开 / 为啥没生效」。
+const SPACE_HELP_KEYWORDS = ['悬浮球', '悬浮按钮', '开关', '在哪', '怎么开', '怎么用', '怎么设', '为什么', '为啥', '没反应', '没生效', '不生效', '注入', '没出现', '不显示', '设置在', '功能', '干嘛', '干什么', '啥用', '什么用', '怎么弄', '找不到', '能不能', '可以吗', '能吗', '会吗', '支持', '自动', '后台'];
 
 function readCacheRaw(desc) {
     const saved = readStore(desc);
@@ -7675,6 +7679,62 @@ function numberedLineList(raw) {
     }).join('\n');
 }
 
+// 「间」可读的活跃刻度清单（只读参考，非编号可改列表——刻度不走「改第N条」落地）。
+// 复用注入侧的距今/倒计时语义，但去掉「别念编号」等主楼叙事约束（间是局外答问、可直说）。
+function numberedLedgerList() {
+    let items = [];
+    try { items = ledger.listEntries() || []; } catch { return ''; }
+    if (!items.length) return '';
+    return items.map(e => {
+        const who = e.牵扯?.length ? `${e.牵扯.join('、')}：` : '';
+        if (e.类型 === '持续状态') {
+            const since = ledgerDaysSince(e);
+            const s = since == null ? '' : (since === 0 ? '（今天起）' : `（已 ${since} 天）`);
+            return `- ${who}${e.事由}${s}——现状「${e.现状 || '—'}」`;
+        }
+        const du = ledgerDueInfo(e);
+        const dueStr = !du ? '（未定期）' : (du.天数 === 0 ? '（今天到期）' : (du.过期 ? `（已过期 ${du.天数} 天）` : `（还有 ${du.天数} 天）`));
+        const cyc = e.周期长度 ? `·约 ${e.周期长度} 天一轮` : '';
+        return `- ${who}${e.事由}${dueStr}${cyc}——现状「${e.现状 || '—'}」`;
+    }).join('\n');
+}
+
+// 「间」排障/答疑知识：插件功能 + 每个开关的真实位置（照设置面板实际文案/结构，不是模块简介）。
+// 静态骨架部分是死知识；动态部分（buildSpaceHelpText）再拼当前开关的实际开/关状态，让间能答「你这个没开」。
+const SPACE_HELP_FACTS = `【构画·功能与设置速查（你据此回答用户关于"某开关在哪、怎么开、为啥没生效"的问题，要答得具体、能指路，别只泛泛介绍模块）】
+· 【拿不准就别编，铁律】只回答这份速查覆盖到、或你有明确依据的内容；速查没写到、或你不确定的构画细节，老实说"这条我不太确定，建议点开设置里对应的小问号看说明"，**绝不凭大模型常识编造构画的功能、开关或用法**——宁可说不知道，也别给个听着合理的错答案误导用户。
+· 面板入口：点屏幕上的「构画」悬浮球打开主面板；面板左侧竖排是模块页签——点、轴、线、面、间、棱、坐标。
+· 悬浮球开关：在主面板**右上角**、标题栏那排小图标里——一个**空心圆点**图标（鼠标停上去显示"悬浮按钮"），点它切换悬浮球显示/隐藏（它旁边分别是主题切换、关闭）。**它不在设置里**，很多人找不到就是因为在找设置页。关掉悬浮球后想再打开面板，可从酒馆的扩展/魔杖菜单进入。
+· 设置入口：主面板里的齿轮「设置」。设置从上到下分几大块：总开关 / 基础设置（API、世界书、记忆、显示与通知）/ 模块设置（时间戳、轴、线、面、棱、间）/ 高级设置（标签、自定义提示词、存储管理）。
+· 总开关（设置最顶部）：①「启用构画」——关了整个插件如同未安装。②「允许潜伏注入主楼 AI（线/面/刻度）」——这是**注入总闸**，它关着的话，就算线/面/刻度各自的注入开关开了也不会注入。用户说"我开了注入怎么没用"先让他确认这个总闸。
+· 【谁能后台注入主楼 AI（关键事实，别答错）】只有**三家**能潜伏注入主楼 AI：线、面（大纲）、刻度（暗历）。**「点/日程」不能后台自动注入主楼 AI**——它是只读展示（面板卡片 + 楼内日程条），只能手动生成/刷新，没有"注入开关"。同理「轴/历」本身也不注入正文（历只在楼内挂只读日程块）。用户问"点能不能后台自动注入/自动喂给 AI"，答案是**不能**，别顺着说可以；他要的效果得靠线/面/刻度承载。
+· 时间戳（设置→模块设置→时间戳）：「启用时间戳」，让主楼 AI 每楼打隐形时间戳作时间源，默认开。
+· 轴（设置→模块设置→轴）：含「读不到戳时用 API 兜底判定日期」「点·后台自动跟随今天」「（刻度）潜伏注入主楼 AI」等。
+· 线（设置→模块设置→线）：「启用平行事件（线）」「潜伏注入主楼 AI」「虚线·冷知识」「推进策略（回合/时间/手动）+ 间隔」。
+· 面（设置→模块设置→面）：「大纲自动注入」+ 判定间隔。
+· 刻度/暗历（自动标注）：开关在设置里，默认**关**（opt-in，会多一路后台 API）。要它自动从剧情捞状态/约定，得手动开；也可在轴面板的暗账页手动「立即标注」。
+· 楼内渲染框（设置→基础设置→显示与通知）：主开关「楼内渲染框」，下面有子开关分别控制 点/线/轴/标注池/召回 这几个框显不显；主开关关了子开关全失效。
+· 界面字号：设置→显示与通知里的 −／＋ 步进，独立于酒馆自身的字号。
+· 通知档位：关／简约／全量三档。`;
+
+// 动态拼当前开关实际状态（让间能直接指出「你这个开关现在是关的」，而非泛泛而谈）。
+function buildSpaceHelpText() {
+    const s = getSettings();
+    const on = v => v ? '开' : '关';
+    const state = [
+        `\n【该用户此刻的开关实况（据此排障；发现用户想要的效果依赖的开关是"关"，直接点出来）】`,
+        `- 启用构画：${on(s.pluginEnabled !== false)}`,
+        `- 潜伏注入总闸（线/面/刻度注入的总开关）：${on(s.injectEnabled !== false)}`,
+        `- 时间戳：${on(s.storyClockEnabled !== false)}`,
+        `- 线·启用：${on(s.linesEnabled !== false)}；线·潜伏注入：${on(s.linesInject === true)}`,
+        `- 面·大纲自动注入：${on(s.outlineInject === true)}`,
+        `- 刻度·自动标注：${on(s.ledgerCaptureEnabled === true)}；刻度·潜伏注入：${on(s.ledgerInject === true)}`,
+        `- 楼内渲染框·主开关：${on(s.inlineRenderEnabled !== false)}`,
+        `- 悬浮球显示：${on(s.fabShow !== false)}`,
+    ].join('\n');
+    return `${SPACE_HELP_FACTS}\n${state}`;
+}
+
 // 发给 API 前，把历史 AI 回复里的结构化卡片块换成占位符。旧卡片带的是当时的点/线数据，
 // 会污染"改第 N 条"定位（AI 可能照抄历史里的旧内容）；system 已注入最新编号列表作为唯一真相源。
 // 只作用于发给 API 的副本，不改 spaceChatHistory 本身，界面显示与"应用"按钮不受影响。
@@ -7701,6 +7761,9 @@ async function buildSpaceChatMessages(userMsg) {
     const msg = String(userMsg || '');
     const pointList = EDIT_POINT_KEYWORDS.some(w => msg.includes(w)) ? numberedPointList(readCacheRaw(getCacheKey())) : '';
     const lineList  = EDIT_LINE_KEYWORDS.some(w => msg.includes(w))  ? numberedLineList(readCacheRaw(getLinesCacheKey())) : '';
+    // 命中刻度词才喂活跃刻度（问状态/伤情/约定/周期时才带，省 token）；命中排障/答疑词才喂功能FAQ+开关实况
+    const ledgerList = LEDGER_READ_KEYWORDS.some(w => msg.includes(w)) ? numberedLedgerList() : '';
+    const faqText    = SPACE_HELP_KEYWORDS.some(w => msg.includes(w))  ? buildSpaceHelpText() : '';
     const wiContext = await buildWorldInfoContext(ctx);
     const memText   = await getMemText();
     const recentCtx = await buildRecentChatContext(ctx);
@@ -7716,8 +7779,10 @@ async function buildSpaceChatMessages(userMsg) {
         recentCtx,
         pointList,
         lineList,
+        ledgerList,
         almanacText: getAlmanacInjectText(),
         calDescText: getCalDescInjectText(),
+        faqText,
         personaOverride: (getSettings().spacePersona || '').trim(),   // 间·人格覆盖：填了就换间的语气/人格（顾问身份恒保留）
     });
     return [{ role: 'system', content: sys }, ...stripWidgetsForApi(spaceChatHistory), { role: 'user', content: userMsg }];

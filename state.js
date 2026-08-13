@@ -103,7 +103,7 @@ export function buildCreativeChatSystemPrompt({ userName, charName, personaDesc 
     ].filter(Boolean).join('\n');
 }
 
-export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', memText = '', recentCtx = '', pointList = '', lineList = '', almanacText = '', calDescText = '', personaOverride = '' }) {
+export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '', authorNote = '', outlineRaw = '', wiContext = '', memText = '', recentCtx = '', pointList = '', lineList = '', ledgerList = '', almanacText = '', calDescText = '', faqText = '', personaOverride = '' }) {
     // 间·人格覆盖：用户填了就用它取代默认「表达分寸」（ADVISOR_TONE_GUIDE）——换的是间的语气/行文/人格色彩，
     // 但「你是创作顾问、不推进剧情、不扮演角色」那句恒定保留（最高纲领，不能被覆盖，否则 AI 会跑去推剧情/扮演）。
     // 空白＝用内置 ADVISOR_TONE_GUIDE（现状不变）。override 非 append：填了默认那段就整体让位。
@@ -121,8 +121,10 @@ export function buildSpaceChatSystemPrompt({ userName, charName, personaDesc = '
         recentCtx,
         pointList ? `\n【当前的点·按序号（可改）】\n${pointList}` : '',
         lineList  ? `\n【当前的线·按序号（可改）】\n${lineList}` : '',
+        ledgerList ? `\n【当前的刻度（暗历·时间账）】以下是插件在后台从剧情里捞出、随时间推移仍牵动角色的事（伤情/身心状态、约定待办、周期）：\n${ledgerList}\n用户问「某人现在什么状态 / 伤好了没 / 有哪些没了结的约定 / 下次周期哪天」等，以此为准回答；这是只读参考，你不改动它、也不要向用户报条目编号。` : '',
         almanacText ? `\n【本世界观·重要日期（历）】一年之中的既定节日、生日、纪念日（按月日排序）：\n${almanacText}\n涉及日期、节日、生日、纪念日的问题以此为准。用户要记录的日期若已在其中，直接指出即可，不要重复出历卡片。` : '',
         calDescText ? `\n【本世界观·现行历法（纪年）】${calDescText}\n用户要「改历法/调月份/改纪年名」时，以此为基准做**增量修改**：没提到要改的月份/纪年名逐一保留原值，输出完整的新 <era_widget>（含所有未改动的月份行）。` : '',
+        faqText,
         `\n回答风格：`,
         `- 尽可能用更少的文字阐述更多的内容，确保信息密度`,
         `- 长度由问题决定：一句能说清的绝不写两句；确实需要展开的（如剧情推演、设定考据），才分点铺陈`,
