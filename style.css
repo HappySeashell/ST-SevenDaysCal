@@ -436,6 +436,33 @@
 @media (min-width: 641px) {
     .sp-module-intro-pop { right: auto; max-width: 380px; }
 }
+/* 小百科·图标图例（intro 气泡内）：lede 段 + 「图标 名称 说明」行 + 分节小标题。 */
+.sp-intro-lede { margin: 0 0 8px; }
+.sp-intro-lede + .sp-intro-key { margin-top: -2px; }
+.sp-intro-sub {
+    margin: 12px 0 6px;
+    padding-top: 9px;
+    border-top: 1px solid var(--sp-divider);
+    font-weight: 700;
+    color: var(--sp-primary);
+    letter-spacing: 0.03em;
+}
+.sp-intro-key {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 2px 0;
+    line-height: 1.5;
+}
+.sp-intro-key > i {
+    flex: 0 0 1.4em;
+    margin-top: 0.18em;
+    text-align: center;
+    color: var(--sp-subtle);
+    font-size: 0.92em;
+}
+.sp-intro-key > b { flex: 0 0 auto; font-weight: 600; white-space: nowrap; }
+.sp-intro-key > span { color: var(--sp-subtle); }
 
 /* Sub-toggle (我/TA) sits in content head next to title */
 .sp-sub-toggle {
@@ -2673,6 +2700,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     border-left: 2px solid var(--sp-primary);
     background : rgba(125, 125, 235, 0.05);
 }
+/* 静音态行（暂停埋入）：轻琥珀底，区别于锁定的主色调；仍在池里、只是暂不注入。 */
+.sp-ledger-inline-row.sp-ledger-paused { background: color-mix(in oklab, var(--sp-warn, #e0a030) 6%, transparent); }
 /* 标注池行是「事由→日期行→标签行」堆叠。事由是文字行（line-height 自带半行 leading，视觉间隔≈5px），
    日期行与标签行都是胶囊（背景填满行盒、无文字 leading），故胶囊行间需把 margin 提到 5px 补足那段 buffer，
    才能与「事由→日期」的视觉间隔对称（纯 3px 会显窄）。限定 .sp-ledger-inline-row：不碰主面板 r3、也不碰召回行。 */
@@ -2681,6 +2710,7 @@ select.sp-input { appearance: none; cursor: pointer; }
 /* 标注池每条的锁定/归档钮 —— 仿 .sp-line-del-one 骨架，随 --sp-scale 缩放；楼内移动端无 hover，
    默认淡显（对齐注入按钮 0.55）。锁=主色语义（非危险），归档=红色语义（移出活跃、但可捞回）。 */
 .sp-inline-ledger-lock,
+.sp-inline-ledger-mute,
 .sp-inline-ledger-close {
     width          : var(--sp-btn-22);
     height         : var(--sp-btn-22);
@@ -2699,11 +2729,15 @@ select.sp-input { appearance: none; cursor: pointer; }
     transition     : opacity 0.15s, color 0.15s, background 0.15s;
 }
 .sp-inline-ledger-lock:hover,
+.sp-inline-ledger-mute:hover,
 .sp-inline-ledger-close:hover { opacity: 1; }
 .sp-inline-ledger-lock:hover  { color: var(--sp-primary); background: rgba(125, 125, 235, 0.12); }
+.sp-inline-ledger-mute:hover  { color: var(--sp-warn, #e0a030); background: color-mix(in oklab, var(--sp-warn, #e0a030) 14%, transparent); }
 .sp-inline-ledger-close:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); }
 /* 已锁定：常驻亮出主色，一眼看清锁没锁（对齐 .sp-line-card.sp-line-pinned .sp-line-pin-toggle）。 */
 .sp-inline-ledger-lock.sp-inline-locked { opacity: 0.9; color: var(--sp-primary); }
+/* 已静音（暂停埋入）：常驻亮出琥珀色（--sp-warn），区别于锁的主色。 */
+.sp-inline-ledger-mute.sp-inline-paused { opacity: 0.9; color: var(--sp-warn, #e0a030); }
 .sp-inline-head > .sp-inline-stage,
 .sp-inline-head > .sp-inline-dots,
 .sp-inline-head > .sp-inline-when,
@@ -4848,6 +4882,11 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 /* 已锁条：整行左缘主色竖条 + 锁钮常亮，一眼看出「AI 不动它」。 */
 .sp-ledger-locked { border-left: 2px solid var(--sp-primary); }
 .sp-ledger-locked .sp-ledger-lock-toggle { opacity: 0.9; color: var(--sp-primary); }
+/* 已静音条（暂停埋入）：整行轻琥珀底 + 铃铛钮常亮（琥珀色），区别于「已锁」的主色左竖条。语义=「暂不注入·仍在账上」。 */
+.sp-ledger-row.sp-ledger-paused { background: color-mix(in oklab, var(--sp-warn, #e0a030) 8%, transparent); }
+.sp-ledger-paused .sp-ledger-mute-toggle { opacity: 0.9; color: var(--sp-warn, #e0a030); }
+/* 铃铛钮 hover 预览琥珀（示意「静音」动作），压过 .sp-ledger-actions button:hover 的主色（同特异性·靠后取胜，仿 close/remove）。 */
+.sp-ledger-actions .sp-ledger-mute-toggle:hover { color: var(--sp-warn, #e0a030); background: color-mix(in oklab, var(--sp-warn, #e0a030) 14%, transparent); }
 /* ── 归档折叠区（已了结）：标题条一行点开/收起，展开后列出已了结条目（捞回/彻底删）。 ── */
 .sp-ledger-archive { margin-top: 9px; }
 .sp-ledger-archive-head {

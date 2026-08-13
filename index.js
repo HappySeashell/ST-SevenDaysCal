@@ -124,14 +124,62 @@ const DEFAULT_JAILBREAK = `<sanctuary_override_directive>
 
 // 模块介绍：内容标题旁「?」点开的小气泡文案。键对应侧栏 data-view。每段控制在 200 字内、面向使用者。
 // 想改文字直接改这里即可（纯展示，不入库、不注入 AI）。
+// 小百科·图标图例：模块介绍气泡内容。lede（这模块干嘛的·一句话）+ 若干「真 FontAwesome 图标 + 名称 + 一句话」，
+// 图标与界面所见一致，用户对号入座即知每个钮啥意思。渲染端用 .html() 注入（内容全为作者手写、无用户输入，无注入面）。精简为主。
+const _iLede = t => `<p class="sp-intro-lede">${t}</p>`;
+const _iSub  = t => `<div class="sp-intro-sub">${t}</div>`;
+const _iKey  = (icon, name, desc) => `<div class="sp-intro-key"><i class="fa-solid ${icon}"></i><b>${name}</b><span>${desc}</span></div>`;
+
 const MODULE_INTROS = {
-    schedule: '「点」是当前视角（我 / TA）的近期待办与状态卡片。它读取聊天剧情，自动推断某人此刻在做什么、接下来有什么安排、心情与所在地，用一张张卡片罗列出来。可手动生成或刷新；也能锁定某条事件，让它在下次重算时被保留不动。适合快速掌握「现在谁在哪、要干嘛」。',
-    almanac : '「轴」是这个世界的历法与节日日历。既能定义整套历法——一年几个月、每月几天、纪年名（不必套用公历），也能把节日 / 生日 / 纪念日按月日录进去（支持跨多天的假期），它会依你的历法自动算周几、标出即将到来的日子。这些时间设定还会反哺点 / 线 / 大纲的生成，让故事与世界的历法自洽。',
-    lines   : '「线」追踪剧情里的伏笔与暗线——那些已经埋下、还没收束的悬念。它随对话按你设的节奏往前推进；可以锁定某条重点线不让它被冲掉，也可以选择把活跃的线隐形注入正式对话，悄悄提醒 AI 别忘了这些伏笔。是长线叙事的「备忘」。',
-    outline : '「面」是整段故事的大纲 / 节拍表。它把剧情拆成若干节点，标出「现在演到哪、下一步去哪」。你可以手动狙击当前节点（再点一下取消），也可以开启自动判定让游标随剧情前进；开启注入后会隐形引导 AI 顺着大纲走，不至于跑偏。',
-    space   : '「间」是一个「局外」对话空间——跳出角色扮演，直接和 AI 聊剧情、设定、人物关系、世界观知识。这里说的话不进入正式对话、不影响角色。聊出结果后，还能一句话让它落地成点、线、轴或历法卡片，直接写进对应模块——相当于你和「导演」私下对完戏，顺手就把决定归了档。',
-    theater : '「棱」是小剧场：基于当前故事背景，让 AI 写一段独立的短篇 / 番外。可以设定文风与范文，先生成初稿再美化。产出不会塞进正式对话，纯当创作素材、番外彩蛋或灵感来源。想看「如果……会怎样」时很好用。',
-    anchor  : '「坐标」是楼层收藏夹。把喜欢的楼层一键「收藏」下来（连同当时的样式快照），按角色 / 聊天归档，日后可随时回看名场面。可以在每楼角色名旁点星收藏，也能打标签分类管理。是给高光时刻做的书签。',
+    schedule:
+        _iLede('「点」＝当前视角（我／TA）的近期待办与状态卡片：读剧情自动推断某人此刻在做什么、心情、所在地。只读展示，不注入正文。') +
+        _iKey('fa-rotate-right', '生成／刷新', '按最新剧情重算卡片') +
+        _iKey('fa-lock',         '锁定',       '这条重算时保留不动') +
+        _iKey('fa-thumbtack',    '固定 TA',    '把某人钉进 TA▾ 抽屉常驻') +
+        _iKey('fa-xmark',        '删除',       '移除这张卡'),
+    almanac:
+        _iLede('「轴」＝这个世界的历法＋节日日历，并内嵌「刻度（时间账）」。历法／节日反哺点／线／面的生成，让故事与世界历法自洽。') +
+        _iSub('节日 · 历法') +
+        _iKey('fa-wand-magic-sparkles', '生成节日', 'AI 按世界观铺满一整年') +
+        _iKey('fa-heart-circle-plus', '补录纪念日', '只增补新里程碑，不重铺、不动现有日历') +
+        _iKey('fa-plus',          '添加',     '手动录节日／生日／纪念日') +
+        _iKey('fa-calendar-days', '历法管理', '定义月份、天数、纪年名') +
+        _iKey('fa-lock',          '锁定',     '重新生成时保留此条') +
+        _iKey('fa-pen',           '编辑',     '改名／改日期／改说明') +
+        _iSub('刻度 · 时间账') +
+        _iLede('从正文自动打捞「此时·此事·此状态」，按天数推算现状、悄悄提醒主楼（你不用手算）。分<b>持续状态／约定待办／周期</b>三类；楼内「标注池」顶部［标注］手动捞新条、［更新］按时间刷现状。每条：') +
+        _iKey('fa-lock',        '锁定',     'AI 判定车不再改动此条') +
+        _iKey('fa-bell',        '暂停埋入', '暂不注入主楼、但仍在账上跟进（再点恢复）') +
+        _iKey('fa-check',       '了结',     '从活跃移除、归档（可捞回）') +
+        _iKey('fa-pen',         '编辑',     '手动改现状／字段') +
+        _iKey('fa-rotate-left', '捞回',     '归档区：把了结条拉回活跃') +
+        _iKey('fa-trash',       '彻底删',   '归档区：不可恢复地删除'),
+    lines:
+        _iLede('「线」＝追踪剧情伏笔与暗线：那些已埋下、还没收束的悬念。随对话按你设的节奏推进，可隐形注入正文提醒 AI 别忘。') +
+        _iKey('fa-rotate-right', '重新生成', '推翻重排全部线') +
+        _iKey('fa-forward',      '推进',     '在已有线上继续往下推演') +
+        _iKey('fa-lock',         '锁定',     '重点线不被冲掉') +
+        _iKey('fa-xmark',        '删除',     '移除这条线'),
+    outline:
+        _iLede('「面」＝整段故事的大纲／节拍表：拆成若干节点、标出现在演到哪、下一步去哪。开注入后隐形引导 AI 顺大纲走。') +
+        _iKey('fa-location-crosshairs', '狙击当前点', '手选剧情游标（再点取消）') +
+        _iKey('fa-rotate-right',        '重新生成',   '按剧情重排节拍表'),
+    space:
+        _iLede('「间」＝局外创作顾问：跳出角色扮演，直接和 AI 聊剧情、设定、人物、世界观，聊出的结论还能<b>整理成卡片、一键落地</b>到点／线／轴／历法。这里的对话不进正式剧情、也不影响角色。') +
+        _iKey('fa-paper-plane',    '发送',            '向创作顾问发问') +
+        _iKey('fa-broom',          '清空',            '清掉这段局外对话') +
+        _iKey('fa-plus',           '应用到点／线／轴',  '把顾问给的日程／事件线／节日卡一键写进对应模块') +
+        _iKey('fa-calendar-check', '应用历法',         '把顾问拟的历法（月份／纪年）一键换上'),
+    theater:
+        _iLede('「棱」＝小剧场：基于当前故事背景写一段独立短篇／番外（「如果……会怎样」）。点「生成小剧场」出初稿，产出不进正式对话、纯当素材。') +
+        _iKey('fa-shuffle', '随机', '从模板库抽一个直接生成') +
+        _iKey('fa-expand',  '全屏浏览', '铺满视口、便于截图'),
+    anchor:
+        _iLede('「坐标」＝楼层收藏夹：把喜欢的楼层连同当时的样式快照一键收藏，按角色／聊天归档，日后随时回看名场面。') +
+        _iKey('fa-star',   '收藏',     '楼层角色名旁点星收藏') +
+        _iKey('fa-tags',   '标签管理', '给收藏分类') +
+        _iKey('fa-expand', '全屏浏览', '便于截图') +
+        _iKey('fa-trash',  '删除收藏', '移除这条收藏'),
 };
 
 let lastDebugPayload = null;
@@ -254,6 +302,7 @@ let _anchorFullTagEdit   = false;  // 全文视图「编辑标签」是否内联
 let almanacMode          = false;  // 历（日历）视图是否激活
 let isGeneratingAlmanac  = false;
 let almanacAbortController = null;
+let _almGenLabel         = '正在编排历法';   // 历生成中 loading 文案：整历生成 vs 增量补录纪念日 共用同一把锁，仅文案区分
 let _almanacSheet        = 'upcoming';   // 历子视图：'upcoming'（即将到来清单）| 'calendar'（月历网格）
 let _almanacCalMonth     = null;   // 月历当前月份（0-11）；null → 首次渲染取真实今天所在月。历不挂年，只按月/日
 let _almanacCalDay       = null;   // 月历里选中的某天（1-31）；null → 详情区显示整月
@@ -274,6 +323,7 @@ const isMobile = () => window.innerWidth <= 640;
 const ACTION_MENU_CONFIGS = Object.freeze({
     almanac: Object.freeze([
         Object.freeze({ action: 'generate-almanac', icon: 'fa-wand-magic-sparkles', label: '生成节日', title: 'AI 按世界观铺满一整年' }),
+        Object.freeze({ action: 'supplement-anniversary', icon: 'fa-heart-circle-plus', label: '补录纪念日', title: '只增补新里程碑，不重铺、不动现有日历' }),
         Object.freeze({ action: 'manage-calendar', icon: 'fa-calendar-days', label: '历法管理', title: '查看、编辑和管理历法模板' }),
     ]),
 });
@@ -1053,7 +1103,7 @@ function captureSnapshot() {
         pool = (ledger.listEntries() || []).map(e => ({
             id: e.id, 事由: e.事由, 类型: e.类型,
             起始锚: cloneAnchor(e.起始锚), 周期长度: e.周期长度, 到期锚: cloneAnchor(e.到期锚),
-            标签: Array.isArray(e.标签) ? e.标签.slice() : [], 锁: e.锁,
+            标签: Array.isArray(e.标签) ? e.标签.slice() : [], 锁: e.锁, 静音: e.静音,
         }));
     } catch { pool = []; }
     return { point, line, almanac, anchor: anchorMD, pool };
@@ -1188,10 +1238,12 @@ function _buildLedgerBlockHtml(poolArg = null, readOnly = false) {
         const tcls = ledgerTypeClass(it.类型);   // 行挂类型类 → --ledger-c 级联给类型胶囊上色（持续状态/约定/周期各一色）
         const type = it.类型 ? `<span class="sp-ledger-type">${escapeHtml(it.类型)}</span>` : '';
         const locked = it.锁 === '用户锁';
+        const paused = it.静音 === true;   // 暂停埋入
         let rowActions = '';
         if (!readOnly) {
             rowActions = `<span class="sp-beat-actions">
                     <button class="sp-inline-ledger-lock${locked ? ' sp-inline-locked' : ''}" data-id="${escapeAttr(it.id)}" title="${locked ? '已锁定 · 点击解锁' : '锁定 · AI 判定不再改动此条'}"><i class="fa-solid fa-${locked ? 'lock' : 'lock-open'}"></i></button>
+                    <button class="sp-inline-ledger-mute${paused ? ' sp-inline-paused' : ''}" data-id="${escapeAttr(it.id)}" title="${paused ? '已暂停埋入 · 点击恢复' : '暂停埋入 · 暂不注入主楼'}"><i class="fa-solid fa-${paused ? 'bell-slash' : 'bell'}"></i></button>
                     <button class="sp-inline-ledger-close" data-id="${escapeAttr(it.id)}" title="归档了结 · 移出活跃、可捞回"><i class="fa-solid fa-box-archive"></i></button>
                 </span>`;
         }
@@ -1204,7 +1256,7 @@ function _buildLedgerBlockHtml(poolArg = null, readOnly = false) {
         const datesRow = dates ? `<div class="sp-ledger-dates">${dates}</div>` : '';
         const tags = (it.标签 || []).map(t => `<span class="sp-ledger-tag">${escapeHtml(t)}</span>`).join('');
         const tagsRow = tags ? `<div class="sp-ledger-r3">${tags}</div>` : '';
-        return `<div class="sp-ledger-inline-row sp-ledger-${tcls}${locked ? ' sp-line-pinned' : ''}" data-id="${escapeAttr(it.id)}">
+        return `<div class="sp-ledger-inline-row sp-ledger-${tcls}${locked ? ' sp-line-pinned' : ''}${paused ? ' sp-ledger-paused' : ''}" data-id="${escapeAttr(it.id)}">
                 <div class="sp-inline-head">${type}${rowActions}</div>
                 <div class="sp-inline-name">${escapeHtml(it.事由)}</div>
                 ${datesRow}
@@ -2623,12 +2675,32 @@ function scoreLedgerEntry(entry, sceneText, _today) {
     return score;
 }
 
-// 选注入集：打分降序取前 limit；活跃 ≤ limit 时全带。空进空出。
-// RAG 口子：将来换外部检索，替换本函数体的排序来源即可（打分器 scoreLedgerEntry 单点可换）。
+// 相关度门槛：此刻是否「确有理由被想起」。任一命中即可注入；全不中＝当下静默条，这轮不埋（仍活跃、仍在池里）。
+// 与 scoreLedgerEntry 分工：这里是「注不注入」的布尔闸；score 只在相关条超上限时用来排序取前 N。
+// 判据：① 用户锁（手动在意·等于「始终纳入」）② 正文点到名（牵扯/标签命中近景）③ 有临近/过期死线（≤7 天或已过）④ 刚登记（≤2 天还热）。
+function isLedgerSalient(entry, sceneText) {
+    if (entry.锁 === '用户锁') return true;                       // 用户手动锁的 → 一定带（想常驻注入就锁它）
+    if (sceneText) {
+        const keys = [...(entry.牵扯 || []), ...(entry.标签 || [])].filter(Boolean);
+        if (keys.some(k => sceneText.includes(k))) return true;   // 正文正谈到 → 此刻最相关
+    }
+    const du = ledgerDueInfo(entry);
+    if (du && (du.过期 || du.天数 <= 7)) return true;             // 临近/过期死线 → 该惦记
+    const since = ledgerDaysSince(entry);
+    if (since != null && since >= 0 && since <= 2) return true;   // 刚登记还热
+    return false;
+}
+
+// 选注入集：先过相关度门槛（isLedgerSalient）→ 只留「此刻确有理由被提起」的条，绝不为凑数硬塞。
+// 相关条 ≤ limit 全带（有几条埋几条·凑不满就不凑）；超 limit 才按 score 降序截前 limit（取最相关的）。空进空出。
+// 静音（暂停埋入）条一律排除：不进注入集 → 连带不进召回（_ledgerInjectEcho 从 picked 派生）。仍是活跃、仍显示在标注池。
+// 【为何要门槛】楼越高活跃越多，旧「无门槛凑满 limit」会把不相干的静默条硬顶进来充数，且静音一条即被第 N+1 名补位——门槛正治这个。
+// RAG 口子：将来换外部检索，替换排序来源即可（打分器 scoreLedgerEntry / 门槛 isLedgerSalient 单点可换）。
 function selectLedgerForInject(entries, sceneText, today, limit = 8) {
-    const active = (entries || []).filter(e => e && e.状态 !== '已了结');
-    if (active.length <= limit) return active;
-    return active
+    const active  = (entries || []).filter(e => e && e.状态 !== '已了结' && e.静音 !== true);
+    const salient = active.filter(e => isLedgerSalient(e, sceneText));
+    if (salient.length <= limit) return salient;
+    return salient
         .map(e => ({ e, s: scoreLedgerEntry(e, sceneText, today) }))
         .sort((a, b) => b.s - a.s)
         .slice(0, limit)
@@ -2771,6 +2843,10 @@ async function runLedgerJudgeStep(manual = false) {
         for (const c of changes) {
             const e = ledger.getEntry(c.id);
             if (!e || e.状态 === '已了结' || e.锁 === '用户锁') continue;   // 目标须活跃、非用户锁（AI 乱报编号也挡掉）
+            // 静音（暂停埋入）条遇「了结」判定：整条跳过——不改现状、不归档。它没被注入、天然不在近景，
+            // 退场/翻篇规则几乎必然误判它「该了结」；静音语义正是「留着、只是别提」。若只吞 closeEntry、仍套 patch，
+            // 现状会被每轮改写成退场话术。维持/滚周期不受此限（后台照常跟进）。
+            if (e.静音 === true && c.动作 === '了结') continue;
             const patch = { 现状锚: { 楼层: floor, 历日期: today } };       // 现状锚每次刷到今天（起始锚永不动）
             if (c.现状) patch.现状 = c.现状;
             if (c.动作 === '滚周期' && e.周期长度 > 0 && e.到期锚?.历日期) {
@@ -2781,7 +2857,7 @@ async function runLedgerJudgeStep(manual = false) {
                 patch.到期锚 = { 历日期: c.到期 };
             }
             ledger.updateEntry(e.id, patch);
-            if (c.动作 === '了结') ledger.closeEntry(e.id);
+            if (c.动作 === '了结') ledger.closeEntry(e.id);                  // 静音条已在上方跳过，此处到不了
             applied.push(e.事由);
         }
         if (!applied.length) { if (manual) showToast('没有需要更新的事件'); return; }
@@ -3982,7 +4058,7 @@ function injectModal() {
         const $pop = $('#sp-module-intro-pop');
         if ($pop.is(':visible')) { $pop.hide(); return; }
         const view = $('.sp-side-tab.sp-view-active').data('view') || 'schedule';
-        $pop.text(MODULE_INTROS[view] || MODULE_INTROS.schedule).show();
+        $pop.html(MODULE_INTROS[view] || MODULE_INTROS.schedule).show();   // 内容全为作者手写 HTML（图标图例），无用户输入 → .html() 安全
     });
     $(document).off('click.spIntro').on('click.spIntro', function (e) {
         if ($(e.target).closest('#sp-module-intro-pop, #sp-module-intro-btn').length) return;
@@ -4224,6 +4300,17 @@ function injectModal() {
         if (!it) return;
         if (it.锁 === '用户锁') { ledger.unlockEntry(id); showToast('已解锁 · AI 判定可再更新此条'); }
         else { ledger.lockEntry(id); showToast('已锁定 · AI 判定不再改动此条'); }
+        refreshInlineWindow(true);
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
+    $('#chat').on('click', '.sp-inline-ledger-mute', function (e) {
+        e.stopPropagation();
+        const id = $(this).attr('data-id');
+        const it = id && ledger.getEntry(id);
+        if (!it) return;
+        if (it.静音 === true) { ledger.unmuteEntry(id); showToast('已恢复埋入 · 重新参与注入'); }
+        else { ledger.muteEntry(id); showToast('已暂停埋入 · 保留跟进、暂不注入主楼'); }
+        refreshLedgerInjection();   // 注入集变了 → 当场重算
         refreshInlineWindow(true);
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     });
@@ -4572,6 +4659,18 @@ function injectModal() {
         else { ledger.lockEntry(id); showToast('已锁定 · AI 判定不再改动此条'); }
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     });
+    // 暗历行·暂停埋入（静音）：翻标志位。注入集当场变 → 必刷 refreshLedgerInjection（区别于锁：锁不动注入集）。
+    $almanac.on('click', '.sp-ledger-mute-toggle', function (e) {
+        e.stopPropagation();
+        const id = $(this).closest('.sp-ledger-row').attr('data-id');
+        const it = id && ledger.getEntry(id);
+        if (!it) return;
+        if (it.静音 === true) { ledger.unmuteEntry(id); showToast('已恢复埋入 · 重新参与注入'); }
+        else { ledger.muteEntry(id); showToast('已暂停埋入 · 保留跟进、暂不注入主楼'); }
+        refreshLedgerInjection();   // 注入集变了 → 当场重算（静音条即刻退出/回归注入）
+        refreshInlineWindow(true);  // 标注池静音态变了 → 刷楼内框
+        if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+    });
     $almanac.on('click', '.sp-ledger-close', async function (e) {
         e.stopPropagation();
         const id = $(this).closest('.sp-ledger-row').attr('data-id');
@@ -4615,6 +4714,7 @@ function injectModal() {
     });
     $almanac.on('click', '.sp-alm-add', function () { openAlmanacEditor(null); });
     $almanac.on('click', '.sp-alm-gen', triggerGenerateAlmanac);
+    $almanac.on('click', '.sp-alm-supplement', triggerSupplementAnniversary);
     $almanac.on('click', '.sp-alm-manage', openCalendarManager);
     $almanac.on('click', '.sp-action-menu-toggle', function (event) {
         event.stopPropagation();
@@ -4628,6 +4728,7 @@ function injectModal() {
         const action = $(this).attr('data-action');
         closeActionMenus();
         if (action === 'generate-almanac') triggerGenerateAlmanac();
+        else if (action === 'supplement-anniversary') triggerSupplementAnniversary();
         else if (action === 'manage-calendar') openCalendarManager();
     });
     $almanac.on('click', '.sp-alm-pin', function () { toggleAlmanacPin($(this).attr('data-id')); });
@@ -7649,7 +7750,7 @@ const EDIT_LINE_KEYWORDS  = ['事件线', '线索', '伏笔', '线'];
 // 刻度（暗历·时间账）触发词：命中才把活跃条目喂进「间」（省 token，与点/线同套路）。
 const LEDGER_READ_KEYWORDS = ['刻度', '暗历', '暗账', '状态', '伤', '病', '孕', '约定', '周期', '待办', '身心', '现在怎', '好了没', '没了结'];
 // 排障/答疑触发词：命中才把「插件功能 FAQ + 当前开关状态」喂进「间」，让它当客服答「XX 在哪 / 怎么开 / 为啥没生效」。
-const SPACE_HELP_KEYWORDS = ['悬浮球', '悬浮按钮', '开关', '在哪', '怎么开', '怎么用', '怎么设', '为什么', '为啥', '没反应', '没生效', '不生效', '注入', '没出现', '不显示', '设置在', '功能', '干嘛', '干什么', '啥用', '什么用', '怎么弄', '找不到', '能不能', '可以吗', '能吗', '会吗', '支持', '自动', '后台'];
+const SPACE_HELP_KEYWORDS = ['悬浮球', '悬浮按钮', '开关', '在哪', '怎么开', '怎么用', '怎么设', '为什么', '为啥', '没反应', '没生效', '不生效', '注入', '没出现', '不显示', '设置在', '功能', '干嘛', '干什么', '啥用', '什么用', '怎么弄', '找不到', '能不能', '可以吗', '能吗', '会吗', '支持', '自动', '后台', '纪念日', '补录'];
 
 function readCacheRaw(desc) {
     const saved = readStore(desc);
@@ -7721,9 +7822,10 @@ const SPACE_HELP_FACTS = `【构画·功能与设置速查（你据此回答用�
 · 【谁能后台注入主楼 AI（关键事实，别答错）】只有**三家**能潜伏注入主楼 AI：线、面（大纲）、刻度（暗历）。**「点/日程」不能后台自动注入主楼 AI**——它是只读展示（面板卡片 + 楼内日程条），只能手动生成/刷新，没有"注入开关"。同理「轴/历」本身也不注入正文（历只在楼内挂只读日程块）。用户问"点能不能后台自动注入/自动喂给 AI"，答案是**不能**，别顺着说可以；他要的效果得靠线/面/刻度承载。
 · 时间戳（设置→模块设置→时间戳）：「启用时间戳」，让主楼 AI 每楼打隐形时间戳作时间源，默认开。
 · 轴（设置→模块设置→轴）：含「读不到戳时用 API 兜底判定日期」「点·后台自动跟随今天」「（刻度）潜伏注入主楼 AI」等。
-· 线（设置→模块设置→线）：「启用平行事件（线）」「潜伏注入主楼 AI」「虚线·冷知识」「推进策略（回合/时间/手动）+ 间隔」。
+· 轴·生成节日 vs 补录纪念日（都在轴面板右上角工具区，手机端收在 ⋮ 菜单里）：「**生成节日**」按世界观**重铺一整年**——会先参照世界书/角色卡判断故事所在地域文化再铺对应节日（别默认套中华节庆，美国背景就别硬塞中秋），已锁定条与你手动加的会保留、未锁的旧 AI 条被替换。「**补录纪念日**」只**增补**剧情里新浮现的重大里程碑纪念日（上限约 3 条、宁缺毋滥、可能一条都不补），**纯追加、不动任何现有条、也不重铺整历**，补录的条目会自动锁定防日后重铺被冲。两者别混：想加新纪念日又不想动现有历，用「补录纪念日」。目前补录**只有手动触发**，暂无后台自动补录。
+· 线（设置→模块设置→线）：「启用平行事件（线）」「潜伏注入主楼 AI」「虚线·冷知识」「推进策略（回合/时间/手动）+ 间隔」。线以 UC（用户核心角色）为主轴，也会额外放行 1-2 条**非 UC 的配角/NPC 支线**（重要配角自己的小线索，须同一世界观、同一叙事尺度，不会跨尺度乱入）。
 · 面（设置→模块设置→面）：「大纲自动注入」+ 判定间隔。
-· 刻度/暗历（自动标注）：开关在设置里，默认**关**（opt-in，会多一路后台 API）。要它自动从剧情捞状态/约定，得手动开；也可在轴面板的暗账页手动「立即标注」。
+· 刻度/暗历（自动标注）：开关在设置里，默认**关**（opt-in，会多一路后台 API）。要它自动从剧情捞状态/约定，得手动开；也可在轴面板「刻度」页手动「立即标注」「立即推进」。每条刻度可单独操作：**锁定**（AI 判定车不再改它）、**暂停埋入**（暂不注入主楼、但仍在账上跟进现状，再点恢复；与锁定正交）、**了结**（归档、可捞回）、**编辑**。刻度注入**不定死条数、也不硬凑**——只挑当下氛围最相关的埋进去（锁定的必进、暂停埋入的必不进），活跃条多也不会硬塞满一堆。
 · 楼内渲染框（设置→基础设置→显示与通知）：主开关「楼内渲染框」，下面有子开关分别控制 点/线/轴/标注池/召回 这几个框显不显；主开关关了子开关全失效。
 · 界面字号：设置→显示与通知里的 −／＋ 步进，独立于酒馆自身的字号。
 · 通知档位：关／简约／全量三档。`;
@@ -9336,6 +9438,13 @@ ${scaleBlock}
 - player：事件推进依赖 ${subject} 主动行动（如：${subject} 答应的委托、结下的关系、承接的事项）
 - world：事件在世界 / 他人 / 环境层面自行演化，${subject} 不动它也会推进（具体举例请对齐上方"叙事尺度"块的类型）
 
+【非 UC 支线·额外放行 1-2 条】
+主线仍围绕 ${subject}，但世界不该只绕着 ${subject} 转。**允许**在主线之外，额外追踪 **1-2 条主体不是 ${subject}** 的支线——让重要配角 / NPC 拥有自己的、与 ${subject} 暂时未必有交集的小线索，世界才有呼吸感。四条约束务必守住：
+- **只放开"主体"，绝不放开"尺度"**：非 UC 支线必须严格落在上方判定的**同一叙事尺度**里，写该尺度该有的那类事。微观日常就写配角自己的微观小事（同桌最近总借故早退、常去那家店的店员在偷偷攒钱想辞职、班主任这阵子心事重重似有难处），**严禁**借非 UC 之名引入上方尺度块明令禁止的概念（微观里绝不许突然冒出势力 / 战事 / 大案 / 阴谋这类跨尺度乱入）。这些非 UC 支线**同样要有可延续的小钩子**（动机 / 悬念 / 未了的心事），不是一次性的日常小动作——后者仍按下方"禁止创建事件线"规则剔除。
+- **限重要角色、且必须确有其人**：主体只从剧情 / 【故事记忆库】/ 世界书 / 角色卡里**真实存在**的重要配角 / NPC 中取，别为凑数捏造新路人（沿用上方"串味杂质"判据）。
+- **限量 1-2 条**，计入下方总数上限；agency 归 world（不依赖 ${subject} 行动）。宁缺毋滥，没有合适的就一条都不写。
+- **标题只写线索本身、别贴分类标签**：名称字段照常写这条线索的具体名字（如「同桌的早退」「店员攒钱辞职」「班主任的心事」），**严禁**在名称里加「暗线」「非 UC」「支线」这类分类字样当前缀——一条线是不是非 UC，只由 agency=world 体现，绝不写进标题。
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【每次推演的核心任务——按此顺序执行】
 1. **主动挖掘新伏笔**：先通读最近剧情，找出可能被忽略的新事件苗头、埋伏笔、NPC 台词里的暗示、场景细节、次要角色的立场变化等，评估是否有值得新建的事件线。
@@ -10066,6 +10175,7 @@ function almToolbarHtml() {
             <button class="sp-icon-btn sp-alm-add" title="手动添加日期" aria-label="手动添加日期"><i class="fa-solid fa-plus"></i></button>
             <div class="sp-alm-wide-tools">
                 <button class="sp-icon-btn sp-alm-gen" title="生成节日（AI 按世界观铺满一整年）" aria-label="生成节日"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+                <button class="sp-icon-btn sp-alm-supplement" title="补录纪念日（只增补新里程碑，不重铺、不动现有日历）" aria-label="补录纪念日"><i class="fa-solid fa-heart-circle-plus"></i></button>
                 <button class="sp-icon-btn sp-alm-manage" title="历法管理" aria-label="历法管理"><i class="fa-solid fa-calendar-days"></i></button>
             </div>
             <div class="sp-alm-narrow-tools">${actionMenuHtml('almanac')}</div>
@@ -10169,7 +10279,7 @@ function renderAlmanacPanel(options = {}) {
         return;
     }
     if (isGeneratingAlmanac) {
-        $wrap.html(almToolbarHtml() + `<div class="sp-alm-body">${loadingHtml('正在编排历法', 'sp-abort-almanac')}</div>`);
+        $wrap.html(almToolbarHtml() + `<div class="sp-alm-body">${loadingHtml(_almGenLabel, 'sp-abort-almanac')}</div>`);
         return;
     }
     const bodyHtml = _almanacSheet === 'ledger' ? renderLedgerSheet()
@@ -10246,11 +10356,12 @@ function ledgerRowHtml(e, cal, archived = false) {
     const cyc = e.周期长度 ? `<span class="sp-ledger-meta">周期${e.周期长度}天</span>` : '';
     const due = e.到期锚?.历日期 ? `<span class="sp-ledger-meta">终 ${escapeHtml(fmtLedgerAnchorDate(e.到期锚.历日期, cal))}</span>` : '';
     const locked = e.锁 === '用户锁';
+    const paused = e.静音 === true;   // 暂停埋入
     // 牵扯人物上提到第一行（跟类型徽章同排、填首行空档）；标签仍留末行。
     const who = (e.牵扯 || []).length ? `<span class="sp-ledger-who">${escapeHtml(e.牵扯.join('、'))}</span>` : '';
     const tags = (e.标签 || []).map(t => `<span class="sp-ledger-tag">${escapeHtml(t)}</span>`).join('');
     const r3 = tags ? `<div class="sp-ledger-r3">${tags}</div>` : '';
-    // 行操作钮组（照点/面紧凑范式，靠右）。归档条走「捞回 / 彻底删」；活跃条走「编辑 / 锁解锁 / 了结」。
+    // 行操作钮组（照点/面紧凑范式，靠右）。归档条走「捞回 / 彻底删」；活跃条走「编辑 / 锁解锁 / 暂停埋入 / 了结」。
     const acts = archived
         ? `<span class="sp-ledger-actions">`
             + `<button class="sp-ledger-reopen" title="捞回 · 回到活跃、判定车重新跟进"><i class="fa-solid fa-rotate-left"></i></button>`
@@ -10259,6 +10370,7 @@ function ledgerRowHtml(e, cal, archived = false) {
         : `<span class="sp-ledger-actions">`
             + `<button class="sp-ledger-edit" title="编辑"><i class="fa-solid fa-pen"></i></button>`
             + `<button class="sp-ledger-lock-toggle" title="${locked ? '已锁定 · AI 判定不动（点击解锁）' : '锁定 · 锁后 AI 判定不动'}"><i class="fa-solid ${locked ? 'fa-lock' : 'fa-lock-open'}"></i></button>`
+            + `<button class="sp-ledger-mute-toggle" title="${paused ? '已暂停埋入 · 不再注入主楼（点击恢复）' : '暂停埋入 · 暂不注入主楼、但仍保留跟进'}"><i class="fa-solid ${paused ? 'fa-bell-slash' : 'fa-bell'}"></i></button>`
             + `<button class="sp-ledger-close" title="了结 · 从活跃移除（可在归档捞回）"><i class="fa-solid fa-check"></i></button>`
             + `</span>`;
     // 起/周期/终固定独占一行：这仨凑一起（尤其古风长日期「大梁二十九年十一月廿六未时」）放进事由那行会挤爆，
@@ -10266,7 +10378,7 @@ function ledgerRowHtml(e, cal, archived = false) {
     const dates = `${startTag}${cyc}${due}`;
     const r15 = dates ? `<div class="sp-ledger-dates">${dates}</div>` : '';
     // 第一行＝元信息头（类型 + 人物 + 操作钮）；事由独占整行放在头下方，长了就自己逐行换、不再挤钮组。
-    const cls = `sp-ledger-row sp-ledger-${ledgerTypeClass(e.类型)}${locked ? ' sp-ledger-locked' : ''}${archived ? ' sp-ledger-archived' : ''}`;
+    const cls = `sp-ledger-row sp-ledger-${ledgerTypeClass(e.类型)}${locked ? ' sp-ledger-locked' : ''}${paused ? ' sp-ledger-paused' : ''}${archived ? ' sp-ledger-archived' : ''}`;
     return `<div class="${cls}" data-id="${escapeAttr(e.id)}">
         <div class="sp-ledger-r1">${badge}${who}${acts}</div>
         <div class="sp-ledger-gist-row"><span class="sp-ledger-gist">${escapeHtml(e.事由)}</span></div>
@@ -11047,6 +11159,7 @@ async function runGenerateAlmanac() {
     const chatIdSnap = getContext().chatId;
     const myCtrl = almanacAbortController = new AbortController();
     isGeneratingAlmanac = true;
+    _almGenLabel = '正在编排历法';
     if (almanacMode) renderAlmanacPanel();
     try {
         const ctx = getContext();
@@ -11089,22 +11202,28 @@ function buildAlmanacPrompt(userName, charName) {
         ? ''
         : `\n**本世界采用自定义历法**：${getCalDescInjectText()}。下面所有日期都要落在这套历法上（按其月份数与每月天数），**不要套用公历的 12 月 / 31 日**。`;
 
-    // 通用节日地板：公历世界铺现实华语节日；自定义历法改成「贴该历法与设定自编节令」。
+    // 通用节日地板：公历世界**先判地域文化、再铺该地域的真实节日**（别默认中华节庆——美国人不过中秋）；自定义历法改成「贴该历法与设定自编节令」。
     const festivalFloor = isGregorian
-        ? `- 现代华语背景请**至少覆盖这些常见节日、一个都别漏**：元旦(1/1)、春节(约1-2月)、元宵(约2月)、情人节(2/14)、清明(约4/4)、劳动节五一(5/1)、端午(约5-6月)、七夕(约8月)、中秋(约9月)、国庆十一(10/1)、圣诞(12/25)。其它文化背景按其真实节庆同样逐月铺满。`
+        ? `- **先从角色卡 / 世界书 / 场景设定判断这个故事发生在哪个国家 / 地区 / 文化圈**，然后**只铺这个地域真实通行的节日**，逐月覆盖。切忌不看背景就默认套中华节庆——请对号入座，例如：
+    · 美国 / 北美：新年、情人节、复活节、独立日(7/4)、万圣节(10/31)、感恩节(11 月第四个周四)、圣诞等
+    · 欧洲：新年、情人节、复活节、各国国庆 / 主保日、万圣节、圣诞、跨年等
+    · 华语圈（仅当设定确为中华背景才用）：元旦、春节、元宵、清明、端午、七夕、中秋、国庆、圣诞等
+    · 日本：正月、成人节、女儿节、黄金周、七夕、盂兰盆、文化日、圣诞、大晦日等
+    · 其它地域 / 宗教文化（伊斯兰、印度、拉美等）：按其真实主要节庆同样逐月铺满
+  设定含糊、看不出具体地域时，只铺情人节 / 万圣节 / 圣诞 / 新年这类跨文化通用节，别硬塞地域专属节。`
         : `- 这个世界用的是自定义历法，**不要套用公历节日与日期**。请贴合该历法的月份名与世界观设定，自编合理的年度节令（如某月祭典、某位神祇诞辰、丰收节、纪元庆典等），并逐月铺满、别只堆在前几个月。`;
 
     const tailMonthHint = isGregorian
-        ? `下半年（尤其 5 月、6 月、9 月、10 月、12 月）同样要有内容。`
+        ? `下半年（尤其 7 月、10 月、11 月、12 月）同样要有内容。`
         : `越靠后的月份越容易被跳过，务必一路排到第 ${monthCount} 月。`;
 
     const bigFestCheck = isGregorian
-        ? `五一、十一、中秋、春节这类大节是否都在？`
+        ? `这个地域 / 文化该有的主要节日是否都逐月铺到了、有没有误把别国节日硬塞进来？`
         : `这套历法里该有的年度节令是否都逐月铺到了？`;
 
     const gridSection = isGregorian
         ? `【日期与网格】无论世界观如何，每条都必须给一个能排到普通日历上的 month(1-12) 与 day(1-31)：
-- 现实节日按其公历日期（农历节日就近折算到一个公历月日）
+- 现实节日按其公历日期（农历 / 宗教历 / 阴历节日就近折算到一个公历月日）
 - 架空/幻想历法：映射到 1-12 月、1-31 日的格子上，保持先后顺序合理`
         : `【日期与网格】每条都必须给出符合本世界历法的 month（1-${monthCount}）与 day（1 到该月天数、最多 ${maxDim}）：
 - 严格按上面列出的历法逐月对应，day 不要超过该月的实际天数
@@ -11153,6 +11272,114 @@ Item: 名称|type|month|day|days|displayDate|说明（由来+涉及人物+习俗
 Item: 名称|type|month|day|days|displayDate|说明（同上）
 </almanac_widget>
 按 month、day 从小到大排列。type 只能是 festival / birthday / anniversary / custom。所有文字用中文（专有名词可保留原文）。`;
+}
+
+// ── 增量补录纪念日（不重生成整历，只增补新里程碑）──
+// 动机：历原本只能整体「生成节日」重铺；用户想在剧情推进后把**新冒出来的里程碑**增量补进去，
+// 又不愿重铺一整年、更不想每件小事都被写成纪念日。故单开一条**高门槛、限量、纯追加去重**的管线：
+// 只挖 anniversary/custom 里程碑、把已在账上的排除掉、上限 3 条、宁缺毋滥（可补 0 条）；命中项
+// pin=true（与「间→历」应用一致），日后「生成节日」整历重算也冲不掉。绝不走 mergeAlmanac
+// （那会清掉未锁 AI 节日），照 applyAlmanacWidget 逐条 almDedupKey 去重后追加、绝不动任何现有条。
+function buildAnniversarySupplementPrompt(userName, charName, existingList) {
+    const cal = loadCalDesc();
+    const monthCount = calMonthCount(cal);
+    const maxDim = Math.max(...cal.months.map(m => m.days));
+    const isGregorian = cal === DEFAULT_CAL;
+    const cap = 3;
+
+    const calLine = isGregorian
+        ? ''
+        : `\n**本世界采用自定义历法**：${getCalDescInjectText()}。下面所有日期都要落在这套历法上（按其月份数与每月天数），**不要套用公历的 12 月 / 31 日**。`;
+
+    const gridLine = isGregorian
+        ? `month 用 1-12、day 用 1-31（架空历法映射到普通日历格子上，保持时序合理）`
+        : `month 用 1-${monthCount}、day 用 1 到该月天数（最多 ${maxDim}），严格落在本世界历法上`;
+
+    const already = existingList && existingList.trim()
+        ? `【已在历上·请勿重复】以下日期已经在这份历里了，**绝不要再列出来**（即便措辞略有不同、只要指的是同一件事 / 同一天，就算重复，跳过）：\n${existingList}\n`
+        : `【历上暂无既有条目】这是一份还很空的历，但本任务**仍只补真正够格的里程碑**，不要借机把普通剧情铺成一堆纪念日。\n`;
+
+    return `请暂停角色扮演，以世界观设定分析者的身份，通读当前故事的完整时间线，为这份**已存在的历**做一次「里程碑纪念日」的**增量补录**。${calLine}
+
+【这是补录，不是重做】历里的节日和既有纪念日都已经铺好了，你**唯一**的任务是：找出剧情推进到现在、**新浮现出来、却还没被立成纪念日**的重大里程碑，把它们补进去。**只补 anniversary / custom 两类里程碑，绝不要再列任何节日 / 生日 / 通用节庆**（那些已经有了）。
+
+${already}
+【什么才够格立为纪念日 · 门槛必须高】只挑真正**够分量、值得每年一记**的里程碑——初遇、立约、告白、定情、离别、重逢、生死攸关、重大胜负、身份揭晓、命运转折、失而复得、并肩之战、背叛与和解这类**改变了关系或故事走向**的节点。判断标准：
+- **宁缺毋滥，这不是流水账**：一次普通的约会、一顿饭、一句寻常对话、一场无关痛痒的小摩擦、一件当天就翻篇的小事，**统统不够格**，绝不要写成纪念日。够不够格的自问：一年后的这一天，角色真的会想起、会在意吗？答案不是斩钉截铁的「会」，就不要立。
+- **必须确有其事**：只从剧情 /【故事记忆库】/ 世界书 / 角色卡里**真实发生过**的事件取材，且能定位到具体或可合理推断的日期。凭空编造的、尚未发生的、只是"可能会怎样"的，一律不要。
+- **最多 ${cap} 条**（大多数情况 0-2 条就够）。真没有够格的新里程碑，就**一条都不要写**、直接输出空的 <almanac_widget></almanac_widget>——补录不到东西是完全正常、甚至常见的结果，**绝不能为凑数硬编**。
+
+【日期与网格】每条给出 ${gridLine}；单日纪念 days=1。displayDate 填该世界观下的风味日期名（如"两人初遇之日""断桥重逢日"），与"M月D日"无异则留空。
+
+【说明（每条最后一段·单行不换行）】交代：纪念的是哪段剧情 / 哪个节点、涉及谁、为何值得每年一记，让人一看就知道来龙去脉。
+
+【输出格式（严格遵守，只输出下面结构；没有够格的就输出空 widget，不要任何多余解释）】
+<almanac_widget>
+Item: 名称|type|month|day|days|displayDate|说明（单行不换行）
+</almanac_widget>
+type 只能是 anniversary 或 custom。所有文字用中文（专有名词可保留原文）。`;
+}
+
+// 跑补录：照 runGenerateAlmanac 的骨架（共用 isGeneratingAlmanac / almanacAbortController 互斥同一 store），
+// 但合并阶段走**纯追加去重**（非 mergeAlmanac）+ pin=true，且补 0 条时给出「没有够格」的正常态提示、不报错。
+async function runSupplementAnniversary() {
+    const chatIdSnap = getContext().chatId;
+    const myCtrl = almanacAbortController = new AbortController();
+    isGeneratingAlmanac = true;
+    _almGenLabel = '正在通读全程·补录纪念日';
+    if (almanacMode) renderAlmanacPanel();
+    try {
+        const ctx = getContext();
+        const userName = ctx.name1 || '用户';
+        const charName = ctx.name2 || '角色';
+        const cfg = loadCfg();
+        // 已在账上的日期清单（含全部类型），喂给提示词排除，防它重复列已有条
+        const existingList = loadAlmanac().map(it => `- ${it.name}（${almDateLabel(it)}）`).join('\n');
+        const prompt = buildAnniversarySupplementPrompt(userName, charName, existingList);
+        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 4, { fullMemory: true });
+        if (almanacAbortController !== myCtrl) return;
+        if (getContext().chatId !== chatIdSnap) { isGeneratingAlmanac = false; almanacAbortController = null; return; }
+        const aiItems = parseAlmanacWidget(raw);
+        // 纯追加去重（照 applyAlmanacWidget）：重新取一次现表避开生成期间被别处改，
+        // 逐条按 almDedupKey 去重、命中的补录项 pin=true 防日后整历重算冲掉，绝不 mergeAlmanac。
+        const base = loadAlmanac();
+        const seen = new Set(base.map(almDedupKey));
+        const added = [];
+        for (const it of aiItems) {
+            const k = almDedupKey(it);
+            if (seen.has(k)) continue;
+            seen.add(k);
+            it.pin = true;
+            added.push(it);
+        }
+        isGeneratingAlmanac = false;
+        almanacAbortController = null;
+        if (added.length) { saveAlmanacItems([...base, ...added]); syncLatestAlmanacBlock(); }
+        if (almanacMode) renderAlmanacPanel();
+        if (added.length) {
+            showToast(`已补录 ${added.length} 条纪念日`);
+        } else if (getSettings().notifyMode !== 'off') {
+            showToast('通读全程后没有够格补录的新里程碑（这很正常）');
+        }
+    } catch (err) {
+        if (almanacAbortController !== myCtrl) return;
+        isGeneratingAlmanac = false;
+        almanacAbortController = null;
+        if (err.name === 'AbortError') { if (almanacMode) renderAlmanacPanel(); return; }
+        if (getContext().chatId === chatIdSnap) {
+            if (almanacMode) { renderAlmanacPanel(); showToast('补录失败：' + escapeHtml(err.message || '未知错误'), null, true); }
+            else showToast('补录纪念日失败，请重试', null, true);
+        }
+    }
+}
+
+// 补录纪念日是**纯追加、不动任何现有条** → 无需「生成节日」那种破坏性重铺确认，校验齐 API/chat 即直接跑。
+async function triggerSupplementAnniversary() {
+    if (isGeneratingAlmanac) return;
+    const cfg = loadCfg();
+    if (!cfg.url || !cfg.key) { if (!settingsOpen) toggleSettings(); showToast('请先在设置中填写自定义 API', null, true); return; }
+    if (!getContext().chatId) { showToast('请先打开一个聊天', null, true); return; }
+    runSupplementAnniversary();
 }
 
 // ── 手动新增 / 编辑（内联窗，不用弹窗）──

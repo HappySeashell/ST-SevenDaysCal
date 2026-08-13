@@ -21,6 +21,8 @@ const SCHEMA_VERSION = 1;
 //   类型 : '持续状态' | '约定待办' | '周期'
 //   状态 : '活跃' | '已了结'（了结只翻标志位、默认筛选排除，不物理删——用户可捞回）
 //   锁   : '' | '用户锁'（用户手动改过 → 判定车不许再动，照点/线的锁机制）
+//   静音 : false | true（暂停埋入：仍活跃、判定车照刷现状，但不注入主楼、且不许被判定车自动归档
+//          ——「现在不想让它每轮反复被提，但没了结」。与「锁」正交：锁冻内容、静音停注入）
 //   起始锚/现状锚 : { 楼层, 历日期 }。起始锚=底账·钉死永不改；现状锚=活账·每轮判定刷新。
 //     历日期与历 almTodayAnchor() 同源（形状 {month,day}），此处只存不解释。
 //   周期长度 : 仅「周期」，天数（如 30）
@@ -103,6 +105,7 @@ function normalizeEntry(obj, id) {
         状态    : o.状态 === '已了结' ? '已了结' : '活跃',
         锁      : o.锁 === '用户锁' ? '用户锁' : '',
         ts      : Number.isFinite(+o.ts) ? +o.ts : Date.now(),         // 打点时间戳（新字段·末尾·可选）
+        静音    : o.静音 === true,                                     // 暂停埋入（新字段·末尾·可选）：停注入、判定车不归档，仍活跃
     };
 }
 
@@ -162,6 +165,15 @@ export function lockEntry(id) {
 }
 export function unlockEntry(id) {
     return updateEntry(id, { 锁: '' });
+}
+
+// 暂停埋入 / 恢复（与锁正交：锁管「判定车能不能改内容」，静音管「注不注入主楼」）。
+// 静音期间：不进注入集、不进召回、判定车不许把它自动归档了结（现状仍随天数刷）。仍是「活跃」，不是了结。
+export function muteEntry(id) {
+    return updateEntry(id, { 静音: true });
+}
+export function unmuteEntry(id) {
+    return updateEntry(id, { 静音: false });
 }
 
 // 物理删除（一般不用——了结走 closeEntry 软标记；仅存储管理里用户明确删单条时用）。
