@@ -53,6 +53,16 @@
     /* —— 控件尺寸令牌：图标按钮方框随字号同步缩放。字号挂 --sp-fs-XX、方框此前漏挂，
        缩放时字变小、22px 方框不动 → 钮显得过大（渲染框内尤明显）。—— */
     --sp-btn-22: calc(22px * var(--sp-scale));
+
+    /* —— 动效令牌：统一交互过渡的时长与缓动，替代散落各处的裸 0.12s/0.15s + 浏览器默认 ease。
+       三档时长：fast＝点选态反馈（hover/active/色变）；base＝一般属性过渡；enter＝入场/较大位移。
+       缓动：standard＝Material 标准收尾（进出都顺，日常首选）；soft＝微回弹（按压松手、小浮现，柔一点）。
+       只是令牌，本身不产生任何效果；下方规则按需引用，观感由引用处决定。 */
+    --sp-dur-fast : 0.12s;
+    --sp-dur-base : 0.2s;
+    --sp-dur-enter: 0.28s;
+    --sp-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+    --sp-ease-soft    : cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 
 /* ─── Design tokens — legacy fallback layer (kept as safety net) ─────────────
@@ -3472,6 +3482,23 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-btn:active:not(:disabled) { transform: scale(0.97); }
 .sp-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* ── 点选按压反馈：主面板/弹层的高频钮按下时微缩、松手回弹（soft 微回弹缓动），
+   手机上点了「有反应」。承接代码库既有范式（.sp-btn/.sp-gen-btn/.sp-fab-btn 已各有 :active scale）。
+   刻意不含：悬浮球（自带霓虹动画）、楼内渲染框内钮（observer 下反复重建、避免抖动）、
+   刷新钮 .sp-panel-refresh（点击触发 sp-spin 转圈，scale 会与旋转 transform 打架）。 */
+.sp-icon-btn:not(:disabled):active,
+.sp-mini-btn:not(:disabled):active,
+.sp-ledger-pill:not(:disabled):active,
+.sp-anchor-btn:not(:disabled):active,
+.sp-tab:active,
+.sp-side-tab:active { transform: scale(0.94); }
+.sp-icon-btn, .sp-mini-btn, .sp-ledger-pill, .sp-anchor-btn, .sp-tab, .sp-side-tab {
+    transition: background   var(--sp-dur-fast) var(--sp-ease-standard),
+                color        var(--sp-dur-fast) var(--sp-ease-standard),
+                border-color var(--sp-dur-fast) var(--sp-ease-standard),
+                transform    var(--sp-dur-fast) var(--sp-ease-soft);
+}
 .sp-btn-primary {
     background  : var(--sp-primary);
     border-color: var(--sp-primary);
@@ -5533,4 +5560,24 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 .sp-jump-hint { padding: 2px 16px 8px; font-size: var(--sp-fs-75); color: var(--sp-subtle); flex-shrink: 0; }
 .sp-jump-link { border: 0; padding: 0; background: transparent; color: var(--sp-primary); cursor: pointer; font: inherit; }
 .sp-jump-link:hover { text-decoration: underline; }
+
+/* ── 无障碍：尊重系统「减弱动态效果」──────────────────────────────────────────
+   用户在 iOS/Android/桌面开启 reduce-motion 后，关掉本插件的按压缩放与过渡（含入场/
+   循环动画），避免眩晕。限定 .sp-root（面板/弹层）与几个根级注入子树，不动酒馆自身。
+   用 0.01ms 而非 0：保留一个极短过渡让 transitionend 仍触发，不破依赖它的逻辑。
+   （社区标准写法。悬浮球霓虹呼吸等 animation 一并近乎静止。） */
+@media (prefers-reduced-motion: reduce) {
+    .sp-root, .sp-root *,
+    .sp-fab-btn, .sp-fab-btn *,
+    .sp-inline-box, .sp-inline-box *,
+    .sp-anchor-btn, .sp-toast {
+        animation-duration    : 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration   : 0.01ms !important;
+        scroll-behavior       : auto !important;
+    }
+    .sp-icon-btn:active, .sp-mini-btn:active, .sp-ledger-pill:active,
+    .sp-anchor-btn:active, .sp-tab:active, .sp-side-tab:active,
+    .sp-btn:active, .sp-gen-btn:active, .sp-fab-btn:active { transform: none !important; }
+}
 
