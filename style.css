@@ -72,8 +72,6 @@
     --sp-card-shadow  : 0 2px 6px rgba(0,0,0,0.4);
     --sp-chip-bg      : rgba(168,164,158,0.18);
     --sp-spinner-color: #D8D9DA;
-    --sp-neon-color   : #D8D9DA;
-    --sp-neon-glow    : rgba(216,217,218,0.4);
     --sp-hover-bg-legacy    : rgba(255,255,255,0.06);
     --sp-chat-accent  : #61677A;
     --sp-char-color   : #9EC8CC;
@@ -102,8 +100,6 @@
     --sp-card-shadow  : 0 1px 4px rgba(0,0,0,0.09);
     --sp-chip-bg      : rgba(220,155,155,0.22);
     --sp-spinner-color: #DC9B9B;
-    --sp-neon-color   : #DC9B9B;
-    --sp-neon-glow    : rgba(220,155,155,0.5);
     --sp-hover-bg-legacy    : rgba(220,155,155,0.10);
     --sp-char-color   : #5C9EA0;
     --sp-chip-char-bg : rgba(92,158,160,0.15);
@@ -135,6 +131,10 @@
     --sp-on-surface  : var(--SmartThemeBodyColor,        var(--sp-on-surface-legacy));
     --sp-subtle      : color-mix(in oklab, var(--SmartThemeBodyColor, var(--sp-on-surface-legacy)) 62%, transparent);
     --sp-primary     : var(--SmartThemeQuoteColor,       var(--sp-primary-legacy));
+    /* 霓虹呼吸（生成/工作态的 FAB 发光）跟随解析后的重点色，而非写死的 day/night 藕粉——
+       酒馆配色自适应主题下不再无端闪红；缺色时经 --sp-primary 自带的 legacy 兜底。 */
+    --sp-neon-color  : var(--sp-primary);
+    --sp-neon-glow   : color-mix(in oklab, var(--sp-primary) 45%, transparent);
     --sp-sheet-bg    : var(--SmartThemeChatTintColor,    var(--sp-sheet-bg-legacy));
     --sp-surface     : var(--SmartThemeBotMesBlurTintColor,  var(--sp-surface-legacy));
     --sp-surface-high: var(--SmartThemeUserMesBlurTintColor, var(--sp-surface-high-legacy));
