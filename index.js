@@ -2710,7 +2710,18 @@ ${lines || '（暂无活跃事件）'}
 不要解释、不要输出表头、不要输出没变化的条目。`;
 }
 
-// 解析判定回答 → 改动数组。认全角竖线行；编号剥方括号；动作三选一兜底「维持」。
+// 判定动作归一：严格等值匹配会把 AI 的近义/多字写法（「结束」「完结」「滚动」）静默降级成「维持」，
+// 让本该了结的条目一直悬在活账里注入。故按关键词宽松认——先认「滚周期」再认「了结」，都不像才退
+// 「维持」（安全默认·不动账）。canonical 的「维持/了结/滚周期」三串各自命中对应分支，行为不变。
+function normalizeJudgeAction(raw) {
+    const s = String(raw || '').replace(/\s+/g, '');
+    if (!s) return '维持';
+    if (/滚|周期|顺延|续期/.test(s)) return '滚周期';
+    if (/了结|了断|结束|完结|终结|终止|结案|兑现|愈合|痊愈|康复|已了/.test(s)) return '了结';
+    return '维持';
+}
+
+// 解析判定回答 → 改动数组。认全角竖线行；编号剥方括号；动作走 normalizeJudgeAction 宽松归一。
 function parseLedgerJudge(raw) {
     const s = String(raw || '').trim();
     if (!s || /^无[。.！!]?$/.test(s)) return [];
@@ -2722,7 +2733,7 @@ function parseLedgerJudge(raw) {
         const cols = t.split('｜').map(x => x.trim());
         const id = cols[0].replace(/[\[\]【】]/g, '').trim();
         if (!id) continue;
-        const 动作 = ['维持', '了结', '滚周期'].includes(cols[2]) ? cols[2] : '维持';
+        const 动作 = normalizeJudgeAction(cols[2]);
         const chg = { id, 现状: cols[1] || '', 动作 };
         const due = parseJudgedDate(cols[3] || '');
         if (due) chg.到期 = due;
