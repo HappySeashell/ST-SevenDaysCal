@@ -1611,7 +1611,7 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-type-major     .sp-type-badge { color: #ffb74d; }
 .sp-type-character .sp-type-badge { color: #f48fb1; }
 
-.sp-event-title { font-size: var(--sp-fs-88); font-weight: 500; color: var(--sp-on-surface); flex: 1; }
+.sp-event-title { font-size: var(--sp-fs-88); font-weight: 500; color: var(--sp-on-surface); line-height: 1.35; }
 .sp-event-time  { font-family: 'Roboto Mono', monospace; font-size: var(--sp-fs-73); color: var(--sp-subtle); min-width: 0; overflow-wrap: anywhere; }
 .sp-event-desc  { font-size: var(--sp-fs-82); color: var(--sp-on-surface); opacity: 0.8; line-height: 1.55; margin: 3px 0 5px; }
 .sp-event-meta  { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }

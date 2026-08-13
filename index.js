@@ -12840,10 +12840,10 @@ function renderEvent(ev, dayKey = null, evIdx = null, weather = '', temp = '', d
     return `<div class="sp-event ${meta.cls}${ev.pin ? ' sp-event-pinned' : ''}">
         <div class="sp-event-head">
             <span class="sp-type-badge"><i class="fa-solid ${meta.icon}"></i>${escapeHtml(meta.label)}</span>
-            <span class="sp-event-title">${escapeHtml(ev.title)}</span>
             ${ev.time ? `<span class="sp-event-time"><i class="fa-regular fa-clock"></i> ${escapeHtml(ev.time)}</span>` : ''}
             ${injectBtn}${pinBtn}${delBtn}
         </div>
+        <div class="sp-event-title">${escapeHtml(ev.title)}</div>
         ${ev.desc ? `<p class="sp-event-desc">${escapeHtml(ev.desc)}</p>` : ''}
         <div class="sp-event-meta">
             ${ev.location  ? `<span class="sp-event-loc"><i class="fa-solid fa-location-dot"></i>${escapeHtml(ev.location)}</span>` : ''}
