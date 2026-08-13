@@ -4701,10 +4701,17 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
 }
 /* 操作按钮组：推到第一行末尾右对齐 */
 .sp-alm-acts { display: flex; align-items: center; gap: 0; flex-shrink: 0; margin-left: auto; }
-.sp-alm-acts .sp-icon-btn { width: 23px; height: 23px; font-size: var(--sp-fs-70); }
+.sp-alm-acts .sp-icon-btn {
+    width: 23px; height: 23px; font-size: var(--sp-fs-70);
+    /* 条目操作钮：对齐点/线/面主面板范式——平时隐藏、hover/点击整行才浮现（不再一直挂着）。 */
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.sp-alm-item:hover .sp-alm-acts .sp-icon-btn { opacity: 1; }
 /* 第三行：备注整行铺开 */
 .sp-alm-note { font-size: var(--sp-fs-76); color: var(--sp-subtle); line-height: 1.5; overflow-wrap: anywhere; padding-left: 20px; }
-.sp-alm-pinned .sp-alm-pin { color: var(--sp-primary); }
+/* 已锁定：锁钮不必 hover 也常亮主色，一眼看出「生成时保留」（对齐点/线锁定态语义）。 */
+.sp-alm-pinned .sp-alm-pin { color: var(--sp-primary); opacity: 1; }
 
 /* ── 暗账（历面板第三 sheet：拾贝控制条 + 只读条目列表）── */
 /* 类型强调色走继承变量 --ledger-c：设在 .sp-ledger-row 上，左边框与类型徽章都吃它。 */
@@ -4803,9 +4810,11 @@ body.sp-anchor-fs-lock .sp-anchor-fullscreen {
     align-items    : center;
     justify-content: center;
     font-size      : var(--sp-fs-72);
-    opacity        : 0.6;
+    /* 条目操作钮：对齐点/线/面主面板范式——平时隐藏、hover/点击整行才浮现（原为 0.6 常显）。 */
+    opacity        : 0;
     transition     : opacity 0.12s, color 0.12s, background 0.12s;
 }
+.sp-ledger-row:hover .sp-ledger-actions button { opacity: 1; }
 .sp-ledger-actions button:hover { opacity: 1; color: var(--sp-primary); background: color-mix(in oklab, var(--sp-primary) 12%, transparent); }
 .sp-ledger-actions .sp-ledger-close:hover { color: var(--sp-success, #4caf50); background: color-mix(in oklab, var(--sp-success, #4caf50) 14%, transparent); }
 .sp-ledger-actions .sp-ledger-remove:hover { color: var(--sp-danger, #e05555); background: color-mix(in oklab, var(--sp-danger, #e05555) 14%, transparent); }
