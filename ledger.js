@@ -175,23 +175,4 @@ export function removeEntry(id) {
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  统计（供存储管理面板；ownKeyBytes 已能算字节，这里补条数口径）
-// ═══════════════════════════════════════════════════════════════════════════
-
-// { total, active, closed } 条数。存储管理里想显示「暗账 N 条（活跃 M）」时用。
-export function ledgerCounts() {
-    const m = ledger();
-    if (!m) return { total: 0, active: 0, closed: 0 };
-    let active = 0, closed = 0;
-    for (const e of m.entries) (e.状态 === '已了结' ? closed++ : active++);
-    return { total: m.entries.length, active, closed };
-}
-
-// sp-ledger 顶层 key 是否已存在（不含内容判断、不实例化）。
-export function hasLedger() {
-    const cm = getContext?.()?.chatMetadata;
-    return !!(cm && cm[LEDGER_KEY] && typeof cm[LEDGER_KEY] === 'object');
-}
-
 export { LEDGER_KEY, SCHEMA_VERSION, TYPES, STATES, normalizeEntry };

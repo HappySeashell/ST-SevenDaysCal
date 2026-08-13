@@ -143,10 +143,4 @@ export function readSnapshot(mesId) {
     };
 }
 
-// 该楼是否已有快照（不做归一，轻量判断，渲染端筛"挂不挂块"用）。
-export function hasSnapshot(mesId) {
-    const msg = messageAt(mesId);
-    return !!(msg?.extra?.[SNAP_KEY] && typeof msg.extra[SNAP_KEY] === 'object');
-}
-
 export { SNAP_KEY, SNAP_VERSION };
