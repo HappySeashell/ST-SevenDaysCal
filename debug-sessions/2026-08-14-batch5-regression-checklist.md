@@ -29,7 +29,7 @@ node --check index.js && node --check modal.js && echo OK
 |---|---|---|---|
 | G-1 | `grep -nE "\\\$\(['\`]#sp-" index.js` | 293 处 → **0** | `sp-toast-wrap`（批次4 决议留 light）；`$(`#${MODAL_ID}` 宿主本身 |
 | G-2 | `grep -n "\$('\.sp-" index.js` | 16 处（窗口内）→ **0** | light 类：`.sp-inline-box` 家族、`.sp-alm-strip*`/`.sp-sch-strip*`（楼内条） |
-| G-3 | `grep -n "getElementById" index.js` | 18 → **12** | FAB_ID×8、MODAL_ID×1（宿主）、`sp_open_wand`×2、`sp_wand_container`×1（ST/魔杖所有） |
+| G-3 | `grep -n "getElementById" index.js` | 18 → **13** | FAB_ID×8、MODAL_ID×1（宿主）、`sp_open_wand`×2、`sp_wand_container`×1、`extensionsMenu`×1（ST/魔杖所有） |
 | G-4 | `grep -n "appendTo" index.js` | 5（3 已 `$in`，7743/7960 未转）→ **0** | 无 |
 | G-5 | `grep -n '\$(`#\${MODAL_ID}' index.js` | 20 → **0** | 无（root 前缀查询全部必须消亡） |
 | G-6 | `grep -n "document.querySelector" index.js` | 仅 `#chat .sp-*` 楼内块（1291/1458/1587/1900/1901）→ 不变 | 楼内块全保留；**不得出现** `#${MODAL_ID}` 前缀 |

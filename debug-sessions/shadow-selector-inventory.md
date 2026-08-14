@@ -131,3 +131,20 @@
 - 共 **54 行**替换（37 处 `$('#sp-` + 3 处 `appendTo` + 4 处 `getElementById→inEl` + 1 处 `querySelector→inEl` + 4 处 `$('.sp-…')→$in` + 5 处 `$(`#sp-…`)` 模板/后代查询等）
 - 依赖批次1 的 `$in()`/`inEl()`（契约见方案文档 1b，与改造主力实现一致：`_spShadow?.querySelector` + jQuery 包装 / 原生）
 - 行号以上表为实施底稿，逐处人工复核过；`node --check` 通过
+
+## 四、批次2-上半落地记录（改造主力下线后由回归质检接手，提交见下）
+
+> 上文 ⏳ 区域全部由回归质检按本清单模块边界完成；行号以 28d48b1 为基准的旧表不再逐行更新，落地即归档。
+
+| 提交 | 模块 | 内容 |
+|---|---|---|
+| `33217ce` | 主界面骨架 | injectModal 绑定区 186 处（含 view-btn 委托改绑 `$in('.sp-sidebar')`、notify-mode 根前缀→`$in`、`#chat` 混合委托双绑拆分 ×6） |
+| `b0d0d1d` | 间 | `sp-space-msgs`×3、`appendTo($in(...))`×2 |
+| `4ad8049` | 棱 | theater 7 处（setTheaterBody/模板管理/折叠钮/fullscreen/result） |
+| `eece6e3` | 设置 | 119 处（mem/wi/preset/cfg/model-list/storyclock/uiscale/overlay） |
+| `1bfb303` | 骨架-补丁 | 4398 背引号混合委托（`$(`#sp-body, …, #chat`)`）漏网修复 |
+
+## 五、批次3 落地记录（提交 `d960355`）
+
+- `click.spIntro`/`click.spActionMenu`/`click.tadrawer`：`$(e.target).closest(...)` → `e.originalEvent.composedPath().some(el => el.matches(...))`（shadow 内 target 被重定向为 host，closest 失效）
+- `keydown.spActionMenu`：composed 事件照常冒泡、无 target 判断 → 零改动（仅注释说明）

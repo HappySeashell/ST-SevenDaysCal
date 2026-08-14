@@ -2,6 +2,12 @@
    For text, we use the system stack (defined below in --sp-font)
    so mobile OS default fonts (PingFang / HarmonyOS / Roboto etc.) are used
    without introducing a squished web font. */
+/*
+ * 本文件同时被 light DOM（楼内块 .sp-inline-box 系列）与 shadow DOM（主窗口）加载：
+ * 全局注入一份给楼内块，injectModal() 又经 <link rel="stylesheet"> 引一份进 shadow
+ * root（浏览器缓存，无感）。改样式注意两处同源——勿删全局份，shadow 那份负责窗口。
+ * 2026-08-14 Shadow DOM 隔离改造批次1/5。
+ */
 @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&display=swap');
 
 /* System font stack with CJK fallbacks — used everywhere as body font.
