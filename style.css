@@ -1,17 +1,17 @@
-/* Load Roboto Mono only — for date/monospace fields.
-   For text, we use the system stack (defined below in --sp-font)
-   so mobile OS default fonts (PingFang / HarmonyOS / Roboto etc.) are used
-   without introducing a squished web font. */
-@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&display=swap');
-
-/* System font stack with CJK fallbacks — used everywhere as body font.
-   Prefers ST's --SmartThemeFontFamily when defined. */
+/* 字体·构画自管控（不再跟随酒馆 --SmartThemeFontFamily）：
+   --sp-font-user 承载「当前生效字体名」，默认＝内置 Nowar Rounded TW Wc（有爱圆体·
+   经 index.js 动态 <link> 从 zeoseven 引入，unicode-range 分片、font-display:swap）。
+   用户在设置里填自定义字体 URL + family 时，index.js 运行期覆写 --sp-font-user + 换 link。
+   末尾始终接系统 CJK 栈兜底：网络字体没加载出来时不至于掉成衬线/豆腐块。
+   注：原先此处 @import Google Fonts(Roboto Mono) 已删——国内直连常超时、拖慢首屏；
+   等宽场景改吃系统 mono 栈（下方 --sp-font-mono），不再强制网络加载。 */
 :root {
-    --sp-font: var(--SmartThemeFontFamily,
+    --sp-font-user: "Nowar Rounded TW Wc";
+    --sp-font: var(--sp-font-user),
                -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
                'Hiragino Sans GB', 'HarmonyOS Sans SC', 'Microsoft YaHei',
                'Noto Sans SC', 'Noto Sans CJK SC', 'Helvetica Neue', Helvetica,
-               Arial, sans-serif);
+               Arial, sans-serif;
     --sp-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono",
                     Menlo, Consolas, "Roboto Mono", monospace;
 
@@ -53,6 +53,10 @@
     /* —— 控件尺寸令牌：图标按钮方框随字号同步缩放。字号挂 --sp-fs-XX、方框此前漏挂，
        缩放时字变小、22px 方框不动 → 钮显得过大（渲染框内尤明显）。—— */
     --sp-btn-22: calc(22px * var(--sp-scale));
+
+    /* —— 自绘点选控件尺寸令牌：checkbox/radio 自画（appearance:none）后的字形方框边长，
+       随插件自身缩放走、脱钩酒馆 Font Scale。toggle 拨杆宽＝此值 × 1.8。 —— */
+    --sp-ctrl: calc(16px * var(--sp-scale));
 
     /* —— 动效令牌：统一交互过渡的时长与缓动，替代散落各处的裸 0.12s/0.15s + 浏览器默认 ease。
        三档时长：fast＝点选态反馈（hover/active/色变）；base＝一般属性过渡；enter＝入场/较大位移。
@@ -132,10 +136,13 @@
    日期块、标注/更新胶囊描边、锁/归档钮）的 var(--sp-*) 会落空→颜色/描边透明。故与
    FAB 同款纳入本级联（色令牌随 ST 主题走，缺则回退 legacy）。
    —— 2.6.0 后历/点/线/标注池/召回已合并进单一外壳 .sp-inline-box（召回框亦带此类），
-      故这里只挂 .sp-inline-box：令牌定义在框根、经继承下达各区，替代早期逐区枚举。 */
+      故这里只挂 .sp-inline-box：令牌定义在框根、经继承下达各区，替代早期逐区枚举。
+   —— #sp-toast-wrap 同理挂在 <body> 下、在 .sp-root 之外：纳入后 toast 配色改走
+      --sp-surface/--sp-on-surface 令牌，跟随酒馆自适应（原为写死的 #61677A）。 */
 .sp-root,
 .sp-fab-btn,
-.sp-inline-box {
+.sp-inline-box,
+#sp-toast-wrap {
     --sp-on-surface  : var(--SmartThemeBodyColor,        var(--sp-on-surface-legacy));
     --sp-subtle      : color-mix(in oklab, var(--SmartThemeBodyColor, var(--sp-on-surface-legacy)) 62%, transparent);
     --sp-primary     : var(--SmartThemeQuoteColor,       var(--sp-primary-legacy));
@@ -206,6 +213,24 @@
     position  : fixed;
     z-index   : 2000001;
     font-family: var(--sp-font);
+    /* ── 隔离边界·主窗口（定向继承重置）───────────────────────────────────────
+       与 :5374 的 .sp-inline-box 同款、成对维护。主面板挂在酒馆宿主页里，下列
+       "继承型"排版属性本会顺继承链从 body/#chat 等灌进面板内未显式声明的后代——
+       激进美化主题把全局行距/字间距拉大时，紧凑的设置/卡片排版会被撑变形。在根
+       一次性钉回本插件基线切断继承链，取值＝CSS 初始值，故观感零变化、纯挣隔离。
+       —— 只挂根、不带 * / 不用 !important：没有酒馆主题会直接选中 .sp-root，继承来
+          的值必然输给这里的显式声明；插件内各处显式 line-height/text-align 仍优先
+          （继承是最弱来源，盖不掉）。配色/字体不动：--sp-* 令牌照旧跟随酒馆自适应。
+       —— text-shadow 是逐元素直击（非继承），另由 :177 的 `.sp-root *` !important 管。 */
+    line-height   : normal;
+    letter-spacing: normal;
+    word-spacing  : normal;
+    text-indent   : 0;
+    text-align    : left;
+    text-transform: none;
+    font-style    : normal;
+    font-variant  : normal;
+    white-space   : normal;
 }
 
 .sp-backdrop { display: none; }
@@ -745,6 +770,12 @@
 }
 .sp-fetch-btn:hover    { color: var(--sp-on-surface); border-color: var(--sp-primary); }
 .sp-fetch-btn:disabled { opacity: 0.5; cursor: default; }
+/* 字体设置的两个按钮带文字（应用 / 恢复默认）：撑成文字按钮，别套 .sp-fetch-btn 的 34px 方形图标框（否则文字被挤成竖排） */
+#sp-font-apply, #sp-font-reset {
+    width      : auto;
+    padding    : 6px 14px;
+    white-space: nowrap;
+}
 
 /* ─── Model select ───────────────────────────────────────────────────────────── */
 /* Kept for backward compat but no <select> uses .sp-input anymore. */
@@ -1224,12 +1255,7 @@ select.sp-input { appearance: none; cursor: pointer; }
     gap        : 8px;
 }
 .sp-wi-card-head input[type="checkbox"] {
-    flex-shrink: 0;
     cursor     : pointer;
-    width      : 15px;
-    height     : 15px;
-    accent-color: var(--sp-primary);
-    margin     : 0;
 }
 .sp-wi-label {
     font-size  : var(--sp-fs-85);
@@ -1427,14 +1453,83 @@ select.sp-input { appearance: none; cursor: pointer; }
     cursor     : pointer;
     line-height: 1.6;
 }
-.sp-mode-opt input[type="checkbox"],
-.sp-mode-opt input[type="radio"] {
-    width       : 14px;
-    height      : 14px;
-    accent-color: var(--sp-primary);
-    cursor      : pointer;
-    flex-shrink : 0;
-    margin      : 0;
+/* ── 自绘点选控件（appearance:none 自画圆点开关）──────────────────────────
+   原生 checkbox/radio 在酒馆内置浏览器里又小又受系统摆布、样式无法统一。这里全部
+   自画：纯 CSS，靠 :checked/:indeterminate 伪类驱动，零改 HTML、零动事件绑定（都绑在
+   input 的 change 上，与 appearance/伪元素无关）。作用域限 .sp-root，不外溢酒馆本体。
+   配色走 --sp-primary（跟随酒馆自适应），尺寸走 --sp-ctrl（跟随插件自身缩放）。
+   —— 全插件统一：空心圈 + 中心实心点（照通知管理那种圆点开关）；checkbox 与 radio 同形，
+      半选=空圈+重点色横杠（减号）。形状不承载层级（同层不同图标本就常见），只求观感统一。
+      记号一律取重点色压在空圈上、不填底也不用写死对比色——天然躲开浅色主题下记号与填底融色，
+      也不做拨杆胶囊（曾试拨杆，与点选混排显得杂乱、且半选/多选态拨杆表达不了）。 */
+.sp-root input[type="checkbox"],
+.sp-root input[type="radio"] {
+    appearance        : none;
+    -webkit-appearance: none;
+    box-sizing   : border-box;
+    inline-size  : var(--sp-ctrl);
+    block-size   : var(--sp-ctrl);
+    flex-shrink  : 0;
+    margin       : 0;
+    padding      : 0;
+    cursor       : pointer;
+    position     : relative;
+    border       : 1.5px solid var(--sp-subtle);
+    background   : transparent;
+    /* 中和酒馆 base 对 input[type=checkbox] 的干扰（public/style.css）：常驻 outline、
+       brightness 滤镜、inset 阴影、位移——不清会叠在自绘控件上（方形描边/偏色/错位）。 */
+    outline      : none;
+    box-shadow   : none;
+    filter       : none;
+    transform    : none;
+    transition   : background-color var(--sp-dur-fast) var(--sp-ease-standard),
+                   border-color     var(--sp-dur-fast) var(--sp-ease-standard);
+}
+.sp-root input[type="checkbox"],
+.sp-root input[type="radio"] { border-radius: 50%; }
+/* 中和酒馆 base 的 input[type=checkbox]::before（clip-path 剪成对勾 + inset 阴影）：
+   我们的勾选态是「空圈 + 中心实心点」(用 ::after 画点)，酒馆这条 ::before 会在圈里硬画一个对勾，
+   必须清空归零。半选/radio 的记号同样各自用 ::after 重建。 */
+.sp-root input[type="checkbox"]::before {
+    content   : none;
+    clip-path : none;
+    box-shadow: none;
+    transform : none;
+}
+.sp-root input[type="checkbox"]:hover,
+.sp-root input[type="radio"]:hover { border-color: var(--sp-primary); }
+/* 勾选/单选统一：空圈描重点色边 + 中心一枚重点色实心点（照通知管理那种圆点开关）。
+   点取重点色压在空圈(面板底)上——不填底、无写死对比色，天然避开浅色主题下「记号与填底融色」。
+   checkbox 与 radio 同形：形状不承载层级语义（同层不同图标本就常见），只求全插件观感统一。 */
+.sp-root input[type="checkbox"]:checked,
+.sp-root input[type="radio"]:checked { border-color: var(--sp-primary); }
+.sp-root input[type="checkbox"]:checked::after,
+.sp-root input[type="radio"]:checked::after {
+    content      : "";
+    position     : absolute;
+    inset        : 0;
+    margin       : auto;
+    inline-size  : 52%;
+    block-size   : 52%;
+    border-radius: 50%;
+    background   : var(--sp-primary);
+}
+/* checkbox 半选（世界书组「部分选中」）：:indeterminate 由 JS 设的 property 驱动。
+   空圈 + 中心一道重点色横杠（圈里一个「减号」）——与「实心圆点=全选」「空圈=没选」明显区分。 */
+.sp-root input[type="checkbox"]:indeterminate { border-color: var(--sp-primary); }
+.sp-root input[type="checkbox"]:indeterminate::after {
+    content     : "";
+    position    : absolute;
+    inset        : 0;
+    margin      : auto;
+    inline-size : 54%;
+    block-size  : 2px;
+    background  : var(--sp-primary);
+}
+.sp-root input[type="checkbox"]:focus-visible,
+.sp-root input[type="radio"]:focus-visible {
+    outline   : none;
+    box-shadow: 0 0 0 3px var(--sp-neon-glow);
 }
 /* 楼内渲染框的子开关：AI 楼(点·线·轴·标注池) + 用户楼(召回)，缩进到主开关下面、横排可换行。 */
 .sp-inline-subtoggles {
@@ -1793,13 +1888,18 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-toast {
     display    : flex;
     align-items: center;
-    gap        : 8px;
-    padding    : 10px 18px;
-    background : #61677A;
-    color      : #e8ddd5;
-    border-radius: 99px;
-    font-size  : var(--sp-fs-85);
-    box-shadow : 0 4px 16px rgba(0,0,0,0.4);
+    gap        : 6px;
+    padding    : 7px 14px;
+    /* 配色跟随酒馆自适应（令牌见 :140 级联）。双层背景（同 .sp-sheet:245）：不透明底板
+       (--sp-surface-legacy，即原写死的 #61677A 系) + 覆一层酒馆 tint。--sp-surface(BotMesBlurTintColor)
+       在透明主题下带 alpha 甚至全透，单用它 toast 会透底；底板兜底保证永不透明，文字用正文色令牌保对比。 */
+    background-color: var(--sp-surface-legacy);
+    background-image: linear-gradient(var(--sp-surface), var(--sp-surface));
+    color      : var(--sp-on-surface);
+    border     : 1px solid var(--sp-divider);
+    border-radius: 8px;   /* 跟插件主流小圆角一致（原 12px 大圆角与整体设计不搭） */
+    font-size  : var(--sp-fs-78);
+    box-shadow : 0 3px 12px rgba(0,0,0,0.35);
     pointer-events: auto;
     opacity    : 0;
     transform  : translateY(-12px);
@@ -1807,7 +1907,11 @@ select.sp-input { appearance: none; cursor: pointer; }
     white-space: nowrap;
 }
 .sp-toast-show  { opacity: 1; transform: translateY(0); }
-.sp-toast-error { background: #4e2020; color: #ffb3b3; }
+/* 报错 toast：不改底色/字色（曾把底色取成重点色→红底红字看不清）。统一同一套底色，
+   只用左侧一道红边条示意「这是报错」——toast 是为了看清，不玩花样。 */
+.sp-toast-error {
+    border-left: 3px solid var(--sp-danger, #e05555);
+}
 
 /* ─── FAB ────────────────────────────────────────────────────────────────────── */
 /* Use top+dvh to work around html{-webkit-transform:translateZ(0)} on ST,
@@ -3732,6 +3836,10 @@ select.sp-input { appearance: none; cursor: pointer; }
     max-height : none;
     border     : 0;
     border-radius: 0;
+    /* 双层背景（同 .sp-sheet:245）：不透明底板(-legacy) + 覆一层酒馆 tint。全屏时
+       脱离面板铺满视口，若只用带 alpha 的 --sp-sheet-bg，透明酒馆主题下会露出底层。*/
+    background-color: var(--sp-sheet-bg-legacy);
+    background-image: linear-gradient(var(--sp-sheet-bg), var(--sp-sheet-bg));
     overflow-y : auto;
     -webkit-overflow-scrolling: touch;
     padding    : 20px clamp(10px, 1.4vw, 16px);   /* 左右压到最小、只留一点不糊边 */
@@ -3749,7 +3857,9 @@ body.sp-theater-fs-lock { overflow: hidden; }
     position     : fixed;
     inset        : 0;
     z-index      : 2000010;              /* 高于面板 .sp-root(2000001) */
-    background   : var(--sp-sheet-bg);   /* 铺底，盖住底层面板 */
+    /* 双层背景（同 .sp-sheet:245）：不透明底板兜底，透明酒馆主题下才不会露出底层面板 */
+    background-color: var(--sp-sheet-bg-legacy);
+    background-image: linear-gradient(var(--sp-sheet-bg), var(--sp-sheet-bg));
     padding      : 20px clamp(10px, 1.4vw, 16px) 40px;
     overflow-y   : auto;
     -webkit-overflow-scrolling: touch;
