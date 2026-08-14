@@ -4154,7 +4154,8 @@ function injectModal() {
     // 批次3：shadow 内点击的 e.target 被重定向为 host，closest() 判断失效（点 pop 内部也触发关闭）
     // → 改走 composedPath()（含 shadow 内节点）判断点击是否落在 pop/btn 内。
     $(document).off('click.spIntro').on('click.spIntro', function (e) {
-        const path = e.originalEvent.composedPath();
+        // hotfix3：合成事件（如 fastChat/mobileKeyboard 的 jQuery .trigger()）无 originalEvent → ?. 防御，path 为空走关闭分支
+        const path = e.originalEvent?.composedPath?.() || [];
         if (path.some(el => el instanceof Element && el.matches('#sp-module-intro-pop, .sp-module-intro-btn'))) return;
         $in('#sp-module-intro-pop').hide();
     });
@@ -5127,8 +5128,9 @@ function injectModal() {
     });
 
     // 批次3：同 spIntro——action 菜单在 shadow 内，target 重定向失效，改 composedPath 判断。
+    // hotfix3：合成事件无 originalEvent → ?. 防御，path 为空 → some()=false → 走关闭分支（安全默认）
     $(document).off('click.spActionMenu').on('click.spActionMenu', function (event) {
-        if (!event.originalEvent.composedPath().some(el => el instanceof Element && el.matches('.sp-action-menu'))) closeActionMenus();
+        if (!(event.originalEvent?.composedPath?.() || []).some(el => el instanceof Element && el.matches('.sp-action-menu'))) closeActionMenus();
     });
     // 批次3：keydown 是 composed 事件，从 shadow 冒泡到 document 照常触发、无 target 判断 → 无需改。
     $(document).off('keydown.spActionMenu').on('keydown.spActionMenu', function (event) {
@@ -5741,8 +5743,9 @@ function openTaDrawer() {
     $in('#sp-ta-trigger').addClass('sp-ta-open');
     // 外点即收：点抽屉/触发器以外任意处关闭（触发器自身的 toggle 另管，故排除它避免双触发）。
     // 批次3：抽屉在 shadow 内，target 重定向失效 → 改 composedPath 判断点击是否落在抽屉/触发器内。
+    // hotfix3：合成事件无 originalEvent → ?. 防御，path 为空 → some()=false → 不 return → 走关闭分支（安全默认）
     $(document).off('click.tadrawer').on('click.tadrawer', function (e) {
-        if (e.originalEvent.composedPath().some(el => el instanceof Element && el.matches('#sp-ta-drawer, #sp-ta-trigger'))) return;
+        if ((e.originalEvent?.composedPath?.() || []).some(el => el instanceof Element && el.matches('#sp-ta-drawer, #sp-ta-trigger'))) return;
         closeTaDrawer();
     });
 }
