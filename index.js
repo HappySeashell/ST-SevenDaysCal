@@ -5079,7 +5079,7 @@ function injectModal() {
     });
 
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
-    $in('.sp-sidebar').on('click', '.sp-view-btn', function () {
+    $in('.sp-root').on('click', '.sp-view-btn', function () {  // 全窗委托（含 .sp-content-head 内 sub-btn/ta-trigger），等价原宿主级绑定
         // 点生成不再冻结整个侧栏：切模块(历/线/面/棱/锚)随时可用——点正文按状态重建（下方 schedule 分支），
         // 生成完成走 stillOnView 守卫写进(可能隐藏的) #sp-body，切走不被覆盖、切回自动补正。
         // 仅「我/TA」子切换在点生成途中仍挡（点按视角生成，中途换视角无意义）。
