@@ -11568,12 +11568,12 @@ let _cachedModels = [];
 
 function renderModelList(models, filter = '') {
     _cachedModels = Array.isArray(models) ? models : [];
-    $('#sp-model-list-count').text(`已加载 ${_cachedModels.length} 个模型`);
+    $in('#sp-model-list-count').text(`已加载 ${_cachedModels.length} 个模型`);
     const q = filter.trim().toLowerCase();
     const shown = q ? _cachedModels.filter(m => m.toLowerCase().includes(q)) : _cachedModels;
-    const current = ($('#sp-cfg-model').val() || '').trim();
+    const current = ($in('#sp-cfg-model').val() || '').trim();
     if (!shown.length) {
-        $('#sp-model-list-items').html(`<div class="sp-model-list-empty">${q ? '无匹配项' : '暂无模型'}</div>`);
+        $in('#sp-model-list-items').html(`<div class="sp-model-list-empty">${q ? '无匹配项' : '暂无模型'}</div>`);
         return;
     }
     // Cap the initial render at 200 items with a "show more" tail for MASSIVE lists;
@@ -11581,17 +11581,17 @@ function renderModelList(models, filter = '') {
     const html = shown.map(m =>
         `<button type="button" class="sp-model-list-item${m === current ? ' sp-model-list-item-active' : ''}" data-model="${escapeAttr(m)}">${escapeHtml(m)}</button>`
     ).join('');
-    $('#sp-model-list-items').html(html);
+    $in('#sp-model-list-items').html(html);
 }
 
 async function fetchModels() {
-    const rawUrl = $('#sp-cfg-url').val().trim();
-    const key = ($('#sp-cfg-key').data('real') || $('#sp-cfg-key').val()).trim();
+    const rawUrl = $in('#sp-cfg-url').val().trim();
+    const key = ($in('#sp-cfg-key').data('real') || $in('#sp-cfg-key').val()).trim();
     if (!rawUrl || !key) { showToast('请先填写 URL 和 Key', null, true); return; }
     const url = normalizeApiUrl(rawUrl);
     const ctx = getContext();
 
-    const $btn = $('#sp-fetch-models');
+    const $btn = $in('#sp-fetch-models');
     $btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i>');
     try {
         // Same proxy strategy as generation: go through ST's /status endpoint
@@ -11620,7 +11620,7 @@ async function fetchModels() {
         // give <select> the native fullscreen picker treatment.
         renderModelList(models);
         // Auto-expand so user sees the result of their action
-        $('#sp-model-list-section').attr('open', 'open').show();
+        $in('#sp-model-list-section').attr('open', 'open').show();
         showToast(`已加载 ${models.length} 个模型`);
     } catch (err) {
         showToast(`获取模型失败：${err.message}`, null, true);
@@ -11631,7 +11631,7 @@ async function fetchModels() {
 
 function toggleSettings() {
     settingsOpen = !settingsOpen;
-    const $overlay = $('#sp-settings-overlay');
+    const $overlay = $in('#sp-settings-overlay');
     if (settingsOpen) {
         renderWiList();     // async, fire-and-forget — fills list when done
         renderWiExcludeList();   // 全局排除清单（同步；勾选 = 构画一律不读该书）
@@ -11644,7 +11644,7 @@ function toggleSettings() {
         $overlay.stop(true).animate({ opacity: 0 }, 150, function () { $(this).css('display', 'none'); });
         stSaveSettings();   // 关面板即把面板内所有改动立即写盘：兜底防抖未 flush 的字段（customPrompt 等），根治重启丢失
     }
-    $(`#${MODAL_ID} .sp-settings-btn`).toggleClass('sp-btn-active', settingsOpen);
+    $in('.sp-settings-btn').toggleClass('sp-btn-active', settingsOpen);
     syncMobileViewport();
 }
 
@@ -11653,17 +11653,17 @@ function renderMemorySection() {
     const s = getSettings();
     const useBbb   = !!s.useBaiBaiBook;
     const useAnima = !!s.useAnima;
-    $('#sp-mem-source-bbb').prop('checked', useBbb);
-    $('#sp-mem-source-anima').prop('checked', useAnima);
+    $in('#sp-mem-source-bbb').prop('checked', useBbb);
+    $in('#sp-mem-source-anima').prop('checked', useAnima);
     // 自定义提示词是全局设置、与记忆源无关，必须在下面按源分支的 early-return 之前回填，
     // 否则用户选 Anima/柏宝书时函数提前 return，重开面板这框会空白（值其实已存盘）。
-    $('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
-    $('#sp-storyclock-prompt').val(typeof s.storyClockPrompt === 'string' ? s.storyClockPrompt : '');
-    $('#sp-space-persona').val(typeof s.spacePersona === 'string' ? s.spacePersona : '');   // 间·人格覆盖：同为全局设置，须在按源 early-return 前回填
+    $in('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
+    $in('#sp-storyclock-prompt').val(typeof s.storyClockPrompt === 'string' ? s.storyClockPrompt : '');
+    $in('#sp-space-persona').val(typeof s.spacePersona === 'string' ? s.spacePersona : '');   // 间·人格覆盖：同为全局设置，须在按源 early-return 前回填
     if (useBbb) {
-        $('#sp-mem-internal').hide();
-        $('#sp-mem-anima-status').hide();
-        $('#sp-mem-bbb-status').show();
+        $in('#sp-mem-internal').hide();
+        $in('#sp-mem-anima-status').hide();
+        $in('#sp-mem-bbb-status').show();
         const api = globalThis.STBaiBaiBook;
         if (api && typeof api.getInjectedHistory === 'function') {
             let coverageMsg = '柏宝书已就绪';
@@ -11672,29 +11672,29 @@ function renderMemorySection() {
                 if (cov?.complete === false) coverageMsg += `（缺 ${cov.missingAiFloors?.length ?? '?'} 楼摘要）`;
                 else coverageMsg += '（覆盖完整）';
             } catch {}
-            $('#sp-mem-bbb-status').html(`<i class="fa-solid fa-circle-check" style="color:var(--cardhub-accent,#7c9)"></i> ${escapeHtml(coverageMsg)}`);
+            $in('#sp-mem-bbb-status').html(`<i class="fa-solid fa-circle-check" style="color:var(--cardhub-accent,#7c9)"></i> ${escapeHtml(coverageMsg)}`);
         } else {
-            $('#sp-mem-bbb-status').html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 检测不到柏宝书 API：请确认已安装并把柏宝书更新到最新版（旧版无读取接口）；点 / 线 / 面 / 间 生成时不会注入历史记忆');
+            $in('#sp-mem-bbb-status').html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 检测不到柏宝书 API：请确认已安装并把柏宝书更新到最新版（旧版无读取接口）；点 / 线 / 面 / 间 生成时不会注入历史记忆');
         }
         return;
     }
     if (useAnima) {
-        $('#sp-mem-internal').hide();
-        $('#sp-mem-bbb-status').hide();
-        $('#sp-mem-anima-status').show();
+        $in('#sp-mem-internal').hide();
+        $in('#sp-mem-bbb-status').hide();
+        $in('#sp-mem-anima-status').show();
         renderAnimaStatus();
         return;
     }
-    $('#sp-mem-internal').show();
-    $('#sp-mem-bbb-status').hide();
-    $('#sp-mem-anima-status').hide();
-    $('#sp-mem-enabled').prop('checked', s.memoryEnabled !== false);
-    $('#sp-mem-l0').val(Number.isFinite(+s.memoryL0Group) ? +s.memoryL0Group : 5);
-    $('#sp-mem-l1').val(Number.isFinite(+s.memoryL1Group) ? +s.memoryL1Group : 10);
-    $('#sp-mem-skipshort').val(Number.isFinite(+s.memorySkipShort) ? +s.memorySkipShort : 50);
-    $('#sp-mem-maxtokens').val(Number.isFinite(+s.memMaxTokens) ? +s.memMaxTokens : 60000);
-    $('#sp-mem-keeptags').val(typeof s.keepTags  === 'string' ? s.keepTags  : 'content');
-    $('#sp-mem-extratags').val(typeof s.extraTags === 'string' ? s.extraTags : '');
+    $in('#sp-mem-internal').show();
+    $in('#sp-mem-bbb-status').hide();
+    $in('#sp-mem-anima-status').hide();
+    $in('#sp-mem-enabled').prop('checked', s.memoryEnabled !== false);
+    $in('#sp-mem-l0').val(Number.isFinite(+s.memoryL0Group) ? +s.memoryL0Group : 5);
+    $in('#sp-mem-l1').val(Number.isFinite(+s.memoryL1Group) ? +s.memoryL1Group : 10);
+    $in('#sp-mem-skipshort').val(Number.isFinite(+s.memorySkipShort) ? +s.memorySkipShort : 50);
+    $in('#sp-mem-maxtokens').val(Number.isFinite(+s.memMaxTokens) ? +s.memMaxTokens : 60000);
+    $in('#sp-mem-keeptags').val(typeof s.keepTags  === 'string' ? s.keepTags  : 'content');
+    $in('#sp-mem-extratags').val(typeof s.extraTags === 'string' ? s.extraTags : '');
     refreshMemoryStatus();
 }
 
@@ -11702,7 +11702,7 @@ function renderMemorySection() {
 // 酒馆助手 and counts anima_summary slices. Guarded against the user flipping the
 // source mid-await (re-checks useAnima before writing).
 async function renderAnimaStatus() {
-    const $st = $('#sp-mem-anima-status');
+    const $st = $in('#sp-mem-anima-status');
     const th = globalThis.TavernHelper;
     if (!th || typeof th.getChatWorldbookName !== 'function' || typeof th.getWorldbook !== 'function') {
         $st.html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 检测不到酒馆助手(TavernHelper)：请确认已安装并启用「酒馆助手」与「Anima 记忆系统」；点 / 线 / 面 / 间 生成时不会注入历史记忆');
@@ -11749,40 +11749,40 @@ function refreshMemoryStatus() {
     if (r.strippedEmpty > 0) rows.push(`<div class="sp-mem-alert">⚠ 有 ${r.strippedEmpty} 组净化后正文几乎为空，请重查「保留标签」设置（非模型问题，无需换模型）。</div>`);
     if (r.paused) rows.push(`<div class="sp-mem-alert">⚠ 记忆系统已暂停：${escapeHtml(r.lastError || '连续失败')}。点补齐或重构以恢复。</div>`);
     if (r.busy)   rows.push(`<div class="sp-mem-alert sp-mem-alert-info">🔄 记忆系统正在后台工作</div>`);
-    $('#sp-mem-status').html(rows.join(''));
+    $in('#sp-mem-status').html(rows.join(''));
 }
 
 // ─── 棱 settings renderer ───────────────────────────────────────────────────
 function renderTheaterSection() {
     const s = getSettings();
-    $('#sp-theater-style').val(typeof s.theaterStylePrompt === 'string' ? s.theaterStylePrompt : '');
+    $in('#sp-theater-style').val(typeof s.theaterStylePrompt === 'string' ? s.theaterStylePrompt : '');
     refreshTheaterTemplates();   // async, fills #sp-theater-tpl-mgr when done
 }
 
 // 棱设置分节的事件（config 字段即改即存；模板 CRUD。缓存治理已移交存储管理面板）
 function bindTheaterHandlers() {
-    $('#sp-theater-style').on('change', function () {
+    $in('#sp-theater-style').on('change', function () {
         getSettings().theaterStylePrompt = this.value;
         saveSettingsDebounced();
     });
 
     // 模板写入口（委托到管理器容器，内容动态渲染）。查看/改/删交给酒馆世界书编辑器。
-    const $mgr = $('#sp-theater-tpl-mgr');
+    const $mgr = $in('#sp-theater-tpl-mgr');
     $mgr.on('click', '#sp-theater-tpl-add', async function () {
-        const title = String($('#sp-theater-tpl-new-title').val() || '').trim();
-        const text  = String($('#sp-theater-tpl-new-text').val() || '').trim();
+        const title = String($in('#sp-theater-tpl-new-title').val() || '').trim();
+        const text  = String($in('#sp-theater-tpl-new-text').val() || '').trim();
         if (!title && !text) { showToast('模板标题或内容不能都为空', null, true); return; }
         try {
             await theater.addTemplate(title || '(无标题)', text);
-            $('#sp-theater-tpl-new-title').val('');
-            $('#sp-theater-tpl-new-text').val('');
+            $in('#sp-theater-tpl-new-title').val('');
+            $in('#sp-theater-tpl-new-text').val('');
             await refreshTheaterTemplates();  // 重渲染 → 计数 +1
             showToast('模板已新增');
         } catch (err) { showToast('新增失败：' + (err.message || err), null, true); }
     });
     // 批量导入 txt：点按钮 → 触发隐藏 file input → 读文本 → 解析 → addTemplatesBatch 一次入库
     $mgr.on('click', '#sp-theater-tpl-import', function () {
-        $('#sp-theater-tpl-import-file').trigger('click');
+        $in('#sp-theater-tpl-import-file').trigger('click');
     });
     $mgr.on('change', '#sp-theater-tpl-import-file', async function () {
         const file = this.files && this.files[0];
@@ -11800,7 +11800,7 @@ function bindTheaterHandlers() {
 }
 
 function bindMemoryHandlers() {
-    $('#sp-mem-source-bbb').on('change', function () {
+    $in('#sp-mem-source-bbb').on('change', function () {
         const s = getSettings();
         s.useBaiBaiBook = this.checked;
         if (this.checked) s.useAnima = false;   // 记忆源互斥：柏宝书 / Anima / 内置三选一
@@ -11808,7 +11808,7 @@ function bindMemoryHandlers() {
         if (this.checked) memory.abortRebuild();
         renderMemorySection();
     });
-    $('#sp-mem-source-anima').on('change', function () {
+    $in('#sp-mem-source-anima').on('change', function () {
         const s = getSettings();
         s.useAnima = this.checked;
         if (this.checked) s.useBaiBaiBook = false;   // 记忆源互斥
@@ -11816,29 +11816,29 @@ function bindMemoryHandlers() {
         if (this.checked) memory.abortRebuild();
         renderMemorySection();
     });
-    $('#sp-mem-enabled').on('change', function () {
+    $in('#sp-mem-enabled').on('change', function () {
         getSettings().memoryEnabled = this.checked;
         saveSettingsDebounced();
     });
-    $('#sp-mem-l0').on('change', function () {
+    $in('#sp-mem-l0').on('change', function () {
         const v = Math.max(1, Math.min(30, parseInt(this.value, 10) || 5));
         getSettings().memoryL0Group = v;
         this.value = v;
         saveSettingsDebounced();
     });
-    $('#sp-mem-l1').on('change', function () {
+    $in('#sp-mem-l1').on('change', function () {
         const v = Math.max(2, Math.min(30, parseInt(this.value, 10) || 10));
         getSettings().memoryL1Group = v;
         this.value = v;
         saveSettingsDebounced();
     });
-    $('#sp-mem-skipshort').on('change', function () {
+    $in('#sp-mem-skipshort').on('change', function () {
         const v = Math.max(0, Math.min(500, parseInt(this.value, 10) || 50));
         getSettings().memorySkipShort = v;
         this.value = v;
         saveSettingsDebounced();
     });
-    $('#sp-mem-maxtokens').on('change', function () {
+    $in('#sp-mem-maxtokens').on('change', function () {
         // 0 = 不限；否则给个下限防手滑填极小值把记忆压没（1000 tk 起）
         let v = parseInt(this.value, 10);
         if (!Number.isFinite(v) || v < 0) v = 60000;
@@ -11872,7 +11872,7 @@ function bindMemoryHandlers() {
     }
     bindTagField('#sp-mem-keeptags',  'keepTags');
     bindTagField('#sp-mem-extratags', 'extraTags');
-    $('#sp-custom-prompt').on('input', function () {
+    $in('#sp-custom-prompt').on('input', function () {
         getSettings().customPrompt = this.value;
         saveSettingsDebounced();
     }).on('blur', function () {
@@ -11880,7 +11880,7 @@ function bindMemoryHandlers() {
         stSaveSettings();   // 失焦即落盘，覆盖"填完没关面板就直接刷新"的场景
     });
     // 间·人格覆盖：与 customPrompt 同套持久化（无常驻注入，下次进「间」发消息时经 buildSpaceChatSystemPrompt 现读现生效）。
-    $('#sp-space-persona').on('input', function () {
+    $in('#sp-space-persona').on('input', function () {
         getSettings().spacePersona = this.value;
         saveSettingsDebounced();
     }).on('blur', function () {
@@ -11888,7 +11888,7 @@ function bindMemoryHandlers() {
         stSaveSettings();
     });
     // 时间戳·强注词二改：与 customPrompt 同套持久化；改后立即重设常驻注入让新词当楼生效。
-    $('#sp-storyclock-prompt').on('input', function () {
+    $in('#sp-storyclock-prompt').on('input', function () {
         getSettings().storyClockPrompt = this.value;
         saveSettingsDebounced();
         try { refreshStoryClockInjection(); } catch {}
@@ -11896,26 +11896,26 @@ function bindMemoryHandlers() {
         getSettings().storyClockPrompt = this.value;
         stSaveSettings();
     });
-    $('#sp-storyclock-prompt-load').on('click', function () {
-        $('#sp-storyclock-prompt').val(_DEFAULT_STORY_CLOCK_PROMPT);
+    $in('#sp-storyclock-prompt-load').on('click', function () {
+        $in('#sp-storyclock-prompt').val(_DEFAULT_STORY_CLOCK_PROMPT);
         getSettings().storyClockPrompt = _DEFAULT_STORY_CLOCK_PROMPT;
         stSaveSettings();
         try { refreshStoryClockInjection(); } catch {}
         try { showToast('已把默认强制词载入编辑框，可直接修改'); } catch {}
     });
     // 恢复默认＝清空＝回到内置 live 默认（继续跟随插件更新），区别于「载入默认再改」的冻结快照。
-    $('#sp-storyclock-prompt-reset').on('click', function () {
-        $('#sp-storyclock-prompt').val('');
+    $in('#sp-storyclock-prompt-reset').on('click', function () {
+        $in('#sp-storyclock-prompt').val('');
         getSettings().storyClockPrompt = '';
         stSaveSettings();
         try { refreshStoryClockInjection(); } catch {}
         try { showToast('已恢复内置默认（跟随插件更新）'); } catch {}
     });
-    $('#sp-mem-check').on('click', function () {
+    $in('#sp-mem-check').on('click', function () {
         refreshMemoryStatus();
         showToast('已刷新记忆状态');
     });
-    $('#sp-mem-fill').on('click', async function () {
+    $in('#sp-mem-fill').on('click', async function () {
         if ($(this).prop('disabled')) return;
         setMemoryProgressVisible(true);
         $(this).prop('disabled', true);
@@ -11933,7 +11933,7 @@ function bindMemoryHandlers() {
             refreshMemoryStatus();
         }
     });
-    $('#sp-mem-rebuild').on('click', async function () {
+    $in('#sp-mem-rebuild').on('click', async function () {
         const r = memory.getHealthReport();
         const cost = r.totalGroups;
         const ok = await spConfirm({
@@ -11963,25 +11963,25 @@ function bindMemoryHandlers() {
             refreshMemoryStatus();
         }
     });
-    $('#sp-mem-progress-abort').on('click', () => memory.abortRebuild());
+    $in('#sp-mem-progress-abort').on('click', () => memory.abortRebuild());
 }
 
 function setMemoryProgressVisible(visible) {
-    $('#sp-mem-progress').toggle(!!visible);
+    $in('#sp-mem-progress').toggle(!!visible);
     if (visible) updateMemoryProgress(0, 0);
 }
 
 function updateMemoryProgress(current, total, aborted = false) {
-    $('#sp-mem-progress-count').text(aborted ? `已中止 (${current}/${total})` : `${current}/${total}`);
+    $in('#sp-mem-progress-count').text(aborted ? `已中止 (${current}/${total})` : `${current}/${total}`);
     const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-    $('#sp-mem-progress-fill').css('width', pct + '%');
+    $in('#sp-mem-progress-fill').css('width', pct + '%');
 }
 
 // Renders the narrative-scale radio group into #sp-scale-row using the current
 // character's saved value. Regenerated each time settings opens (character can
 // change between opens).
 function renderScaleRow() {
-    const $row = $('#sp-scale-row');
+    const $row = $in('#sp-scale-row');
     if (!$row.length) return;
     const ctx = getContext();
     const current = getScale(charStableKey(ctx));
@@ -12011,7 +12011,7 @@ function _wiScrollParent(el) {
 
 async function renderWiList() {
     const ctx = getContext();
-    const $list = $('#sp-wi-list');
+    const $list = $in('#sp-wi-list');
 
     // Snapshot the current expand + scroll state BEFORE the loading placeholder
     // wipes the DOM, so a re-render doesn't spring every <details> group back open
@@ -12159,17 +12159,17 @@ async function renderWiList() {
 }
 
 function syncWiSelectAll() {
-    const $cbs = $('#sp-wi-list .sp-wi-cb');
+    const $cbs = $in('#sp-wi-list .sp-wi-cb');
     if (!$cbs.length) return;
     const total   = $cbs.length;
     const checked = $cbs.filter(':checked').length;
-    const $all = $('#sp-wi-select-all')[0];
+    const $all = $in('#sp-wi-select-all')[0];
     if ($all) {
         $all.checked       = checked === total;
         $all.indeterminate = checked > 0 && checked < total;
     }
     // Refresh each group's per-book checkbox based on its own entries
-    $('#sp-wi-list .sp-wi-group').each(function () {
+    $in('#sp-wi-list .sp-wi-group').each(function () {
         const $g = $(this);
         const $groupCb = $g.find('.sp-wi-group-cb')[0];
         if (!$groupCb) return;
@@ -12186,7 +12186,7 @@ function syncWiSelectAll() {
 // 书多（三四十本）时套进内联抽屉 + 查找框：本函数只铺行，查找靠 _filterWiExcludeList 纯前端隐/显，
 // 不重渲（重渲会打断查找框输入焦点）。
 function renderWiExcludeList() {
-    const $list = $('#sp-wi-exclude-list');
+    const $list = $in('#sp-wi-exclude-list');
     if (!$list.length) return;
     const ctx = getContext();
     let names = [];
@@ -12214,7 +12214,7 @@ function renderWiExcludeList() {
         renderWiList();   // 排除变化即时反映到上面的按角色卡挑选列表（被排除的书从中消失/重现）
     });
     // 查找框：一次性绑定（每次 render 都重绑，off 先解旧的），输入即隐/显匹配行。
-    const $search = $('#sp-wi-exclude-search');
+    const $search = $in('#sp-wi-exclude-search');
     $search.off('.wix').on('input.wix', function () {
         _filterWiExcludeList(String(this.value || '').trim().toLowerCase());
     });
@@ -12223,7 +12223,7 @@ function renderWiExcludeList() {
 
 // 查找框纯前端过滤：名字含关键词的行显示、其余隐藏；空词全显。
 function _filterWiExcludeList(kw) {
-    const $rows = $('#sp-wi-exclude-list .sp-wi-exclude-row');
+    const $rows = $in('#sp-wi-exclude-list .sp-wi-exclude-row');
     if (!kw) { $rows.show(); return; }
     $rows.each(function () {
         const name = String(this.getAttribute('data-name') || '').toLowerCase();
@@ -12233,7 +12233,7 @@ function _filterWiExcludeList(kw) {
 
 // 抽屉标题右侧的计数徽标：「已排除 M / 共 N」，M=0 时只显总数、淡化。
 function _syncWiExcludeCount(excludedN, totalN) {
-    const $c = $('#sp-wi-exclude-count');
+    const $c = $in('#sp-wi-exclude-count');
     if (!$c.length) return;
     $c.text(excludedN > 0 ? `已排除 ${excludedN} / 共 ${totalN}` : `共 ${totalN}`)
       .toggleClass('sp-wi-exclude-count-active', excludedN > 0);
@@ -12241,7 +12241,7 @@ function _syncWiExcludeCount(excludedN, totalN) {
 
 // Full-text popup for a single world-info entry
 function showWiEntryFull(entry) {
-    $('#sp-wi-fullview').remove();
+    $in('#sp-wi-fullview').remove();
     const $overlay = $(`<div id="sp-wi-fullview" class="sp-wi-fullview">
         <div class="sp-wi-fullview-sheet">
             <div class="sp-wi-fullview-head">
@@ -12258,11 +12258,11 @@ function showWiEntryFull(entry) {
         if (e.target === this) $overlay.remove();
     });
     $overlay.find('.sp-wi-fullview-close').on('click', () => $overlay.remove());
-    $(`#${MODAL_ID} .sp-sheet`).append($overlay);
+    $in('.sp-sheet').append($overlay);
 }
 
 function toggleKeyVisibility() {
-    const $el = $('#sp-cfg-key'), $icon = $('#sp-key-toggle i');
+    const $el = $in('#sp-cfg-key'), $icon = $in('#sp-key-toggle i');
     if ($el.attr('type') === 'password') {
         $el.attr('type', 'text').val($el.data('real') || $el.val());
         $icon.removeClass('fa-eye').addClass('fa-eye-slash');
@@ -12275,53 +12275,53 @@ function toggleKeyVisibility() {
 // ─── API 存储快切：UI 事件 + 下拉渲染 ────────────────────────────────────────
 // 从当前输入框读出这一套 API 配置（含未点保存的改动、Key 取 data('real') 真值）。
 function readApiInputs() {
-    const $k = $('#sp-cfg-key');
+    const $k = $in('#sp-cfg-key');
     return {
-        url          : $('#sp-cfg-url').val().trim().replace(/\/$/, ''),
+        url          : $in('#sp-cfg-url').val().trim().replace(/\/$/, ''),
         key          : ($k.data('real') || $k.val() || '').trim(),
-        model        : $('#sp-cfg-model').val().trim(),
-        excludeParams: parseExcludeParams($('#sp-cfg-exclude').val()),
-        timeoutSec   : parseInt($('#sp-cfg-timeout').val(), 10) || 180,
-        stream       : $('#sp-cfg-stream').is(':checked'),
+        model        : $in('#sp-cfg-model').val().trim(),
+        excludeParams: parseExcludeParams($in('#sp-cfg-exclude').val()),
+        timeoutSec   : parseInt($in('#sp-cfg-timeout').val(), 10) || 180,
+        stream       : $in('#sp-cfg-stream').is(':checked'),
     };
 }
 
 // 把一套预设填回输入框（不生效，等用户点保存）。Key 走 maskKey 遮罩 + data('real') 存真值。
 function fillApiInputs(p) {
-    $('#sp-cfg-url').val(p.url || '');
-    const $k = $('#sp-cfg-key');
+    $in('#sp-cfg-url').val(p.url || '');
+    const $k = $in('#sp-cfg-key');
     if (p.key) $k.data('real', p.key).val(maskKey(p.key)).attr('type', 'password');
     else       $k.data('real', '').val('');
-    $('#sp-cfg-model').val(p.model || '');
-    $('#sp-cfg-exclude').val((Array.isArray(p.excludeParams) ? p.excludeParams : []).join('\n'));
-    $('#sp-cfg-timeout').val(p.timeoutSec || 180);
-    $('#sp-cfg-stream').prop('checked', p.stream === true);
+    $in('#sp-cfg-model').val(p.model || '');
+    $in('#sp-cfg-exclude').val((Array.isArray(p.excludeParams) ? p.excludeParams : []).join('\n'));
+    $in('#sp-cfg-timeout').val(p.timeoutSec || 180);
+    $in('#sp-cfg-stream').prop('checked', p.stream === true);
 }
 
 // 渲染内联预设列表：在流内展开，非原生 <select> 弹窗——与「模型列表」同一套内联思路，
 // 避开 WebView（微信/QQ 内置浏览器等）里 select 弹层被插件盖住/弹不出的老问题。
 function renderApiPresetList() {
-    const $list = $('#sp-preset-list');
+    const $list = $in('#sp-preset-list');
     if (!$list.length) return;
     const list = loadApiPresets();
     const activeId = getSettings().apiPresetActiveId || '';
     $list.html(list.length
         ? list.map(p => `<div class="sp-preset-item-row" data-id="${escapeAttr(p.id)}"><button type="button" class="sp-preset-item${p.id === activeId ? ' sp-preset-item-active' : ''}" data-id="${escapeAttr(p.id)}">${escapeHtml(p.name)}</button><button type="button" class="sp-preset-rename" data-id="${escapeAttr(p.id)}" title="给这个预设改名"><i class="fa-solid fa-pen"></i></button></div>`).join('')
         : `<div class="sp-preset-empty">暂无预设，填好 API 后点右侧＋存一个</div>`);
-    $('#sp-preset-del').prop('disabled', !activeId);
+    $in('#sp-preset-del').prop('disabled', !activeId);
     syncPresetLabel();
 }
 
 // 「假框」显示当前选中预设名（无原生 select，直接按 activeId 回显）
 function syncPresetLabel() {
-    const $lb = $('#sp-preset-label');
+    const $lb = $in('#sp-preset-label');
     if (!$lb.length) return;
     const p = loadApiPresets().find(x => x.id === (getSettings().apiPresetActiveId || ''));
     $lb.text(p ? p.name : '选择预设…');
 }
 
 function showPresetHint(msg) {
-    const $h = $('#sp-preset-hint');
+    const $h = $in('#sp-preset-hint');
     if (!$h.length) return;
     $h.text(msg).show();
     clearTimeout(showPresetHint._t);
@@ -12330,19 +12330,19 @@ function showPresetHint(msg) {
 
 function bindApiPresetEvents() {
     // 点假框 → 就地展开/收起内联预设列表（在流内，非原生弹窗）
-    $('#sp-preset-box').on('click', function (e) {
+    $in('#sp-preset-box').on('click', function (e) {
         e.preventDefault();
-        $('#sp-preset-list').slideToggle(120);
+        $in('#sp-preset-list').slideToggle(120);
         $(this).toggleClass('sp-preset-box-open');
     });
     // 选某预设 → 填入输入框（提示仍需点保存生效），收起列表
-    $('#sp-preset-list').on('click', '.sp-preset-item', function () {
+    $in('#sp-preset-list').on('click', '.sp-preset-item', function () {
         const id = $(this).attr('data-id');
         getSettings().apiPresetActiveId = id;
         const p = loadApiPresets().find(x => x.id === id);
         renderApiPresetList();
-        $('#sp-preset-list').slideUp(120);
-        $('#sp-preset-box').removeClass('sp-preset-box-open');
+        $in('#sp-preset-list').slideUp(120);
+        $in('#sp-preset-box').removeClass('sp-preset-box-open');
         if (!p) return;
         fillApiInputs(p);
         showPresetHint(`已填入「${p.name}」，点下方「保存」生效`);
@@ -12358,7 +12358,7 @@ function bindApiPresetEvents() {
         renderApiPresetList();       // 回到按钮态（名字已更新）
         renderUtilityPresetList();   // 机械预设列表同名同步
     };
-    $('#sp-preset-list').on('click', '.sp-preset-rename', function (e) {
+    $in('#sp-preset-list').on('click', '.sp-preset-rename', function (e) {
         e.preventDefault(); e.stopPropagation();
         const id = $(this).attr('data-id');
         const p = loadApiPresets().find(x => x.id === id);
@@ -12370,18 +12370,18 @@ function bindApiPresetEvents() {
         );
         $row.find('.sp-preset-rename-input').trigger('focus').trigger('select');
     });
-    $('#sp-preset-list').on('click', '.sp-preset-rename-ok', function (e) {
+    $in('#sp-preset-list').on('click', '.sp-preset-rename-ok', function (e) {
         e.preventDefault(); e.stopPropagation();
         commitPresetRename($(this).closest('.sp-preset-item-row'));
     });
-    $('#sp-preset-list').on('keydown', '.sp-preset-rename-input', function (e) {
+    $in('#sp-preset-list').on('keydown', '.sp-preset-rename-input', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); commitPresetRename($(this).closest('.sp-preset-item-row')); }
         else if (e.key === 'Escape') { e.preventDefault(); renderApiPresetList(); }
     });
 
     // ＋新增 → 把当前输入框这套存成新预设，名字先按 URL 域名自动生成（同名自动加序号）；
     // 存好后可在列表里点 ✎ 就地改名。覆盖内容仍是「删掉重存」。零弹窗。
-    $('#sp-preset-save').on('click', function () {
+    $in('#sp-preset-save').on('click', function () {
         const cur = readApiInputs();
         if (!cur.url && !cur.key) { showPresetHint('先填 API 再点新增'); return; }
         const name = autoPresetName(cur.url);
@@ -12393,7 +12393,7 @@ function bindApiPresetEvents() {
 
     // 删除当前选中预设 —— 内联二次确认（图标变红勾，再点才删；3 秒无操作复原），零弹窗
     let delArmed = false, delTimer = null;
-    $('#sp-preset-del').on('click', function () {
+    $in('#sp-preset-del').on('click', function () {
         const id = getSettings().apiPresetActiveId;
         if (!id) return;
         const $btn = $(this), $i = $btn.find('i');
@@ -12419,24 +12419,24 @@ function bindApiPresetEvents() {
     });
 
     // ── 机械任务预设：点假框展开候选（含「跟随主 API」项）；选一项即时生效落盘，无需保存 ──
-    $('#sp-util-preset-box').on('click', function (e) {
+    $in('#sp-util-preset-box').on('click', function (e) {
         e.preventDefault();
-        $('#sp-util-preset-list').slideToggle(120);
+        $in('#sp-util-preset-list').slideToggle(120);
         $(this).toggleClass('sp-preset-box-open');
     });
-    $('#sp-util-preset-list').on('click', '.sp-preset-item', function () {
+    $in('#sp-util-preset-list').on('click', '.sp-preset-item', function () {
         const id = $(this).attr('data-id') || '';   // 空 = 跟随主 API（不分流）
         getSettings().utilityPresetId = id;
         saveSettingsDebounced();
         renderUtilityPresetList();
-        $('#sp-util-preset-list').slideUp(120);
-        $('#sp-util-preset-box').removeClass('sp-preset-box-open');
+        $in('#sp-util-preset-list').slideUp(120);
+        $in('#sp-util-preset-box').removeClass('sp-preset-box-open');
     });
 }
 
 // 机械任务预设：内联候选列表 =「跟随主 API（不分流）」+ 每个已存预设。选中项高亮。
 function renderUtilityPresetList() {
-    const $list = $('#sp-util-preset-list');
+    const $list = $in('#sp-util-preset-list');
     if (!$list.length) return;
     const list = loadApiPresets();
     const activeId = getSettings().utilityPresetId || '';
@@ -12448,7 +12448,7 @@ function renderUtilityPresetList() {
 
 // 「假框」显示当前机械预设名；id 指向的预设不存在（被删）→ 清 id 并回显「跟随主 API」
 function syncUtilityPresetLabel() {
-    const $lb = $('#sp-util-preset-label');
+    const $lb = $in('#sp-util-preset-label');
     if (!$lb.length) return;
     const id = getSettings().utilityPresetId || '';
     const p = id ? loadApiPresets().find(x => x.id === id) : null;
@@ -12467,23 +12467,23 @@ function autoPresetName(url) {
 }
 
 function saveSettings() {
-    const $k = $('#sp-cfg-key'), key = ($k.data('real') || $k.val()).trim();
+    const $k = $in('#sp-cfg-key'), key = ($k.data('real') || $k.val()).trim();
     saveCfg({
-        url          : $('#sp-cfg-url').val().trim().replace(/\/$/, ''),
+        url          : $in('#sp-cfg-url').val().trim().replace(/\/$/, ''),
         key,
-        model        : $('#sp-cfg-model').val().trim(),
-        excludeParams: parseExcludeParams($('#sp-cfg-exclude').val()),
-        timeoutSec   : parseInt($('#sp-cfg-timeout').val(), 10),
-        stream       : $('#sp-cfg-stream').is(':checked'),
+        model        : $in('#sp-cfg-model').val().trim(),
+        excludeParams: parseExcludeParams($in('#sp-cfg-exclude').val()),
+        timeoutSec   : parseInt($in('#sp-cfg-timeout').val(), 10),
+        stream       : $in('#sp-cfg-stream').is(':checked'),
     });
-    saveLinesInterval($('#sp-lines-interval').val());
+    saveLinesInterval($in('#sp-lines-interval').val());
     saveLinesMode($('input[name="sp-lines-mode"]:checked').val());
     // Save world-info entry filter and narrative scale for current character
     const ctx = getContext();
     const charKey = charStableKey(ctx);
     if (charKey) {
         const disabled = new Set();
-        $('#sp-wi-list .sp-wi-cb').each(function () {
+        $in('#sp-wi-list .sp-wi-cb').each(function () {
             if (!this.checked) disabled.add($(this).data('key'));
         });
         setDisabledKeys(charKey, disabled);
@@ -12491,9 +12491,9 @@ function saveSettings() {
         setScale(charKey, scaleVal);
     }
     $k.data('real', key).val(maskKey(key)).attr('type', 'password');
-    const $m = $('#sp-cfg-msg'); $m.text('已保存 ✓'); setTimeout(() => $m.text(''), 2000);
+    const $m = $in('#sp-cfg-msg'); $m.text('已保存 ✓'); setTimeout(() => $m.text(''), 2000);
     const hasApi = !!(loadCfg().url && loadCfg().key);
-    $('#sp-settings-overlay .sp-api-notice')
+    $in('#sp-settings-overlay .sp-api-notice')
         .removeClass('sp-notice-ok sp-notice-warn')
         .addClass(hasApi ? 'sp-notice-ok' : 'sp-notice-warn')
         .html(`<i class="fa-solid ${hasApi ? 'fa-circle-check' : 'fa-triangle-exclamation'}"></i>
