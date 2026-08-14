@@ -3285,11 +3285,12 @@ function openAnchorAtChat(chatId) {
 // 跨模块跳转只复用现有侧栏切换，并在目标 DOM 就绪后做可选预填；它不发送消息，也不建立第二套路由状态。
 function openPluginViewWithPrefill(view, inputSelector = '', prefill = '') {
     showPanel();
-    const $tab = $(`.sp-side-tab.sp-view-btn[data-view="${view}"]`);
+    const $tab = $in(`.sp-side-tab.sp-view-btn[data-view="${view}"]`);
     if (!$tab.hasClass('sp-view-active')) $tab.trigger('click');
     if (!inputSelector || !prefill) return Promise.resolve(true);
     return new Promise(resolve => setTimeout(() => {
-        const $input = $(inputSelector);
+        // 面板整棵在 shadow 内，须用 $in 查 shadowRoot（全局 $ 穿不进影子边界 → 找不到输入框）
+        const $input = $in(inputSelector);
         if (!$input.length) { resolve(false); return; }
         const old = String($input.val() || '').trimEnd();
         if (!old.includes(prefill)) $input.val(old ? `${old}\n\n${prefill}` : prefill);
@@ -4452,8 +4453,9 @@ function injectModal() {
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     });
 
-    // Inject buttons (event delegation)——双绑拆分：面板三区在 shadow 内走 $in；楼内注入钮在 light DOM #chat 保持原查询。
-    $in('#sp-body, #sp-outline-wrap, #sp-lines-wrap').on('click', '.sp-inject-btn', function () {
+    // Inject buttons (event delegation)——双绑拆分：面板三区在 shadow 内走 $inAll；楼内注入钮在 light DOM #chat 保持原查询。
+    // 逗号选择器必须 $inAll：$in=querySelector 只取首个容器(#sp-body)，outline/lines 两区的注入钮会静默失效。
+    $inAll('#sp-body, #sp-outline-wrap, #sp-lines-wrap').on('click', '.sp-inject-btn', function () {
         const text = _injectTexts[$(this).data('iid')];
         if (text) injectToST(text);
     });
@@ -4463,7 +4465,8 @@ function injectModal() {
     });
 
     // 点/线面板底部「和间聊聊」引导 → 一键切到间（间能把讨论落地成点/线）
-    $in('#sp-body, #sp-lines-list').on('click', '.sp-jump-link', () => $in('.sp-view-btn[data-view="space"]').trigger('click'));
+    // 同上：逗号选择器用 $inAll，否则只有 #sp-body 那区能点、#sp-lines-list 区的「和间聊聊」静默失效。
+    $inAll('#sp-body, #sp-lines-list').on('click', '.sp-jump-link', () => $in('.sp-view-btn[data-view="space"]').trigger('click'));
 
     // Abort buttons (event delegation) — 即时撤下 UI，见 abort*Gen
     $in('#sp-body').on('click', '#sp-abort-generate', abortScheduleGen);
@@ -5332,7 +5335,7 @@ function injectModal() {
             $in('#sp-sub-toggle').show();
             $in('#sp-content-title').text('点');
             $inAll('.sp-sub-btn').removeClass('sp-view-active');
-            $(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
+            $inAll(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
             updateTaTriggerLabel();   // 回点视图：TA▾ 标签跟随当前视角（char 显名 / user 回落 TA）
             // 生成在途/切走再切回：从状态重建正文（镜像 线/面/棱），别露上次残留或僵尸转圈
             if (isGenerating) setBody(loadingHtml('正在规划', 'sp-abort-generate'));
@@ -5648,7 +5651,7 @@ function setView(view, charName) {
     refreshLinesInjection();   // 视角切换 → 活跃线集合变了，重设潜伏注入跟随当前视角
     refreshOutlineInjection(); // 视角切换 → 大纲/游标随视角变，重设注入（loadCached 已带高亮）
     $inAll('.sp-view-btn').removeClass('sp-view-active');
-    $(`.sp-view-btn[data-view="${view}"]`).addClass('sp-view-active');
+    $inAll(`.sp-view-btn[data-view="${view}"]`).addClass('sp-view-active');
     cachedSchedule = loadCachedForCurrentChat();
     cachedOutline  = loadCachedOutlineForCurrentChat();
     outlineChatHistory = [];
@@ -5686,7 +5689,7 @@ function switchToCharView() {
         <p class="sp-char-picker-sub">${guessed ? '根据近期对话预填，可直接修改。' : ''}不必是主角，任何出场人物、NPC、反派都能查看其点；查看不占固定槽，想常驻再去 📌 固定</p>
     </div>`);
     $inAll('.sp-view-btn').removeClass('sp-view-active');
-    $(`.sp-view-btn[data-view="char"]`).addClass('sp-view-active');
+    $inAll(`.sp-view-btn[data-view="char"]`).addClass('sp-view-active');
     // .off().on() prevents duplicate bindings on repeated calls
     $in('#sp-char-name-input').off('keydown.charview').on('keydown.charview', e => { if (e.key === 'Enter') confirmCharView(); });
     $in('#sp-char-name-confirm').off('click.charview').on('click.charview', confirmCharView);
@@ -10614,8 +10617,9 @@ function renderLedgerEditor() {
 }
 // 读窗内月/日两框 → {month,day} 或 null（两者都要有效才成锚；越界按历法夹取）。
 function ledgerReadMd(mSel, dSel, cal) {
-    const m = parseInt($(mSel).val(), 10);
-    const d = parseInt($(dSel).val(), 10);
+    // 调用方传的是 #sp-led-* 选择器串（刻度编辑器输入框在 shadow 内）→ 必须 $in 查 shadowRoot
+    const m = parseInt($in(mSel).val(), 10);
+    const d = parseInt($in(dSel).val(), 10);
     if (!Number.isFinite(m) || !Number.isFinite(d) || m < 1 || d < 1) return null;
     const mm = Math.min(Math.max(1, m), calMonthCount(cal));
     const dd = Math.min(Math.max(1, d), calMonthDays(cal, mm));
@@ -11054,7 +11058,8 @@ function refreshCalendarManager(options = {}) {
     const oldBindingView = $oldSearch.length ? {
         id: $oldSearch.attr('data-template-id'),
         query: String($oldSearch.val() ?? ''),
-        active: document.activeElement === $oldSearch.get(0),
+        // focus 在 shadow 内时 document.activeElement 被重定向为 host（拿不到内部输入框）→ 查 _spShadow.activeElement，否则搜索框每次重渲都丢焦点
+        active: (_spShadow?.activeElement ?? document.activeElement) === $oldSearch.get(0),
         selectionStart: $oldSearch.get(0).selectionStart,
         selectionEnd: $oldSearch.get(0).selectionEnd,
         resultsScrollTop: $oldSearch.closest('.sp-alm-manager-bind-panel').find('.sp-alm-manager-bind-results').scrollTop() || 0,
@@ -11986,7 +11991,8 @@ function bindMemoryHandlers() {
             .join(',');
     }
     function bindTagField(sel, key) {
-        $(sel).on('input', function () {
+        // sel 是 #sp-mem-* 选择器串（设置区在 shadow 内，同 11820 的 $in 读取）→ 必须 $in 绑定，否则不落存
+        $in(sel).on('input', function () {
             getSettings()[key] = sanitizeTagList(this.value);
             saveSettingsDebounced();
         }).on('change', function () {
@@ -12873,7 +12879,7 @@ function bindViewportSync() {
 function syncMobileViewport() {
     if (!isMobile()) return;
     const root  = document.getElementById(MODAL_ID);
-    const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+    const sheet = inEl('.sp-sheet');   // .sp-sheet 在 shadow 内：document.querySelector('#sp-modal-root .sp-sheet') 跨不过边界→null→整个移动端视口同步静默失效；用 inEl 查 shadow root
     if (!root || !sheet || root.style.display === 'none') return;
 
     // Read safe-area insets from CSS env() via a probe element.
