@@ -1910,7 +1910,13 @@ select.sp-input { appearance: none; cursor: pointer; }
     opacity    : 0;
     transform  : translateY(-12px);
     transition : opacity 0.25s, transform 0.25s;
-    white-space: nowrap;
+    /* 长文案换行不撑破视图：wrap 居中(left:50% + translateX)且无宽度约束，nowrap 会把长
+       报错顶成超宽单行 → 两头等量溢出屏幕被裁(手机窄屏尤甚)。改为可换行 + 视口内封顶 +
+       长串可断；border-box 让 padding 计入 max-width、保证总宽真 ≤ 92vw。 */
+    box-sizing   : border-box;
+    max-width    : min(92vw, 420px);
+    white-space  : normal;
+    overflow-wrap: anywhere;
 }
 .sp-toast-show  { opacity: 1; transform: translateY(0); }
 /* 报错 toast：不改底色/字色（曾把底色取成重点色→红底红字看不清）。统一同一套底色，
