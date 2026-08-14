@@ -10,8 +10,11 @@ function escapeHtml(value) {
 }
 
 // 通用决策弹窗只管理自身遮罩和 Promise 生命周期；业务判断与持久化留给调用方。
-export function createDialogManager({ $, mount, getRootClass = () => '', subscribeContextChange = () => () => {} } = {}) {
+// removeOverlay（可选）：注入"移除已存在 overlay"的实现——宿主迁入 shadow 后，light DOM 的
+// $() 查不到 overlay，由调用方提供（如 () => $in('#sp-addon-dialog').remove()）。
+export function createDialogManager({ $, mount, getRootClass = () => '', subscribeContextChange = () => () => {}, removeOverlay = null } = {}) {
     if (typeof $ !== 'function' || !mount?.appendChild) throw new TypeError('弹窗管理器缺少 DOM 依赖');
+    const purgeOverlay = removeOverlay || (() => $(`#${OVERLAY_ID}`).remove());
 
     let activeCancel = null;
 
@@ -25,7 +28,7 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
         if (!Array.isArray(choices) || !choices.length) return Promise.resolve(null);
         return new Promise(resolve => {
             cancelActive();
-            $(`#${OVERLAY_ID}`).remove();
+            purgeOverlay();
             let done = false;
             let unsubscribe = () => {};
             const buttons = choices.map((choice, index) => {
@@ -78,7 +81,7 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
     function prompt({ title = '', body = '', initialValue = '', placeholder = '', maxLength = 40, confirmText = '保存', cancelText = '取消', validate } = {}) {
         return new Promise(resolve => {
             cancelActive();
-            $(`#${OVERLAY_ID}`).remove();
+            purgeOverlay();
             let done = false;
             let unsubscribe = () => {};
             const limit = Number(maxLength) > 0 ? Number(maxLength) : 40;

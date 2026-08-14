@@ -244,9 +244,13 @@ function getEffectiveTheme() {
 let currentTheme   = detectSTTheme();
 
 // 新历法编辑使用独立决策弹窗；作者原有 spConfirm 与既有调用保持不变。
+// 批次4：mount 用惰性包装——_spShadow 在 injectModal() 运行时才赋值，而本实例化在模块
+// 顶层（更早）；弹窗实际 append 发生在运行时，届时 _spShadow 已就绪。removeOverlay 注入
+// 让 modal.js 保持通用（shadow 内 $() 查不到 overlay，须走 $in）。
 const customDialog = createDialogManager({
     $: jQuery,
-    mount: document.documentElement,
+    mount: { appendChild: el => _spShadow.appendChild(el) },
+    removeOverlay: () => $in('#sp-addon-dialog').remove(),
     getRootClass: () => `sp-root sp-${currentTheme}`,
     subscribeContextChange: handler => {
         eventSource.on(event_types.CHAT_CHANGED, handler);
@@ -5740,7 +5744,7 @@ function closePanel() {
     // is out-of-band, we just remove the overlay directly; the awaiting Promise
     // will get its CHAT_CHANGED escape hatch on next chat switch. If user reopens
     // without switching, they'll see the confirm was gone and click again.
-    $('#sp-confirm .sp-confirm-cancel').trigger('click');
+    $in('#sp-confirm .sp-confirm-cancel').trigger('click');
     customDialog.cancelActive();
     $(`#${MODAL_ID}`).stop(true).animate({ opacity: 0 }, 150, function () {
         $(this).css('display', 'none');
@@ -5849,7 +5853,7 @@ async function memoryPreCheckConfirm() {
 // awaiting the promise won't hang.
 function spConfirm({ title, body, note, confirmText = '确定', cancelText = '取消' }) {
     return new Promise(resolve => {
-        $('#sp-confirm').remove();
+        $in('#sp-confirm').remove();
         let done = false;
         const finish = (v) => {
             if (done) return;
@@ -5879,9 +5883,12 @@ function spConfirm({ title, body, note, confirmText = '确定', cancelText = '�
         // 【关键】不能挂 <body>：移动端 ST 给 body 设了 position/transform，body 自成
         // 层叠上下文，confirm 的高 z-index 只在 body 内部有效；而 body 整体在 root
         // 层级是 auto(≈0)，面板一开(html 级 2000001)就把整个 body 连 confirm 一起压下去，
-        // 表现为"面板处删除，弹窗在主界面下面点不到"。挂 .sp-root+主题类是为了拿 --sp-* 变量。
+        // 批次4：overlay 改挂宿主 shadow——#sp-modal-root 是 html 级 fixed + z-index:2000001，
+        // shadow 内 fixed 仍相对视口、无 transform 干扰，confirm 的 z-index:2000002 在宿主
+        // 层叠上下文内压过面板内容；宿主与 toast 同挂 <html>，层级语义与旧 documentElement
+        // 直挂等价（旧版"不能挂 body"的理由由宿主承接）。挂 .sp-root+主题类拿 --sp-* 变量。
         $ov.addClass(`sp-root sp-${currentTheme}`);
-        document.documentElement.appendChild($ov[0]);
+        _spShadow.appendChild($ov[0]);
         eventSource.on(event_types.CHAT_CHANGED, onExternalClose);
     });
 }
@@ -5900,7 +5907,10 @@ function fmtStoreSide(sum) {
 
 function showStoreConflictDialog(mig) {
     if (!mig || mig.status !== 'conflict') return;
-    $('#sp-store-conflict').remove();
+    // 批次4：弹窗挂宿主 shadow 内，宿主隐藏时不可见；本弹窗由 CHAT_CHANGED 触发
+    //（常发生在聊天页、面板未开）——先开窗保证弹窗可见，再挂载。
+    if (!$(`#${MODAL_ID}`).is(':visible')) showPanel();
+    $in('#sp-store-conflict').remove();
     let done = false;
     const finish = (choice) => {
         if (done) return;
@@ -5930,7 +5940,7 @@ function showStoreConflictDialog(mig) {
     $ov.find('[data-choice="local"]').on('click', () => finish('local'));
     $ov.on('click', function (e) { if (e.target === this) finish('defer'); });
     $ov.addClass(`sp-root sp-${currentTheme}`);
-    document.documentElement.appendChild($ov[0]);
+    _spShadow.appendChild($ov[0]);
     eventSource.on(event_types.CHAT_CHANGED, onExternalClose);
 }
 
@@ -12728,6 +12738,12 @@ function syncMobileViewport() {
 }
 
 // ─── Toast (top) ──────────────────────────────────────────────────────────────
+// 批次4决议：toast 暂留 light DOM，不迁 shadow。
+// 理由：sp-toast 类 + text-shadow 清零已免疫大部分 ST 污染；有 zmer-toast-theme-loader
+// 插件接管分支（见 showToast），动了易踩第三方；toast 是短命元素，受污染面最小。
+// TODO(批次5+)：若用户反馈污染再迁——injectToastContainer 的
+// documentElement.insertAdjacentHTML → _spShadow，showToast 的 $('#sp-toast-wrap') → $in，
+// 并复核 zmer 插件分支。
 
 function injectToastContainer() {
     if (!$('#sp-toast-wrap').length) document.documentElement.insertAdjacentHTML('beforeend', '<div id="sp-toast-wrap"></div>');
