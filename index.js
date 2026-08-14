@@ -21,6 +21,19 @@ const FAB_ID     = 'sp-fab';
 const POS_KEY    = 'sp-pos';
 const SIZE_KEY    = 'sp-size';
 
+// ─── Shadow DOM 窗口宿主（2026-08-14 隔离改造批次1）──────────────────────────────
+// 主窗口 #sp-modal-root 迁入 shadow root：ST 全局样式/选择器/事件在边界处切断，
+// 根治样式污染。jQuery 选择器不穿透 shadow——窗口内 id/类查询一律改走 $in()/inEl()。
+// _spShadow 在 injectModal() 里赋值；applyTheme() 同步 shadow 内 wrapper 的主题类。
+let _spShadow = null;
+const $in  = (sel) => { const el = _spShadow?.querySelector(sel); return el ? $(el) : $(); };
+const inEl = (sel) => _spShadow?.querySelector(sel) ?? null;
+
+// 扩展目录绝对路径（引自身 style.css 进 shadow）；ST 站点根（引 fontawesome.min.css，
+// 与 ST 共用浏览器缓存）。import.meta.url = …/scripts/extensions/third-party/ST-SevenDaysCal/index.js
+const EXT_BASE = new URL('.', import.meta.url).href;                 // …/ST-SevenDaysCal/
+const ST_BASE  = new URL('../../../../../', import.meta.url).href;   // ST 站点根（public/ 即 /）
+
 // 悬浮球图标（Solar「pen-new-round-outline」，MIT 免费素材；源 assets/pen.svg）。
 // 内联而非 <img>：单 path 用 fill=currentColor，直接继承按钮字色——主题日/夜换色、
 // 生成态霓虹变色（.sp-btn-generating 改 color）全都自动跟随，无需另写。宽高 1em 跟字号缩放，
@@ -472,27 +485,27 @@ jQuery(async () => {
         _almSyncingPoint = false;
         _almSyncPending = false;
         _lastMainView = 'schedule';   // 跨 chat：下次打开面板默认回到点（第一页）
-        $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
-        $(`.sp-side-tab.sp-view-btn[data-view="schedule"]`).addClass('sp-view-active');
-        $('.sp-sub-btn').removeClass('sp-view-active');
-        $(`.sp-sub-btn[data-view="user"]`).addClass('sp-view-active');
-        $('#sp-sub-toggle').show();
+        $in('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
+        $in('.sp-side-tab.sp-view-btn[data-view="schedule"]').addClass('sp-view-active');
+        $in('.sp-sub-btn').removeClass('sp-view-active');
+        $in('.sp-sub-btn[data-view="user"]').addClass('sp-view-active');
+        $in('#sp-sub-toggle').show();
         closeTaDrawer();            // 换 chat：收起可能开着的 TA▾ 抽屉
         updateTaTriggerLabel();     // charViewName 已清 → 标签回落「TA」
-        $('#sp-content-title').text('点');
+        $in('#sp-content-title').text('点');
         cachedSchedule = loadCachedForCurrentChat();
         if ($(`#${MODAL_ID}`).is(':visible') && !isGenerating) {
-            $('#sp-outline-wrap').hide();
-            $('#sp-lines-wrap').hide();
-            $('#sp-space-wrap').hide();
-            $('#sp-theater-wrap').hide();
-            $('#sp-anchor-wrap').hide();
-            $('#sp-almanac-wrap').hide();
-            $('#sp-body').show();
-            $(`#${MODAL_ID} .sp-outline-btn`).removeClass('sp-btn-active');
+            $in('#sp-outline-wrap').hide();
+            $in('#sp-lines-wrap').hide();
+            $in('#sp-space-wrap').hide();
+            $in('#sp-theater-wrap').hide();
+            $in('#sp-anchor-wrap').hide();
+            $in('#sp-almanac-wrap').hide();
+            $in('#sp-body').show();
+            $in('.sp-outline-btn').removeClass('sp-btn-active');
             updateCreativeChatModeUI();
-            $('#sp-chat-msgs').empty();
-            $('#sp-space-msgs').empty();
+            $in('#sp-chat-msgs').empty();
+            $in('#sp-space-msgs').empty();
             if (cachedSchedule) setBody(cachedSchedule);
             else setBody(`<div class="sp-empty"><i class="fa-regular fa-calendar"></i><p>还没有点</p><button class="sp-gen-btn" id="sp-gen-schedule-now">生成点</button></div>`);
         }
@@ -3332,7 +3345,7 @@ function injectFab() {
         if (nowMobile && !wasMobile) {
             const fab = document.getElementById(FAB_ID);
             if (fab) { fab.style.left = ''; fab.style.top = ''; fab.style.right = ''; fab.style.bottom = ''; }
-            const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+            const sheet = inEl('.sp-sheet');
             if (sheet) { sheet.style.left = ''; sheet.style.top = ''; sheet.style.right = '';
                          sheet.style.transform = ''; sheet.style.width = ''; sheet.style.height = '';
                          sheet.style.maxHeight = ''; sheet.style.maxWidth = ''; }
@@ -3415,7 +3428,6 @@ function injectModal() {
     const cfg = loadCfg();
     const hasCustomApi = !!(cfg.url && cfg.key);
     const html = `
-        <div id="${MODAL_ID}" class="sp-root sp-${currentTheme}" style="display:none;position:fixed;z-index:2000001">
             <div class="sp-backdrop"></div>
             <div class="sp-sheet">
                 <aside class="sp-sidebar">
@@ -4037,44 +4049,62 @@ function injectModal() {
                 <div class="sp-resize-handle" id="sp-resize-handle">
                     <i class="fa-solid fa-up-right-and-down-left-from-center"></i>
                 </div>
-            </div>
-        </div>`;
-    document.documentElement.insertAdjacentHTML('beforeend', html);
+            </div>`;
+    // Shadow DOM 宿主（2026-08-14 隔离改造批次1）：id/类留在 light DOM 的 host 上——
+    // openSchedule/closePanel 的 show/hide、applyTheme 的类切换、各 is(':visible')
+    // 判断的操作对象不变；窗口内容整体进 shadow root，ST 全局 button/input/滚动条/
+    // 文字阴影等规则在边界处切断。style.css 与 fontawesome 经 <link> 只作用于本 shadow；
+    // :root 的 --sp-* 令牌与 --SmartTheme* 变量穿透 shadow 边界照常继承，主题色板/缩放零改动。
+    const host = document.createElement('div');
+    host.id = MODAL_ID;
+    host.className = `sp-root sp-${currentTheme}`;
+    host.style.cssText = 'display:none;position:fixed;z-index:2000001';
+    const root = host.attachShadow({ mode: 'open' });
+    _spShadow = root;
+    // shadow 内第一层 wrapper 必须带 sp-root + 主题类：style.css 里 13 处 `.sp-root ...`
+    // 前缀选择器、.sp-night/.sp-day 色板、.sp-forced-* 强制主题覆盖全靠它匹配
+    // （applyTheme 同步它的主题类）。display:contents 不产生布局盒子，fixed 语义
+    // 仍由 .sp-sheet 承担；host 无 transform/filter，内部 position:fixed 相对视口不变。
+    root.innerHTML = `
+        <link rel="stylesheet" href="${EXT_BASE}style.css">
+        <link rel="stylesheet" href="${ST_BASE}css/fontawesome.min.css">
+        <div class="sp-root sp-${currentTheme}" style="display:contents">${html}</div>`;
+    document.documentElement.appendChild(host);
 
-    if (cfg.key) $('#sp-cfg-key').val(maskKey(cfg.key)).data('real', cfg.key);
+    if (cfg.key) $in('#sp-cfg-key').val(maskKey(cfg.key)).data('real', cfg.key);
 
-    $(`#${MODAL_ID} .sp-close-btn`).on('click',    closePanel);
-    $(`#${MODAL_ID} .sp-settings-btn`).on('click', toggleSettings);
-    $(`#${MODAL_ID} .sp-settings-close-btn`).on('click', toggleSettings);
-    $(`#${MODAL_ID} .sp-fab-toggle-btn`).on('click', function () {
+    $in('.sp-close-btn').on('click',    closePanel);
+    $in('.sp-settings-btn').on('click', toggleSettings);
+    $in('.sp-settings-close-btn').on('click', toggleSettings);
+    $in('.sp-fab-toggle-btn').on('click', function () {
         const nowEnabled = !fabEnabled();
         getSettings().fabShow = nowEnabled;
         saveSettingsDebounced();
         $(`#${FAB_ID}`).toggle(nowEnabled);
         $(this).toggleClass('sp-btn-active', nowEnabled);
     });
-    $(`#${MODAL_ID} .sp-theme-toggle-btn`).on('click', cycleThemeMode);
-    $(`#${MODAL_ID} .sp-backdrop`).on('click',     closePanel);
+    $in('.sp-theme-toggle-btn').on('click', cycleThemeMode);
+    $in('.sp-backdrop').on('click',     closePanel);
 
     // 模块介绍气泡：点标题旁的 ? 弹出当前模块简介，点外部/切模块即关
-    $(`#${MODAL_ID} .sp-module-intro-btn`).on('click', function (e) {
+    $in('.sp-module-intro-btn').on('click', function (e) {
         e.stopPropagation();
-        const $pop = $('#sp-module-intro-pop');
+        const $pop = $in('#sp-module-intro-pop');
         if ($pop.is(':visible')) { $pop.hide(); return; }
-        const view = $('.sp-side-tab.sp-view-active').data('view') || 'schedule';
+        const view = $in('.sp-side-tab.sp-view-active').data('view') || 'schedule';
         $pop.html(MODULE_INTROS[view] || MODULE_INTROS.schedule).show();   // 内容全为作者手写 HTML（图标图例），无用户输入 → .html() 安全
     });
     $(document).off('click.spIntro').on('click.spIntro', function (e) {
         if ($(e.target).closest('#sp-module-intro-pop, #sp-module-intro-btn').length) return;
         $('#sp-module-intro-pop').hide();
     });
-    document.getElementById('sp-debug-drawer').addEventListener('toggle', function () {
+    inEl('#sp-debug-drawer')?.addEventListener('toggle', function () {
         if (this.open) {
-            document.getElementById('sp-debug-pre').textContent =
+            inEl('#sp-debug-pre').textContent =
                 lastDebugPayload ? JSON.stringify(lastDebugPayload, null, 2) : '（尚未发送请求）';
         }
     });
-    $(`#${MODAL_ID} .sp-debug-copy-btn`).on('click', function () {
+    $in('.sp-debug-copy-btn').on('click', function () {
         if (!lastDebugPayload) return;
         navigator.clipboard.writeText(JSON.stringify(lastDebugPayload, null, 2))
             .then(() => { $(this).text('已复制 ✓'); setTimeout(() => $(this).text('复制'), 2000); })
@@ -5410,18 +5440,18 @@ function injectModal() {
 
     // Desktop drag: content header acts as the handle (like a title bar).
     // Skipped on mobile — near-fullscreen sheet doesn't move.
-    const dragHandle = document.querySelector(`#${MODAL_ID} .sp-content-head`);
+    const dragHandle = inEl('.sp-content-head');
     if (dragHandle) {
         dragHandle.addEventListener('mousedown',  onDragStart);
         dragHandle.addEventListener('touchstart', onDragStart, { passive: false });
     }
-    $('#sp-resize-handle').on('mousedown', onResizeStart);
-    document.getElementById('sp-resize-handle').addEventListener('touchstart', onResizeStart, { passive: false });
+    $in('#sp-resize-handle').on('mousedown', onResizeStart);
+    inEl('#sp-resize-handle')?.addEventListener('touchstart', onResizeStart, { passive: false });
 
-    // Outline divider drag
+    // Outline divider drag（面·聊天分隔条；inEl 防 shadow 下 null 崩掉 injectModal 尾部）
     let divState = null;
-    const divEl  = document.getElementById('sp-outline-divider');
-    const chatEl = document.getElementById('sp-outline-chat');
+    const divEl  = inEl('#sp-outline-divider');
+    const chatEl = inEl('#sp-outline-chat');
     function onDivStart(e) {
         e.preventDefault();
         const savedH = parseInt(localStorage.getItem('sp-outline-chat-h')) || 210;
@@ -5577,7 +5607,7 @@ let _taDrawerOpen = false;
 // TA▾ 标签：在 char 视角且有名字时显当前 char 名，否则回落「TA」。
 function updateTaTriggerLabel() {
     const label = (currentView === 'char' && charViewName) ? charViewName : 'TA';
-    $('#sp-ta-trigger .sp-ta-label').text(label);
+    $in('#sp-ta-trigger .sp-ta-label').text(label);
 }
 
 function renderTaDrawerHtml() {
@@ -5591,9 +5621,9 @@ function renderTaDrawerHtml() {
 }
 
 function openTaDrawer() {
-    $('#sp-ta-drawer').html(renderTaDrawerHtml()).css('display', 'block');
+    $in('#sp-ta-drawer').html(renderTaDrawerHtml()).css('display', 'block');
     _taDrawerOpen = true;
-    $('#sp-ta-trigger').addClass('sp-ta-open');
+    $in('#sp-ta-trigger').addClass('sp-ta-open');
     // 外点即收：点抽屉/触发器以外任意处关闭（触发器自身的 toggle 另管，故排除它避免双触发）。
     $(document).off('click.tadrawer').on('click.tadrawer', function (e) {
         if ($(e.target).closest('#sp-ta-drawer, #sp-ta-trigger').length) return;
@@ -5602,9 +5632,9 @@ function openTaDrawer() {
 }
 
 function closeTaDrawer() {
-    $('#sp-ta-drawer').css('display', 'none').empty();
+    $in('#sp-ta-drawer').css('display', 'none').empty();
     _taDrawerOpen = false;
-    $('#sp-ta-trigger').removeClass('sp-ta-open');
+    $in('#sp-ta-trigger').removeClass('sp-ta-open');
     $(document).off('click.tadrawer');
 }
 
@@ -5673,24 +5703,24 @@ function refreshCharPinIcon() {
 // false 却不动 DOM，若这里再按标志判断就会漏隐藏 → 出现「点 + 坐标」同屏。故一律硬隐藏。
 function resetPanelToScheduleHome() {
     outlineMode = linesMode = spaceMode = theaterMode = anchorMode = almanacMode = false;
-    $('#sp-outline-wrap').hide();
-    $('#sp-lines-wrap').hide();
-    $('#sp-space-wrap').hide();
-    $('#sp-theater-wrap').hide();
-    $('#sp-anchor-wrap').hide();
-    $('#sp-almanac-wrap').hide();
+    $in('#sp-outline-wrap').hide();
+    $in('#sp-lines-wrap').hide();
+    $in('#sp-space-wrap').hide();
+    $in('#sp-theater-wrap').hide();
+    $in('#sp-anchor-wrap').hide();
+    $in('#sp-almanac-wrap').hide();
     _almanacEditor = null;
     _ledgerEditor = null;
     _ledgerArchiveOpen = false;
     _almanacManager = null;
-    $('#sp-body').show();
-    $('#sp-sub-toggle').show();
-    $('#sp-content-title').text('点');
-    $(`#${MODAL_ID} .sp-outline-btn`).removeClass('sp-btn-active');
-    $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
-    $(`.sp-side-tab.sp-view-btn[data-view="schedule"]`).addClass('sp-view-active');
-    $('.sp-sub-btn').removeClass('sp-view-active');
-    $(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
+    $in('#sp-body').show();
+    $in('#sp-sub-toggle').show();
+    $in('#sp-content-title').text('点');
+    $in('.sp-outline-btn').removeClass('sp-btn-active');
+    $in('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
+    $in('.sp-side-tab.sp-view-btn[data-view="schedule"]').addClass('sp-view-active');
+    $in('.sp-sub-btn').removeClass('sp-view-active');
+    $in(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
 }
 function openSchedule() {
     showPanel();
@@ -5698,7 +5728,7 @@ function openSchedule() {
     // 同 chat 内恢复上次打开的模块视图；切 chat 已把 _lastMainView 复位成 schedule → 默认第一页。
     // 非 schedule：触发该 tab 的 click 让它自渲染（此刻各 mode 均 false，不会被幂等 guard 挡）。
     if (_lastMainView && _lastMainView !== 'schedule') {
-        const $tab = $(`#${MODAL_ID} .sp-side-tab.sp-view-btn[data-view="${_lastMainView}"]`);
+        const $tab = $in(`.sp-side-tab.sp-view-btn[data-view="${_lastMainView}"]`);
         if ($tab.length) {
             $tab.trigger('click');
             checkMemoryMigrationNotice();
@@ -5722,12 +5752,12 @@ function showEmptyGenerate() {
         <i class="fa-regular fa-calendar"></i>
         <button class="sp-gen-btn" id="sp-gen-now">生成点</button>
     </div>`);
-    $('#sp-gen-now').on('click', triggerGenerate);
+    $in('#sp-gen-now').on('click', triggerGenerate);
 }
 
 function showPanel() {
     const $root  = $(`#${MODAL_ID}`);
-    const sheet  = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+    const sheet  = inEl('.sp-sheet');
     // Clear inline animation so the CSS open-animation replays on every show
     if (sheet) sheet.style.animation = '';
     $root.stop(true).css({ display: 'block', opacity: 0 })
@@ -5751,7 +5781,7 @@ function closePanel() {
     });
 }
 
-function setBody(html) { $('#sp-body').html(html); }
+function setBody(html) { $in('#sp-body').html(html); }
 
 // ─── Memory pre-check helpers ─────────────────────────────────────────────────
 // Show a one-time toast when memory schema migration wiped this chat's summaries.
@@ -5768,7 +5798,7 @@ function checkMemoryMigrationNotice() {
         showPanel();
         if (!settingsOpen) toggleSettings();
         // Expand the memory section so the "补齐缺失" button is visible
-        $('#sp-mem-section').attr('open', 'open');
+        $in('#sp-mem-section').attr('open', 'open');
     });
 }
 
@@ -12483,6 +12513,15 @@ function applyTheme(theme) {
         $modal.addClass(`sp-forced-${theme}`);
         $fab.addClass(`sp-forced-${theme}`);
     }
+    // Shadow 内 wrapper 同步主题类：.sp-night/.sp-day 色板与 .sp-forced-* 强制覆盖在
+    // shadow 内靠 wrapper 匹配（host 的类不穿边界），不换则 `--sp-*-legacy` 回退丢失、
+    // `.sp-night .sp-xxx` 类后代选择器失配。
+    const wrapper = _spShadow?.querySelector('.sp-root');
+    if (wrapper) {
+        wrapper.classList.remove('sp-night', 'sp-day', 'sp-forced-day', 'sp-forced-night');
+        wrapper.classList.add(`sp-${theme}`);
+        if (forced) wrapper.classList.add(`sp-forced-${theme}`);
+    }
 }
 
 // ─── Theme mode toggle (day / night / auto) ─────────────────────────────────
@@ -12509,7 +12548,7 @@ function cycleThemeMode() {
     saveSettingsDebounced();
     applyTheme(getEffectiveTheme());
     // Update this button's icon + tooltip in place
-    const $btn = $(`#${MODAL_ID} .sp-theme-toggle-btn`);
+    const $btn = $in('.sp-theme-toggle-btn');
     $btn.attr('title', themeToggleTitle());
     $btn.find('i').attr('class', `fa-solid ${themeToggleIcon()}`);
 }
@@ -12526,7 +12565,7 @@ function onDragStart(e) {
     // Ignore drags starting on interactive elements inside the header.
     if ($(e.target).closest('.sp-icon-btn, .sp-sub-btn, button, a, input, textarea').length) return;
     e.preventDefault();
-    const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+    const sheet = inEl('.sp-sheet');
 
     // Snap from CSS-transform centering to explicit px coords for drag math.
     // MUST cancel the CSS animation first — animation fill-mode has higher cascade
@@ -12562,7 +12601,7 @@ function onDragMove(e) {
     e.preventDefault();
     const cx = e.touches ? e.touches[0].clientX : e.clientX;
     const cy = e.touches ? e.touches[0].clientY : e.clientY;
-    const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+    const sheet = inEl('.sp-sheet');
     const left = Math.max(0, Math.min(dragState.origLeft + cx - dragState.startX, window.innerWidth  - sheet.offsetWidth));
     const top  = Math.max(0, Math.min(dragState.origTop  + cy - dragState.startY, window.innerHeight - 60));
     sheet.style.left  = left + 'px';
@@ -12572,7 +12611,7 @@ function onDragMove(e) {
 
 function onDragEnd() {
     if (!dragState) return;
-    const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+    const sheet = inEl('.sp-sheet');
     const rect  = sheet.getBoundingClientRect();
     if (!isMobile()) {
         localStorage.setItem(POS_KEY, JSON.stringify({ left: rect.left, top: rect.top }));
@@ -12593,7 +12632,7 @@ function onResizeStart(e) {
     if (isMobile()) return;
     e.preventDefault();
     e.stopPropagation();
-    const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+    const sheet = inEl('.sp-sheet');
 
     // Desktop sheet uses `right: 20px` as its horizontal anchor. If we grow
     // width while `right` is fixed, the LEFT edge moves outward instead of
@@ -12627,7 +12666,7 @@ function onResizeMove(e) {
     if (resizeRAF) return;
     resizeRAF = requestAnimationFrame(() => {
         resizeRAF = null;
-        const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+        const sheet = inEl('.sp-sheet');
         const mobile = isMobile();
         // On mobile, we ALSO override max-width (CSS media query caps it at 340px);
         // without this, inline width can't exceed the cap.
@@ -12652,7 +12691,7 @@ function onResizeMove(e) {
 function onResizeEnd() {
     if (!resizeState) return;
     if (resizeRAF) { cancelAnimationFrame(resizeRAF); resizeRAF = null; }
-    const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+    const sheet = inEl('.sp-sheet');
     sheet.style.willChange = '';
     document.body.style.userSelect = '';
     localStorage.setItem(SIZE_KEY, JSON.stringify({ width: sheet.offsetWidth, height: sheet.offsetHeight }));
@@ -12664,12 +12703,12 @@ function onResizeEnd() {
 
 function restoreOutlineChatHeight() {
     const h = parseInt(localStorage.getItem('sp-outline-chat-h')) || 210;
-    const el = document.getElementById('sp-outline-chat');
+    const el = inEl('#sp-outline-chat');
     if (el) el.style.height = h + 'px';
 }
 
 function positionPanel() {
-    const sheet = document.querySelector(`#${MODAL_ID} .sp-sheet`);
+    const sheet = inEl('.sp-sheet');
     if (!sheet) return;
     if (isMobile()) {
         sheet.style.left      = '';
