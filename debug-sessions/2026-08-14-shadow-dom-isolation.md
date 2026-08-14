@@ -216,7 +216,7 @@ const inEl = (sel) => _spShadow?.querySelector(sel) ?? null;
 
 | 批次 | 提交 | 内容 | 验证 |
 |---|---|---|---|
-| 批次1（窗口宿主迁 shadow） | `8e60747`（recovery，逐字还原改造主力工作） | helpers（`$in`/`inEl`/`_spShadow`/`EXT_BASE`/`ST_BASE`）、injectModal 宿主+attachShadow+双 `<link>`+wrapper、绑定段、applyTheme wrapper 主题类同步、拖拽/缩放 inEl | 23 hunks 逐 hunk 复核 ✅、node --check ✅ |
+| 批次1（窗口宿主迁 shadow） | `8e60747`（recovery，逐字还原改造主力工作）+ `07a50ed`（hotfix-inAll 增 `$inAll` 集合版） | helpers（`$in`/`inEl`/`$inAll`/`_spShadow`/`EXT_BASE`/`ST_BASE`）、injectModal 宿主+attachShadow+双 `<link>`+wrapper、绑定段、applyTheme wrapper 主题类同步、拖拽/缩放 inEl | 23 hunks 逐 hunk 复核 ✅、node --check ✅ |
 | 批次2-下半（历/线/面/坐标） | `960fdb4` | 54 行 ①-⑥ 区域全转 | ✅ |
 | 批次2-上半（骨架/间/棱/设置） | `33217ce`/`b0d0d1d`/`4ad8049`/`eece6e3`/`1bfb303` | 318 行（含 `#chat` 混合委托双绑拆分 ×7、view-btn 委托改绑 `$in('.sp-sidebar')`） | grep 残留全零（除排除清单）✅ |
 | 批次3（事件委托 4 处） | `d960355` | spIntro/spActionMenu/tadrawer → composedPath；keydown 零改动 | ✅ |
