@@ -69,6 +69,8 @@ const DEFAULT_SETTINGS = {
     storyClockPrompt : '',       // 时间戳·强注词二改：空=用内置默认（随插件更新走）；非空=整段替换。用户自负 SDC 标签结构，改坏只是时间戳读空、不影响历/点兜底
     themeMode: 'auto',   // 'auto' | 'day' | 'night' — 'auto' follows ST theme; day/night force
     uiScale: 1.0,        // 界面字号缩放倍率：--sp-scale 的持久值（设置里 −/＋ 步进，默认 1.0＝100%），脱钩酒馆 Font Scale
+    uiFontUrl   : 'https://fontsapi.zeoseven.com/387/main/result.css',  // 字体 CSS(@font-face) 的 URL：经动态 <link> 引入。默认＝zeoseven 387 有爱圆体(Nowar Rounded TW Wc)，unicode-range 分片、移动端友好。留空=不加载网络字体、只用系统栈
+    uiFontFamily: 'Nowar Rounded TW Wc',                                // 生效字体 family 名：写进 --sp-font-user。须与 uiFontUrl 那份 CSS 里 @font-face 声明的 font-family 完全一致，否则加载了也不生效
     notifyMode: 'lite',  // 通知提醒档：'off'=全静音 / 'lite'(默认)=仅你手动生成·刷新时提示 / 'full'=另在后台自动改动点线面历时提示（真改动才弹）
     linesEnabled : true, // master switch: false disables both auto-advance AND inline block rendering
     linesInterval: 2,
@@ -357,9 +359,46 @@ const _stListeners = { chat: null, char: null };
 // 柏宝书加载顺序不固定：就绪事件监听句柄（幂等注册，见 jQuery init）
 let _bbbReadyListener = null;
 
+// 界面字体·自管控：按 settings.uiFontUrl / uiFontFamily 动态挂 <link> + 写 --sp-font-user。
+// 幂等：复用固定 id 的 link 节点，重复调用只改 href / 不叠加。早期 bootstrap + 设置改动时各调一次。
+const SP_FONT_LINK_ID = 'sp-ui-font-link';
+const SP_FONT_DEFAULT_URL    = 'https://fontsapi.zeoseven.com/387/main/result.css';
+const SP_FONT_DEFAULT_FAMILY = 'Nowar Rounded TW Wc';
+function applyUiFont() {
+    const s = getSettings();
+    const url    = (s.uiFontUrl    ?? SP_FONT_DEFAULT_URL).trim();
+    let   family = (s.uiFontFamily ?? SP_FONT_DEFAULT_FAMILY).trim();
+
+    // <link> 侧：有 URL 就挂/换，留空则移除（=只用系统栈兜底）。href 用绝对 URL——
+    // zeoseven 那份 CSS 里 @font-face src 是相对路径 ./xxx.woff2，浏览器基于 link href 解析，
+    // 故必须走 <link href> 而非把 CSS 内容内联（内联会丢失基准 URL、woff2 404）。
+    let link = document.getElementById(SP_FONT_LINK_ID);
+    if (url) {
+        if (!link) {
+            link = document.createElement('link');
+            link.id  = SP_FONT_LINK_ID;
+            link.rel = 'stylesheet';
+            document.head.appendChild(link);
+        }
+        if (link.getAttribute('href') !== url) link.setAttribute('href', url);
+    } else if (link) {
+        link.remove();
+    }
+
+    // --sp-font-user 侧：写生效 family 名（供 style.css 的 --sp-font 打头）。family 留空则回落默认名。
+    // 名字含空格 / 非纯标识符时补引号，避免 CSS 里被拆成多个 family。
+    if (!family) family = SP_FONT_DEFAULT_FAMILY;
+    const quoted = /^["']/.test(family) || /^[A-Za-z_][A-Za-z0-9_-]*$/.test(family)
+        ? family
+        : `"${family.replace(/"/g, '\\"')}"`;
+    document.documentElement.style.setProperty('--sp-font-user', quoted);
+}
+
 jQuery(async () => {
     // 界面字号缩放：把持久化的 uiScale 写进 --sp-scale，令牌即刻按此缩放（早于注入 UI，防首帧闪错号）
     document.documentElement.style.setProperty('--sp-scale', String(Number(getSettings().uiScale) || 1));
+    // 界面字体：按持久化的 uiFontUrl/uiFontFamily 挂 <link> + 写 --sp-font-user（早于注入 UI，防字体闪切）
+    applyUiFont();
     injectExtButton();
     injectModal();
     injectFab();
@@ -1065,6 +1104,9 @@ function extractDayFromTime(timeStr) {
     if ((m = timeStr.match(/(\d{2,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})/))) return `${+m[1]}-${+m[2]}-${+m[3]}`;
     // 阿拉伯：YYYY/M/D、YYYY-M-D、YYYY.M.D
     if ((m = timeStr.match(/(\d{2,4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/))) return `${+m[1]}-${+m[2]}-${+m[3]}`;
+    // 纪元年名 + 数字月/日：如「天河四十二年/03/19」「大梁三年-12-5」——年是非数字纪元名（前两条数字年
+    // 已先行匹配），故只截其后的数字 M/D，年当无（cn- 占位 0）。年后须紧跟标点分隔符，挡掉「去年 3/4」这类。
+    if ((m = timeStr.match(/年\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{1,2})/))) return `cn-0-${+m[1]}-${+m[2]}`;
     // 相对天数：第N天/日
     if ((m = timeStr.match(/第\s*(\d+)\s*[天日]/))) return `day-${+m[1]}`;
     // day N
@@ -3758,6 +3800,19 @@ function injectModal() {
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">整套面板字号按此百分比缩放，<b>独立于酒馆「字体缩放」</b>。每档 5%，范围 80%–130%，默认 100%。</p>
 
+                                    <label class="sp-cfg-group" style="margin-top:12px">界面字体</label>
+                                    <p class="sp-cfg-hint">构画自带一套字体（默认<b>有爱圆体</b>），<b>独立于酒馆</b>。想换成别的：把字体 CSS 的链接填到「字体 URL」，再把该 CSS 里 <code>@font-face</code> 声明的字体名填到「字体名」。留空 URL＝不加载网络字体、只用系统默认字体。改完点「应用」。</p>
+                                    <input id="sp-cfg-font-url" class="sp-input" type="url"
+                                           placeholder="字体 CSS URL，如 https://fontsapi.zeoseven.com/xxx/main/result.css"
+                                           value="${escapeAttr(getSettings().uiFontUrl ?? '')}">
+                                    <input id="sp-cfg-font-family" class="sp-input" type="text" style="margin-top:6px"
+                                           placeholder="字体名，如 Nowar Rounded TW Wc"
+                                           value="${escapeAttr(getSettings().uiFontFamily ?? '')}">
+                                    <div class="sp-mode-opt" style="margin-top:8px; gap:8px">
+                                        <button type="button" id="sp-font-apply" class="sp-fetch-btn"><i class="fa-solid fa-check"></i> 应用</button>
+                                        <button type="button" id="sp-font-reset" class="sp-fetch-btn" title="恢复成构画自带的默认字体"><i class="fa-solid fa-rotate-left"></i> 恢复默认</button>
+                                    </div>
+
                                     <hr class="sp-mem-divider">
                                     <label class="sp-cfg-group">通知提醒</label>
                                     <div class="sp-mode-row">
@@ -5427,6 +5482,25 @@ function injectModal() {
     }
     $in('#sp-uiscale-minus').on('click', () => applyUiScale((Number(getSettings().uiScale) || 1) - 0.05));
     $in('#sp-uiscale-plus').on('click',  () => applyUiScale((Number(getSettings().uiScale) || 1) + 0.05));
+    // 界面字体·应用：读两栏 → 存 uiFontUrl/uiFontFamily → 重挂 <link> + 改 --sp-font-user（applyUiFont 即时生效）
+    // （merge-v3.1.0 适配：按钮/输入框在 shadow 窗口内，$→$in）
+    $in('#sp-font-apply').on('click', () => {
+        getSettings().uiFontUrl    = ($in('#sp-cfg-font-url').val()    || '').trim();
+        getSettings().uiFontFamily = ($in('#sp-cfg-font-family').val() || '').trim();
+        saveSettingsDebounced();
+        applyUiFont();
+        showToast('字体已应用');
+    });
+    // 界面字体·恢复默认：回填构画自带的有爱圆体 URL/字体名，同步刷两栏输入框
+    $in('#sp-font-reset').on('click', () => {
+        getSettings().uiFontUrl    = SP_FONT_DEFAULT_URL;
+        getSettings().uiFontFamily = SP_FONT_DEFAULT_FAMILY;
+        $in('#sp-cfg-font-url').val(SP_FONT_DEFAULT_URL);
+        $in('#sp-cfg-font-family').val(SP_FONT_DEFAULT_FAMILY);
+        saveSettingsDebounced();
+        applyUiFont();
+        showToast('已恢复默认字体');
+    });
     // 点·后台自动跟随「今天」：只写值。点无独立判定车，跟随经 runAnchorAftermath 门控，无计数器可重置。
     $in('#sp-schedule-autodetect').on('change', function () {
         getSettings().scheduleAutoDetect = this.checked;
@@ -12549,11 +12623,14 @@ function applyTheme(theme) {
     const forced = (getSettings().themeMode || 'auto') !== 'auto';
     const $modal = $(`#${MODAL_ID}`);
     const $fab   = $(`#${FAB_ID} .sp-fab-btn`);
+    const $toast = $('#sp-toast-wrap');   // 同 $modal 走一套：让 toast 的 --sp-*-legacy 底板令牌随主题就位
     $modal.removeClass('sp-night sp-day sp-forced-day sp-forced-night').addClass(`sp-${theme}`);
     $fab.removeClass('sp-night sp-day sp-forced-day sp-forced-night').addClass(`sp-${theme}`);
+    $toast.removeClass('sp-night sp-day sp-forced-day sp-forced-night').addClass(`sp-${theme}`);
     if (forced) {
         $modal.addClass(`sp-forced-${theme}`);
         $fab.addClass(`sp-forced-${theme}`);
+        $toast.addClass(`sp-forced-${theme}`);
     }
     // Shadow 内 wrapper 同步主题类：.sp-night/.sp-day 色板与 .sp-forced-* 强制覆盖在
     // shadow 内靠 wrapper 匹配（host 的类不穿边界），不换则 `--sp-*-legacy` 回退丢失、
@@ -12827,7 +12904,10 @@ function syncMobileViewport() {
 // 并复核 zmer 插件分支。
 
 function injectToastContainer() {
-    if (!$('#sp-toast-wrap').length) document.documentElement.insertAdjacentHTML('beforeend', '<div id="sp-toast-wrap"></div>');
+    // 带上主题类：#sp-toast-wrap 挂在 <html> 下、在 .sp-root 之外，拿不到 .sp-night/.sp-day
+    // 作用域里的 --sp-*-legacy 令牌。双层背景的不透明底板 var(--sp-surface-legacy) 会落空→透底。
+    // 加 sp-${theme} 把 legacy 令牌带进作用域（applyTheme 会随主题切换更新）。
+    if (!$('#sp-toast-wrap').length) document.documentElement.insertAdjacentHTML('beforeend', `<div id="sp-toast-wrap" class="sp-${currentTheme}"></div>`);
 }
 
 function showToast(msg, onClick, isError = false) {
