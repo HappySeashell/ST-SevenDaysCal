@@ -10256,7 +10256,14 @@ function parseAlmanacWidget(raw) {
     const out = [];
     for (const line of body.split('\n')) {
         const mm = line.match(/^\s*Item\s*:\s*(.+)$/i);
-        if (!mm) continue;
+        if (!mm) {
+            // 续行救援：提示词要求「说明单行不换行」，但模型对长说明常忍不住折行。
+            // 非 Item 行不是垃圾，而是上一条说明被换行截断的尾巴——接回上一条 note，
+            // 别再像旧版那样静默丢弃（老症状：几条较长的纪念日说明只显示到折行处）。
+            const cont = line.trim();
+            if (cont && out.length) out[out.length - 1].note = (out[out.length - 1].note + cont).trim();
+            continue;
+        }
         const parts = mm[1].split('|').map(x => x.trim());
         const [name, type, month, day, days, displayDate, ...noteRest] = parts;
         const it = normalizeAlmItem({
