@@ -28,6 +28,8 @@ const SIZE_KEY    = 'sp-size';
 let _spShadow = null;
 const $in  = (sel) => { const el = _spShadow?.querySelector(sel); return el ? $(el) : $(); };
 const inEl = (sel) => _spShadow?.querySelector(sel) ?? null;
+// 集合版：querySelector 只取首个，集合操作（removeClass/addClass/toggleClass/show/hide/each/map/length…）必须走它
+const $inAll = (sel) => $(Array.from(_spShadow?.querySelectorAll(sel) ?? []));
 
 // 扩展目录绝对路径（引自身 style.css 进 shadow）；ST 站点根（引 fontawesome.min.css，
 // 与 ST 共用浏览器缓存）。import.meta.url = …/scripts/extensions/third-party/ST-SevenDaysCal/index.js
@@ -485,9 +487,9 @@ jQuery(async () => {
         _almSyncingPoint = false;
         _almSyncPending = false;
         _lastMainView = 'schedule';   // 跨 chat：下次打开面板默认回到点（第一页）
-        $in('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
+        $inAll('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
         $in('.sp-side-tab.sp-view-btn[data-view="schedule"]').addClass('sp-view-active');
-        $in('.sp-sub-btn').removeClass('sp-view-active');
+        $inAll('.sp-sub-btn').removeClass('sp-view-active');
         $in('.sp-sub-btn[data-view="user"]').addClass('sp-view-active');
         $in('#sp-sub-toggle').show();
         closeTaDrawer();            // 换 chat：收起可能开着的 TA▾ 抽屉
@@ -502,7 +504,7 @@ jQuery(async () => {
             $in('#sp-anchor-wrap').hide();
             $in('#sp-almanac-wrap').hide();
             $in('#sp-body').show();
-            $in('.sp-outline-btn').removeClass('sp-btn-active');
+            $inAll('.sp-outline-btn').removeClass('sp-btn-active');
             updateCreativeChatModeUI();
             $in('#sp-chat-msgs').empty();
             $in('#sp-space-msgs').empty();
@@ -4851,7 +4853,7 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-cal-detail .sp-alm-item', function (e) {
         if ($(e.target).closest('button').length) return;   // 不劫持锁/编辑/删除按钮
         const wasLinked = $(this).hasClass('sp-alm-item-linked');
-        $in('#sp-almanac-wrap .sp-alm-item-linked').removeClass('sp-alm-item-linked');
+        $inAll('#sp-almanac-wrap .sp-alm-item-linked').removeClass('sp-alm-item-linked');
         almClearHilite();
         if (wasLinked) return;   // 再点=取消高亮
         $(this).addClass('sp-alm-item-linked');
@@ -4865,8 +4867,8 @@ function injectModal() {
         if (_almanacCalDay != null) {
             _almanacCalDay = null;
             renderAlmanacPanel();   // 重渲染顺带把联动高亮的 class 冲掉
-        } else if ($in('#sp-almanac-wrap .sp-alm-item-linked').length) {
-            $in('#sp-almanac-wrap .sp-alm-item-linked').removeClass('sp-alm-item-linked');
+        } else if ($inAll('#sp-almanac-wrap .sp-alm-item-linked').length) {
+            $inAll('#sp-almanac-wrap .sp-alm-item-linked').removeClass('sp-alm-item-linked');
             almClearHilite();       // 只清高亮 class，不重渲，避免闪
         }
     });
@@ -4948,12 +4950,12 @@ function injectModal() {
     $almanac.on('input', '.sp-alm-manager-edit-fields input', function () {
         if (!_almanacManager?.error) return;
         _almanacManager.error = '';
-        $in('#sp-almanac-wrap .sp-alm-manager-error').remove();
+        $inAll('#sp-almanac-wrap .sp-alm-manager-error').remove();
     });
     $almanac.on('click', '.sp-alm-manager-edit-save', async function () {
         _almanacManager.draft = readCalendarDraftForm();
         _almanacManager.error = '';
-        $in('#sp-almanac-wrap .sp-alm-manager-error').remove();
+        $inAll('#sp-almanac-wrap .sp-alm-manager-error').remove();
         const checked = validateCalendarDesc(_almanacManager.draft);
         if (!checked.value) {
             showToast(checked.error, null, true);
@@ -5104,11 +5106,11 @@ function injectModal() {
 
         // Update active state within the button's group
         if (isSideTab) {
-            $in('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
+            $inAll('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
             $btn.addClass('sp-view-active');
             _lastMainView = view;   // 记住当前模块视图，供下次打开面板时恢复（同 chat）
         } else if (isSubBtn) {
-            $in('.sp-sub-btn').removeClass('sp-view-active');
+            $inAll('.sp-sub-btn').removeClass('sp-view-active');
             $btn.addClass('sp-view-active');
         }
 
@@ -5272,7 +5274,7 @@ function injectModal() {
             $in('#sp-body').show();
             $in('#sp-sub-toggle').show();
             $in('#sp-content-title').text('点');
-            $in('.sp-sub-btn').removeClass('sp-view-active');
+            $inAll('.sp-sub-btn').removeClass('sp-view-active');
             $(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
             updateTaTriggerLabel();   // 回点视图：TA▾ 标签跟随当前视角（char 显名 / user 回落 TA）
             // 生成在途/切走再切回：从状态重建正文（镜像 线/面/棱），别露上次残留或僵尸转圈
@@ -5458,7 +5460,7 @@ function injectModal() {
     $in('#sp-model-list-items').on('click', '.sp-model-list-item', function () {
         const model = $(this).attr('data-model');
         $in('#sp-cfg-model').val(model);
-        $in('.sp-model-list-item').removeClass('sp-model-list-item-active');
+        $inAll('.sp-model-list-item').removeClass('sp-model-list-item-active');
         $(this).addClass('sp-model-list-item-active');
     });
     // Inline model list: live-filter as user types
@@ -5472,9 +5474,9 @@ function injectModal() {
     $in('#sp-body').on('click', '.sp-tab', function () {
         const idx   = parseInt($(this).data('day'));
         const total = parseInt($in('.sp-days-track').data('total')) || 4;
-        $in('.sp-tab').removeClass('sp-tab-active');
+        $inAll('.sp-tab').removeClass('sp-tab-active');
         $(this).addClass('sp-tab-active');
-        $in('.sp-days-track').css('transform', `translateX(-${idx * 100 / total}%)`);
+        $inAll('.sp-days-track').css('transform', `translateX(-${idx * 100 / total}%)`);
     });
 
     // Desktop drag: content header acts as the handle (like a title bar).
@@ -5569,7 +5571,7 @@ function setView(view, charName) {
     if (view === 'char' && charName) charViewName = charName;
     refreshLinesInjection();   // 视角切换 → 活跃线集合变了，重设潜伏注入跟随当前视角
     refreshOutlineInjection(); // 视角切换 → 大纲/游标随视角变，重设注入（loadCached 已带高亮）
-    $in('.sp-view-btn').removeClass('sp-view-active');
+    $inAll('.sp-view-btn').removeClass('sp-view-active');
     $(`.sp-view-btn[data-view="${view}"]`).addClass('sp-view-active');
     cachedSchedule = loadCachedForCurrentChat();
     cachedOutline  = loadCachedOutlineForCurrentChat();
@@ -5607,13 +5609,13 @@ function switchToCharView() {
         ${chipsHtml}
         <p class="sp-char-picker-sub">${guessed ? '根据近期对话预填，可直接修改。' : ''}不必是主角，任何出场人物、NPC、反派都能查看其点；查看不占固定槽，想常驻再去 📌 固定</p>
     </div>`);
-    $in('.sp-view-btn').removeClass('sp-view-active');
+    $inAll('.sp-view-btn').removeClass('sp-view-active');
     $(`.sp-view-btn[data-view="char"]`).addClass('sp-view-active');
     // .off().on() prevents duplicate bindings on repeated calls
     $in('#sp-char-name-input').off('keydown.charview').on('keydown.charview', e => { if (e.key === 'Enter') confirmCharView(); });
     $in('#sp-char-name-confirm').off('click.charview').on('click.charview', confirmCharView);
     // 点 chip：填进输入框（不直接确认，留一步给用户改），聚焦到末尾。
-    $in('.sp-char-recent-chip').off('click.charview').on('click.charview', function () {
+    $inAll('.sp-char-recent-chip').off('click.charview').on('click.charview', function () {
         $in('#sp-char-name-input').val($(this).attr('data-name')).focus();
     });
     setTimeout(() => { $in('#sp-char-name-input').focus().select(); }, 50);
@@ -5756,10 +5758,10 @@ function resetPanelToScheduleHome() {
     $in('#sp-body').show();
     $in('#sp-sub-toggle').show();
     $in('#sp-content-title').text('点');
-    $in('.sp-outline-btn').removeClass('sp-btn-active');
-    $in('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
+    $inAll('.sp-outline-btn').removeClass('sp-btn-active');
+    $inAll('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
     $in('.sp-side-tab.sp-view-btn[data-view="schedule"]').addClass('sp-view-active');
-    $in('.sp-sub-btn').removeClass('sp-view-active');
+    $inAll('.sp-sub-btn').removeClass('sp-view-active');
     $in(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
 }
 function openSchedule() {
@@ -10225,7 +10227,7 @@ function mergeAlmanac(oldItems, aiItems) {
 
 // ── 渲染 ──
 function closeActionMenus(except = null) {
-    $in('.sp-action-menu-open').each(function () {
+    $inAll('.sp-action-menu-open').each(function () {
         if (except && this === except) return;
         $(this).removeClass('sp-action-menu-open').find('.sp-action-menu-list').attr('hidden', true);
         $(this).find('.sp-action-menu-toggle').attr('aria-expanded', 'false');
@@ -10778,7 +10780,7 @@ function readCalendarDraftForm() {
     if (!_almanacManager?.editing) return _almanacManager?.draft;
     return {
         era: String($in('#sp-alm-manager-era').val() || ''),
-        months: $in('#sp-almanac-wrap .sp-alm-manager-month-row').map(function () {
+        months: $inAll('#sp-almanac-wrap .sp-alm-manager-month-row').map(function () {
             return { name: String($(this).find('.sp-alm-manager-month-name').val() || ''), days: $(this).find('.sp-alm-manager-month-days').val() };
         }).get(),
     };
@@ -11586,7 +11588,7 @@ function almHiliteCells(it) {
     }
 }
 function almClearHilite() {
-    $in('#sp-almanac-wrap .sp-alm-cell-linked').removeClass('sp-alm-cell-linked');
+    $inAll('#sp-almanac-wrap .sp-alm-cell-linked').removeClass('sp-alm-cell-linked');
 }
 async function deleteAlmanacItem(id) {
     const list = loadAlmanac();
@@ -12199,7 +12201,7 @@ async function renderWiList() {
 }
 
 function syncWiSelectAll() {
-    const $cbs = $in('#sp-wi-list .sp-wi-cb');
+    const $cbs = $inAll('#sp-wi-list .sp-wi-cb');
     if (!$cbs.length) return;
     const total   = $cbs.length;
     const checked = $cbs.filter(':checked').length;
@@ -12209,7 +12211,7 @@ function syncWiSelectAll() {
         $all.indeterminate = checked > 0 && checked < total;
     }
     // Refresh each group's per-book checkbox based on its own entries
-    $in('#sp-wi-list .sp-wi-group').each(function () {
+    $inAll('#sp-wi-list .sp-wi-group').each(function () {
         const $g = $(this);
         const $groupCb = $g.find('.sp-wi-group-cb')[0];
         if (!$groupCb) return;
@@ -12263,7 +12265,7 @@ function renderWiExcludeList() {
 
 // 查找框纯前端过滤：名字含关键词的行显示、其余隐藏；空词全显。
 function _filterWiExcludeList(kw) {
-    const $rows = $in('#sp-wi-exclude-list .sp-wi-exclude-row');
+    const $rows = $inAll('#sp-wi-exclude-list .sp-wi-exclude-row');
     if (!kw) { $rows.show(); return; }
     $rows.each(function () {
         const name = String(this.getAttribute('data-name') || '').toLowerCase();
@@ -12523,7 +12525,7 @@ function saveSettings() {
     const charKey = charStableKey(ctx);
     if (charKey) {
         const disabled = new Set();
-        $in('#sp-wi-list .sp-wi-cb').each(function () {
+        $inAll('#sp-wi-list .sp-wi-cb').each(function () {
             if (!this.checked) disabled.add($(this).data('key'));
         });
         setDisabledKeys(charKey, disabled);
