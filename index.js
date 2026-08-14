@@ -7030,11 +7030,11 @@ function saveCreativeChatHistory(view, charName) {
 }
 
 function updateCreativeChatModeUI() {
-    $('#sp-chat-input').attr('placeholder', getCreativeChatPlaceholder());
+    $in('#sp-chat-input').attr('placeholder', getCreativeChatPlaceholder());
 }
 
 function renderCreativeChatHistory() {
-    const $msgs = $('#sp-chat-msgs');
+    const $msgs = $in('#sp-chat-msgs');
     $msgs.empty();
     outlineChatHistory.forEach((msg, idx) => {
         appendChatMsg(msg.role === 'assistant' ? 'ai' : msg.role, msg.content, idx);
@@ -7472,8 +7472,8 @@ function appendChatMsg(role, content, historyIndex = null) {
             `<button class="sp-chat-msg-delete" title="删除"><i class="fa-solid fa-trash"></i></button></div>`,
         );
     }
-    $wrap.appendTo('#sp-chat-msgs');
-    const el = document.getElementById('sp-chat-msgs');
+    $wrap.appendTo($in('#sp-chat-msgs'));
+    const el = inEl('#sp-chat-msgs');
     if (el) el.scrollTop = el.scrollHeight;
 }
 
@@ -7561,8 +7561,8 @@ async function sendOutlineChat(userMsg) {
     isOutlineChatting = true;
     const chatIdSnap = getContext().chatId;
     outlineChatAbortController = new AbortController();
-    const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').html('<span class="sp-typing"><i></i><i></i><i></i></span>').appendTo('#sp-chat-msgs');
-    const el = document.getElementById('sp-chat-msgs');
+    const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').html('<span class="sp-typing"><i></i><i></i><i></i></span>').appendTo($in('#sp-chat-msgs'));
+    const el = inEl('#sp-chat-msgs');
     if (el) el.scrollTop = el.scrollHeight;
     try {
         const cfg = loadCfg();
@@ -7591,8 +7591,8 @@ async function sendOutlineChat(userMsg) {
                 cachedOutline = html;
                 $btn.text('✓ 已应用').prop('disabled', true);
             });
-            $('<div class="sp-chat-msg sp-chat-msg-system sp-apply-row"></div>').append($btn).appendTo('#sp-chat-msgs');
-            const el2 = document.getElementById('sp-chat-msgs');
+            $('<div class="sp-chat-msg sp-chat-msg-system sp-apply-row"></div>').append($btn).appendTo($in('#sp-chat-msgs'));
+            const el2 = inEl('#sp-chat-msgs');
             if (el2) el2.scrollTop = el2.scrollHeight;
         }
     } catch (err) {
@@ -8197,7 +8197,7 @@ function renderEmptyOutlineState() {
     return `<div class="sp-empty"><i class="fa-solid fa-scroll"></i><p>当前还没有面，可以先直接聊天讨论，也可以生成一版面作为起点</p><button class="sp-gen-btn sp-outline-gen-btn" id="sp-gen-outline-now">生成面</button></div>`;
 }
 
-function setOutlineBody(html) { $('#sp-outline-beats').html(html); }
+function setOutlineBody(html) { $in('#sp-outline-beats').html(html); }
 
 // ─── Outline generation ───────────────────────────────────────────────────────
 
@@ -8244,7 +8244,7 @@ async function runGenerateOutline() {
         cachedOutline = html;
         if (outlineMode) { setOutlineBody(html); if (getSettings().notifyMode !== 'off') showToast('面已生成'); }
         else showToast('面已生成，点击查看', () => {
-            if (!outlineMode) $('.sp-view-btn[data-view="outline"]').trigger('click');
+            if (!outlineMode) $in('.sp-view-btn[data-view="outline"]').trigger('click');
             showPanel();
         });
     } catch (err) {
@@ -8527,7 +8527,7 @@ function loadCachedLinesForCurrentChat(view, charName) {
 //  锚·收藏楼层面板：三层抽屉（聊天桶 → 缩略 → 全文）+ Shadow DOM 全文渲染
 // ═══════════════════════════════════════════════════════════════════════════
 
-function setAnchorBody(html) { $('#sp-anchor-body').html(html); }
+function setAnchorBody(html) { $in('#sp-anchor-body').html(html); }
 
 function fmtAnchorTs(ts) {
     if (!ts) return '';
@@ -8810,7 +8810,7 @@ async function renderAnchorFull(itemId) {
             <div class="sp-anchor-full-host" id="sp-anchor-full-host"></div>
             <div class="sp-anchor-full-ts">收藏于 ${fmtAnchorTs(it.ts)}</div>
         </div>`);
-    const host = document.getElementById('sp-anchor-full-host');
+    const host = inEl('#sp-anchor-full-host');
     if (host) {
         // Shadow DOM 的 :host{all:initial} 会切断颜色继承；只设字色救不了——快照里状态栏常自带
         // 背景卡片，单一字色遇到「浅字撞浅底/深字撞深底」必然翻车（夜间尤其）。正解是给容器一对
@@ -8842,7 +8842,7 @@ async function renderAnchorFull(itemId) {
 // 全屏后只剩内容卡片，用户直接用系统截图即可。
 let _anchorFsEsc = null;
 function toggleAnchorFullscreen(btnEl) {
-    const el = document.querySelector('#sp-anchor-body .sp-anchor-scroll');
+    const el = inEl('#sp-anchor-body .sp-anchor-scroll');
     if (!el) return;
     const on = el.classList.toggle('sp-anchor-fullscreen');
     const $i = $(btnEl).find('i');
@@ -8852,14 +8852,14 @@ function toggleAnchorFullscreen(btnEl) {
     if (on && !_anchorFsEsc) {
         _anchorFsEsc = (ev) => {
             if (ev.key !== 'Escape') return;
-            const r = document.querySelector('#sp-anchor-body .sp-anchor-scroll.sp-anchor-fullscreen');
-            if (r) $('.sp-anchor-fullscreen').trigger('click');
+            const r = inEl('#sp-anchor-body .sp-anchor-scroll.sp-anchor-fullscreen');
+            if (r) $in('.sp-anchor-fullscreen').trigger('click');
         };
         document.addEventListener('keydown', _anchorFsEsc);
     }
 }
 
-function setLinesBody(html) { $('#sp-lines-list').html(html); renderDashedSection(); }
+function setLinesBody(html) { $in('#sp-lines-list').html(html); renderDashedSection(); }
 
 // 收藏占用统计 → 设置面板「收藏占用」行（打开设置时刷新）
 // ─── 存储管理面板 ──────────────────────────────────────────────────────────────
@@ -8891,7 +8891,7 @@ function storageRow(label, bytesText, btnHtml = '', extraClass = '') {
 
 // 渲染四层用量到 #sp-storage-body。异步（坐标要读服务器索引）。
 async function renderStorageUsage() {
-    const $body = $('#sp-storage-body');
+    const $body = $in('#sp-storage-body');
     if (!$body.length) return;
     const fmt = store.formatBytes;
 
@@ -8948,14 +8948,14 @@ async function renderStorageUsage() {
     try {
         const cnt = await anchor.countItems();
         const bytes = await anchor.estimateBytes();
-        $('#sp-storage-anchor-rows').html(
+        $in('#sp-storage-anchor-rows').html(
             cnt
                 ? storageRow(`共 ${cnt} 条收藏`, anchor.formatBytes(bytes),
                     `<button class="sp-storage-del sp-mini-btn sp-mini-btn-danger" data-scope="anchor">清空</button>`)
                 : `<div class="sp-cfg-hint" style="padding:4px 0">暂无收藏</div>`
         );
     } catch {
-        $('#sp-storage-anchor-rows').html(`<div class="sp-cfg-hint" style="padding:4px 0">统计失败（服务器不可达？）</div>`);
+        $in('#sp-storage-anchor-rows').html(`<div class="sp-cfg-hint" style="padding:4px 0">统计失败（服务器不可达？）</div>`);
     }
 }
 
@@ -8967,15 +8967,15 @@ function refreshEditorsAfterStoreClear(kind) {
     }
     if (kind === 'outline' && outlineMode) setOutlineBody(renderEmptyOutlineState());
     if (kind === 'lines') { cachedLines = null; if (linesMode) setLinesBody(renderEmptyLinesState()); }
-    if (kind === 'space-chat' && spaceMode) $('#sp-space-msgs').empty();
+    if (kind === 'space-chat' && spaceMode) $in('#sp-space-msgs').empty();
 }
 // ANCHOR_STORAGE_HANDLERS
 
 // 绑定存储管理面板的清理按钮（委托到 #sp-storage-body，内容动态渲染）+ 刷新。
 function bindStorageHandlers() {
-    $('#sp-storage-refresh').on('click', () => renderStorageUsage());
+    $in('#sp-storage-refresh').on('click', () => renderStorageUsage());
 
-    const $body = $('#sp-storage-body');
+    const $body = $in('#sp-storage-body');
 
     // ① 本聊天 chat_metadata —— 按 kind 清（点线面间讨论）
     $body.on('click', '.sp-storage-del[data-scope="kind"]', async function () {
@@ -9251,7 +9251,7 @@ function _mergeDashedRecent(newItems, oldRecent) {
 // loading/空态 html 无此容器 → 直接 early-return，故可安全塞进 setLinesBody 统一调）。
 // 按用户要求：不打「虚线·冷知识」大字招牌，只用虚线视觉 + 底部一行极小的「世界观补充」注脚点明性质。
 function renderDashedSection(err) {
-    const $sec = $('#sp-dashed-section');
+    const $sec = $in('#sp-dashed-section');
     if (!$sec.length) return;
     if (getSettings().dashedEnabled !== true) { $sec.empty(); return; }
     let body;
@@ -9356,7 +9356,7 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
         // fire-and-forget：不 await、不阻塞线 UI；虚线自带 try/catch 与独立 abort。
         if (getSettings().dashedEnabled === true) runGenerateDashed();
         if (!linesMode && !silent) showToast('线已生成，点击查看', () => {
-            if (!linesMode) $('.sp-view-btn[data-view="lines"]').trigger('click');
+            if (!linesMode) $in('.sp-view-btn[data-view="lines"]').trigger('click');
             showPanel();
         });
     } catch (err) {
@@ -10145,7 +10145,7 @@ function mergeAlmanac(oldItems, aiItems) {
 
 // ── 渲染 ──
 function closeActionMenus(except = null) {
-    $('.sp-action-menu-open').each(function () {
+    $in('.sp-action-menu-open').each(function () {
         if (except && this === except) return;
         $(this).removeClass('sp-action-menu-open').find('.sp-action-menu-list').attr('hidden', true);
         $(this).find('.sp-action-menu-toggle').attr('aria-expanded', 'false');
@@ -10261,7 +10261,7 @@ function almNudgeToday(delta) {
 }
 function renderAlmanacPanel(options = {}) {
     if (!almanacMode) return;
-    const $wrap = $('#sp-almanac-wrap');
+    const $wrap = $in('#sp-almanac-wrap');
     if (_almanacManager) {
         if (refreshCalendarManager(options)) return;
         $wrap.html(renderCalendarManager());
@@ -10270,12 +10270,12 @@ function renderAlmanacPanel(options = {}) {
     if (_almanacEditor) {
         $wrap.html(renderAlmanacEditor());
         almRenderWdHint();
-        setTimeout(() => $('#sp-alm-f-name').trigger('focus'), 30);
+        setTimeout(() => $in('#sp-alm-f-name').trigger('focus'), 30);
         return;
     }
     if (_ledgerEditor) {
         $wrap.html(renderLedgerEditor());
-        setTimeout(() => $('#sp-led-f-gist').trigger('focus'), 30);
+        setTimeout(() => $in('#sp-led-f-gist').trigger('focus'), 30);
         return;
     }
     if (isGeneratingAlmanac) {
@@ -10459,20 +10459,20 @@ function saveLedgerEditor() {
     if (!_ledgerEditor) return;
     const e = ledger.getEntry(_ledgerEditor.id);
     if (!e) { closeLedgerEditor(); return; }
-    const gist = String($('#sp-led-f-gist').val() || '').trim();
-    if (!gist) { showToast('请填写事由', null, true); $('#sp-led-f-gist').trigger('focus'); return; }
+    const gist = String($in('#sp-led-f-gist').val() || '').trim();
+    if (!gist) { showToast('请填写事由', null, true); $in('#sp-led-f-gist').trigger('focus'); return; }
     const cal = loadCalDesc();
-    const type = ledger.TYPES.includes($('#sp-led-f-type').val()) ? $('#sp-led-f-type').val() : e.类型;
+    const type = ledger.TYPES.includes($in('#sp-led-f-type').val()) ? $in('#sp-led-f-type').val() : e.类型;
     const patch = {
         事由: gist,
         类型: type,
-        现状: String($('#sp-led-f-now').val() || '').trim(),
-        牵扯: splitCnList($('#sp-led-f-who').val()),
-        标签: splitCnList($('#sp-led-f-tags').val()),
+        现状: String($in('#sp-led-f-now').val() || '').trim(),
+        牵扯: splitCnList($in('#sp-led-f-who').val()),
+        标签: splitCnList($in('#sp-led-f-tags').val()),
         锁: '用户锁',   // 手改即锁，判定车不再动
     };
     // 周期天数：仅周期类有意义；填了就写，清空则置 null。
-    const cyc = parseInt($('#sp-led-f-cyc').val(), 10);
+    const cyc = parseInt($in('#sp-led-f-cyc').val(), 10);
     patch.周期长度 = (Number.isFinite(cyc) && cyc > 0) ? cyc : null;
     // 到期锚：两框都有效则成锚，否则清空（约定/周期可留空＝未定档）。
     const dueMd = ledgerReadMd('#sp-led-f-due-m', '#sp-led-f-due-d', cal);
@@ -10697,8 +10697,8 @@ function closeCalendarManager() {
 function readCalendarDraftForm() {
     if (!_almanacManager?.editing) return _almanacManager?.draft;
     return {
-        era: String($('#sp-alm-manager-era').val() || ''),
-        months: $('#sp-almanac-wrap .sp-alm-manager-month-row').map(function () {
+        era: String($in('#sp-alm-manager-era').val() || ''),
+        months: $in('#sp-almanac-wrap .sp-alm-manager-month-row').map(function () {
             return { name: String($(this).find('.sp-alm-manager-month-name').val() || ''), days: $(this).find('.sp-alm-manager-month-days').val() };
         }).get(),
     };
@@ -10878,7 +10878,7 @@ function revealCalendarManagerTarget($target, $scroller) {
 
 // 管理页内部只替换业务内容，保留真正的滚动容器；否则每次操作都会重建 scrollTop 和焦点。
 function refreshCalendarManager(options = {}) {
-    const $wrap = $('#sp-almanac-wrap');
+    const $wrap = $in('#sp-almanac-wrap');
     const $scroller = $wrap.find('.sp-alm-body').first();
     const $content = $scroller.children('.sp-alm-editor-body').first();
     if (!$wrap.find('.sp-alm-manager-hint').length || !$content.length) return false;
@@ -11178,7 +11178,7 @@ async function runGenerateAlmanac() {
         almanacAbortController = null;
         syncLatestAlmanacBlock();   // 历生成 → 楼内七天条即时刷
         if (almanacMode) { renderAlmanacPanel(); if (getSettings().notifyMode !== 'off') showToast('轴已生成'); }
-        else showToast('轴已生成，点击查看', () => { $('.sp-view-btn[data-view="almanac"]').trigger('click'); showPanel(); });
+        else showToast('轴已生成，点击查看', () => { $in('.sp-view-btn[data-view="almanac"]').trigger('click'); showPanel(); });
     } catch (err) {
         if (almanacAbortController !== myCtrl) return;
         isGeneratingAlmanac = false;
@@ -11431,12 +11431,12 @@ function renderAlmanacEditor() {
 }
 // 编辑器里月/日/天数变动时，实时刷新只读周几提示（纯提示，不入库）。
 function almRenderWdHint() {
-    const $h = $('#sp-alm-f-wdhint');
+    const $h = $in('#sp-alm-f-wdhint');
     if (!$h.length) return;
     const cal = loadCalDesc();
-    const month = almClampInt($('#sp-alm-f-month').val(), 1, calMonthCount(cal), 1);
-    const day = almClampInt($('#sp-alm-f-day').val(), 1, calMonthDays(cal, month), 1);
-    const days = almClampInt($('#sp-alm-f-days').val(), 1, calYearLen(cal), 1);
+    const month = almClampInt($in('#sp-alm-f-month').val(), 1, calMonthCount(cal), 1);
+    const day = almClampInt($in('#sp-alm-f-day').val(), 1, calMonthDays(cal, month), 1);
+    const days = almClampInt($in('#sp-alm-f-days').val(), 1, calYearLen(cal), 1);
     const ref = almWeekdayRef(cal);
     const wd = ALM_WEEKDAYS[almWeekdayFor(month, day, ref, cal)];
     if (days > 1) {
@@ -11449,18 +11449,18 @@ function almRenderWdHint() {
 }
 function saveAlmanacEditor() {
     if (!_almanacEditor) return;
-    const name = String($('#sp-alm-f-name').val() || '').trim();
-    if (!name) { showToast('请填写名称', null, true); $('#sp-alm-f-name').trigger('focus'); return; }
+    const name = String($in('#sp-alm-f-name').val() || '').trim();
+    if (!name) { showToast('请填写名称', null, true); $in('#sp-alm-f-name').trigger('focus'); return; }
     const editing = _almanacEditor.id ? loadAlmanac().find(x => x.id === _almanacEditor.id) : null;
     const rec = normalizeAlmItem({
         id: editing ? editing.id : almId(),
         name,
-        type: $('#sp-alm-f-type').val(),
-        month: $('#sp-alm-f-month').val(),
-        day: $('#sp-alm-f-day').val(),
-        days: $('#sp-alm-f-days').val(),
-        displayDate: $('#sp-alm-f-disp').val(),
-        note: $('#sp-alm-f-note').val(),
+        type: $in('#sp-alm-f-type').val(),
+        month: $in('#sp-alm-f-month').val(),
+        day: $in('#sp-alm-f-day').val(),
+        days: $in('#sp-alm-f-days').val(),
+        displayDate: $in('#sp-alm-f-disp').val(),
+        note: $in('#sp-alm-f-note').val(),
         pin: editing ? editing.pin : true,       // 自填默认自动锁定（用户最看重，别被生成冲掉）
         source: editing ? editing.source : 'user',
     });
@@ -11484,7 +11484,7 @@ function toggleAlmanacPin(id) {
     saveAlmanacItems(list);
     // 就地更新该行（锁不改排序），不整面重渲 → 不会把滚动/视觉焦点弹回页头
     if (almanacMode) {
-        const $rows = $(`#sp-almanac-wrap .sp-alm-item[data-id="${id}"]`);
+        const $rows = $in(`#sp-almanac-wrap .sp-alm-item[data-id="${id}"]`);
         $rows.toggleClass('sp-alm-pinned', it.pin);
         $rows.find('.sp-alm-pin')
             .attr('title', it.pin ? '已锁定 · 生成时保留（点击解锁）' : '锁定 · 生成时保留')
@@ -11502,11 +11502,11 @@ function almHiliteCells(it) {
     const startDoy = almDayOfYear(it.month, it.day, cal);
     for (let k = 0; k < days; k++) {
         const md = almMonthDayFromDoy(startDoy + k, cal);
-        if (md.month === month1) $(`#sp-almanac-wrap .sp-alm-cell[data-day="${md.day}"]`).addClass('sp-alm-cell-linked');
+        if (md.month === month1) $in(`#sp-almanac-wrap .sp-alm-cell[data-day="${md.day}"]`).addClass('sp-alm-cell-linked');
     }
 }
 function almClearHilite() {
-    $('#sp-almanac-wrap .sp-alm-cell-linked').removeClass('sp-alm-cell-linked');
+    $in('#sp-almanac-wrap .sp-alm-cell-linked').removeClass('sp-alm-cell-linked');
 }
 async function deleteAlmanacItem(id) {
     const list = loadAlmanac();
