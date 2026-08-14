@@ -7692,7 +7692,7 @@ function spaceMsgPlainText(msg) {
 }
 
 function renderSpaceChatHistory() {
-    const $msgs = $('#sp-space-msgs');
+    const $msgs = $in('#sp-space-msgs');
     $msgs.empty();
     spaceChatHistory.forEach((msg, idx) => {
         appendSpaceChatMsg(msg.role === 'assistant' ? 'ai' : msg.role, msg.content, idx);
@@ -7740,8 +7740,8 @@ function appendSpaceChatMsg(role, content, historyIndex = null) {
             `<button class="sp-chat-msg-delete" title="删除"><i class="fa-solid fa-trash"></i></button></div>`,
         );
     }
-    $wrap.appendTo('#sp-space-msgs');
-    const el = document.getElementById('sp-space-msgs');
+    $wrap.appendTo($in('#sp-space-msgs'));
+    const el = document.inEl('#sp-space-msgs');
     if (el) el.scrollTop = el.scrollHeight;
 }
 
@@ -7957,8 +7957,8 @@ async function sendSpaceChat(userMsg) {
     isSpaceChatting = true;
     const chatIdSnap = getContext().chatId;
     spaceChatAbortController = new AbortController();
-    const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').html('<span class="sp-typing"><i></i><i></i><i></i></span>').appendTo('#sp-space-msgs');
-    const el = document.getElementById('sp-space-msgs');
+    const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').html('<span class="sp-typing"><i></i><i></i><i></i></span>').appendTo($in('#sp-space-msgs'));
+    const el = document.inEl('#sp-space-msgs');
     if (el) el.scrollTop = el.scrollHeight;
     try {
         const cfg = loadCfg();
@@ -7988,7 +7988,7 @@ async function sendSpaceChat(userMsg) {
 
 // ─── 棱（小剧场）render ─────────────────────────────────────────────────────────
 
-function setTheaterBody(html) { $('#sp-theater-body').html(html); }
+function setTheaterBody(html) { $in('#sp-theater-body').html(html); }
 
 // 一条 piece 的卡片（草稿/已保存列表共用）。saved=true 时显示"删除"，false 时"升永久+删除"。
 function renderPieceCard(piece, saved) {
