@@ -4094,8 +4094,11 @@ function injectModal() {
         const view = $in('.sp-side-tab.sp-view-active').data('view') || 'schedule';
         $pop.html(MODULE_INTROS[view] || MODULE_INTROS.schedule).show();   // 内容全为作者手写 HTML（图标图例），无用户输入 → .html() 安全
     });
+    // 批次3：shadow 内点击的 e.target 被重定向为 host，closest() 判断失效（点 pop 内部也触发关闭）
+    // → 改走 composedPath()（含 shadow 内节点）判断点击是否落在 pop/btn 内。
     $(document).off('click.spIntro').on('click.spIntro', function (e) {
-        if ($(e.target).closest('#sp-module-intro-pop, #sp-module-intro-btn').length) return;
+        const path = e.originalEvent.composedPath();
+        if (path.some(el => el instanceof Element && el.matches('#sp-module-intro-pop, .sp-module-intro-btn'))) return;
         $in('#sp-module-intro-pop').hide();
     });
     inEl('#sp-debug-drawer')?.addEventListener('toggle', function () {
@@ -5062,9 +5065,11 @@ function injectModal() {
         await updateCalendarTemplateBinding($(this).attr('data-avatar'), null, $(this).attr('data-template-id'));
     });
 
+    // 批次3：同 spIntro——action 菜单在 shadow 内，target 重定向失效，改 composedPath 判断。
     $(document).off('click.spActionMenu').on('click.spActionMenu', function (event) {
-        if (!$(event.target).closest('.sp-action-menu').length) closeActionMenus();
+        if (!event.originalEvent.composedPath().some(el => el instanceof Element && el.matches('.sp-action-menu'))) closeActionMenus();
     });
+    // 批次3：keydown 是 composed 事件，从 shadow 冒泡到 document 照常触发、无 target 判断 → 无需改。
     $(document).off('keydown.spActionMenu').on('keydown.spActionMenu', function (event) {
         if (event.key === 'Escape') closeActionMenus();
     });
@@ -5655,8 +5660,9 @@ function openTaDrawer() {
     _taDrawerOpen = true;
     $in('#sp-ta-trigger').addClass('sp-ta-open');
     // 外点即收：点抽屉/触发器以外任意处关闭（触发器自身的 toggle 另管，故排除它避免双触发）。
+    // 批次3：抽屉在 shadow 内，target 重定向失效 → 改 composedPath 判断点击是否落在抽屉/触发器内。
     $(document).off('click.tadrawer').on('click.tadrawer', function (e) {
-        if ($(e.target).closest('#sp-ta-drawer, #sp-ta-trigger').length) return;
+        if (e.originalEvent.composedPath().some(el => el instanceof Element && el.matches('#sp-ta-drawer, #sp-ta-trigger'))) return;
         closeTaDrawer();
     });
 }
