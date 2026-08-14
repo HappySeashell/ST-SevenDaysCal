@@ -4394,8 +4394,12 @@ function injectModal() {
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
     });
 
-    // Inject buttons (event delegation)
-    $(`#sp-body, #sp-outline-wrap, #sp-lines-wrap, #chat`).on('click', '.sp-inject-btn', function () {
+    // Inject buttons (event delegation)——双绑拆分：面板三区在 shadow 内走 $in；楼内注入钮在 light DOM #chat 保持原查询。
+    $in('#sp-body, #sp-outline-wrap, #sp-lines-wrap').on('click', '.sp-inject-btn', function () {
+        const text = _injectTexts[$(this).data('iid')];
+        if (text) injectToST(text);
+    });
+    $('#chat').on('click', '.sp-inject-btn', function () {
         const text = _injectTexts[$(this).data('iid')];
         if (text) injectToST(text);
     });
