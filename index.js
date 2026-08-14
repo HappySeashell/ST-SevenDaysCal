@@ -4457,7 +4457,7 @@ function injectModal() {
     $theater.on('click', '.sp-theater-back', renderTheaterPanel);
     // 预览框展开 / 收起
     $theater.on('click', '.sp-theater-fullscreen-btn', function () {
-        const el = document.inEl('#sp-theater-result');
+        const el = inEl('#sp-theater-result');
         if (!el) return;
         const on = el.classList.toggle('sp-theater-fullscreen');
         // 全屏时强制展开（去折叠），退出时按原逻辑重新判定是否需要折叠
@@ -4470,7 +4470,7 @@ function injectModal() {
             if (!_theaterFsEsc) {
                 _theaterFsEsc = (ev) => {
                     if (ev.key === 'Escape') {
-                        const r = document.inEl('#sp-theater-result');
+                        const r = inEl('#sp-theater-result');
                         if (r && r.classList.contains('sp-theater-fullscreen')) {
                             $in('.sp-theater-fullscreen-btn').trigger('click');
                         }
@@ -4484,7 +4484,7 @@ function injectModal() {
     });
 
     $theater.on('click', '.sp-theater-fold-toggle', function () {
-        const el = document.inEl('#sp-theater-result');
+        const el = inEl('#sp-theater-result');
         if (!el) return;
         const collapsed = el.classList.toggle('sp-theater-result-collapsed');
         const $btn = $(this);
@@ -7781,7 +7781,7 @@ function appendSpaceChatMsg(role, content, historyIndex = null) {
         );
     }
     $wrap.appendTo($in('#sp-space-msgs'));
-    const el = document.inEl('#sp-space-msgs');
+    const el = inEl('#sp-space-msgs');
     if (el) el.scrollTop = el.scrollHeight;
 }
 
@@ -7998,7 +7998,7 @@ async function sendSpaceChat(userMsg) {
     const chatIdSnap = getContext().chatId;
     spaceChatAbortController = new AbortController();
     const $dots = $('<div>').addClass('sp-chat-msg sp-chat-msg-ai sp-chat-thinking').html('<span class="sp-typing"><i></i><i></i><i></i></span>').appendTo($in('#sp-space-msgs'));
-    const el = document.inEl('#sp-space-msgs');
+    const el = inEl('#sp-space-msgs');
     if (el) el.scrollTop = el.scrollHeight;
     try {
         const cfg = loadCfg();
@@ -8129,7 +8129,7 @@ function renderTheaterPanel() {
 
 // 预览折叠：内容超过阈值才折叠并露出「展开全文」按钮，短内容不折。
 function applyTheaterFold() {
-    const el = document.inEl('#sp-theater-result');
+    const el = inEl('#sp-theater-result');
     const $btn = $in('.sp-theater-fold-toggle');
     if (!el || !el.classList.contains('sp-theater-result-collapsible')) { $btn.hide(); return; }
     const COLLAPSED_MAX = 360;
