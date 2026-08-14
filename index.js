@@ -8089,8 +8089,8 @@ function renderTheaterPanel() {
 
 // 预览折叠：内容超过阈值才折叠并露出「展开全文」按钮，短内容不折。
 function applyTheaterFold() {
-    const el = document.getElementById('sp-theater-result');
-    const $btn = $('.sp-theater-fold-toggle');
+    const el = document.inEl('#sp-theater-result');
+    const $btn = $in('.sp-theater-fold-toggle');
     if (!el || !el.classList.contains('sp-theater-result-collapsible')) { $btn.hide(); return; }
     const COLLAPSED_MAX = 360;
     // 图片未加载完时 scrollHeight 可能偏小，这里先按当前测；下方 img.onload 再复测。
@@ -8116,14 +8116,14 @@ async function refreshTheaterTemplates() {
     let templates = [];
     try { templates = await theater.listTemplates(); } catch (err) { console.warn('[7dayscal] 模板读取失败:', err); }
     _theaterTemplateCache = templates;
-    const $list = $('#sp-theater-tpl-picker-list');
+    const $list = $in('#sp-theater-tpl-picker-list');
     if ($list.length) {
         $list.html(templates.length
             ? templates.map(t => `<button type="button" class="sp-theater-tpl-pick" data-uid="${escapeAttr(t.uid)}">${escapeHtml(t.title)}</button>`).join('')
             : '<div class="sp-theater-list-empty">暂无模板，可在设置 · 棱里新增</div>');
     }
     // 若设置分节开着，也刷新其列表
-    if ($('#sp-theater-tpl-mgr').length) renderTheaterTemplateManager(templates);
+    if ($in('#sp-theater-tpl-mgr').length) renderTheaterTemplateManager(templates);
 }
 let _theaterTemplateCache = [];
 
@@ -8154,7 +8154,7 @@ async function runGenerateTheater(userInput) {
         theaterCurrentPiece = piece;
         if (theaterMode) { renderTheaterPanel(); if (getSettings().notifyMode !== 'off') showToast('棱已生成'); }
         else showToast('棱已生成，点击查看', () => {
-            $('.sp-view-btn[data-view="theater"]').trigger('click');
+            $in('.sp-view-btn[data-view="theater"]').trigger('click');
             showPanel();
         });
     } catch (err) {
@@ -8175,7 +8175,7 @@ async function runGenerateTheater(userInput) {
 
 // 设置分节里的模板管理器渲染
 function renderTheaterTemplateManager(templates) {
-    const $mgr = $('#sp-theater-tpl-mgr');
+    const $mgr = $in('#sp-theater-tpl-mgr');
     if (!$mgr.length) return;
     // 重渲染前记住外层抽屉的开合，避免用户整理时被合上
     const libOpen = $mgr.find('.sp-theater-tpl-library').prop('open');
