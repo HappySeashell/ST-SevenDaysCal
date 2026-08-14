@@ -11765,7 +11765,7 @@ function toggleSettings() {
     const $overlay = $in('#sp-settings-overlay');
     if (settingsOpen) {
         renderWiList();     // async, fire-and-forget — fills list when done
-        renderWiExcludeList();   // 全局排除清单（同步；勾选 = 构画一律不读该书）
+        renderWiExcludeList();   // 全局排除清单（async fire-and-forget；冷缓存会强刷世界书全表）
         renderScaleRow();   // per-character scale radios (sync)
         renderMemorySection();   // memory status + settings sync
         renderTheaterSection();  // 棱 settings + cache usage + template manager
@@ -12313,17 +12313,47 @@ function syncWiSelectAll() {
     });
 }
 
-// 全局排除清单（B方案）：列出 ST 里所有世界书（ctx.getWorldInfoNames()，与角色卡无关），
-// 勾选 = 拉黑、构画一律不读。存 s.wiExcludeBooks（全局），与 renderWiList 的按角色卡挑选正交。
-// 书多（三四十本）时套进内联抽屉 + 查找框：本函数只铺行，查找靠 _filterWiExcludeList 纯前端隐/显，
-// 不重渲（重渲会打断查找框输入焦点）。
-function renderWiExcludeList() {
+// 解析 ST 里注册的「全部世界书名」——供全局排除清单用。
+// getWorldInfoNames() 只读内存缓存 world_names，而它要 updateWorldInfoList()（拉
+// /api/worldinfo/list）才填；用户没开过酒馆 WI 面板 → 缓存冷 → 清单空。读书路径不受影响
+// （走 loadWorldInfo/TavernHelper 直取），所以会出现「读书正常、排除清单空」。分层兜底、
+// 首个非空即用：
+//   1. 暖缓存 getWorldInfoNames()（已填则零成本，行为同旧版）
+//   2. TavernHelper（跨分支便携：新 getWorldbookNames / 旧 getLorebooks）
+//   3. 强制刷新 updateWorldInfoList() 再读——/api/worldinfo/list 权威、根治空清单
+async function getAllWorldNames(ctx) {
+    try {
+        const cached = typeof ctx.getWorldInfoNames === 'function' ? ctx.getWorldInfoNames() : [];
+        if (Array.isArray(cached) && cached.length) return cached;
+    } catch {}
+    try {
+        const th = globalThis?.TavernHelper;
+        const fn = th?.getWorldbookNames || th?.getLorebooks;
+        if (typeof fn === 'function') {
+            const list = await fn.call(th);
+            if (Array.isArray(list) && list.length) return list;
+        }
+    } catch {}
+    try {
+        if (typeof ctx.updateWorldInfoList === 'function') {
+            await ctx.updateWorldInfoList();
+            const refreshed = typeof ctx.getWorldInfoNames === 'function' ? ctx.getWorldInfoNames() : [];
+            if (Array.isArray(refreshed)) return refreshed;
+        }
+    } catch {}
+    return [];
+}
+
+// 全局排除清单（B方案）：列出 ST 里所有世界书（与角色卡无关），勾选 = 拉黑、构画一律不读。
+// 存 s.wiExcludeBooks（全局），与 renderWiList 的按角色卡挑选正交。书多（三四十本）时套进
+// 内联抽屉 + 查找框：本函数只铺行，查找靠 _filterWiExcludeList 纯前端隐/显，不重渲（重渲会
+// 打断查找框输入焦点）。名单经 getAllWorldNames 解析（冷缓存会强刷 /api/worldinfo/list）。
+async function renderWiExcludeList() {
     const $list = $in('#sp-wi-exclude-list');
     if (!$list.length) return;
     const ctx = getContext();
-    let names = [];
-    try { names = typeof ctx.getWorldInfoNames === 'function' ? ctx.getWorldInfoNames() : []; } catch {}
-    names = [...new Set(names.filter(n => typeof n === 'string' && n))].sort((a, b) => a.localeCompare(b, 'zh'));
+    let names = await getAllWorldNames(ctx);
+    names = [...new Set((names || []).filter(n => typeof n === 'string' && n))].sort((a, b) => a.localeCompare(b, 'zh'));
     const excluded = getWiExcludeSet();
     _syncWiExcludeCount(excluded.size, names.length);
     if (!names.length) {
