@@ -2943,7 +2943,7 @@ async function syncPointToToday(auto = false) {
     const chatIdSnap = getContext().chatId;
     _almSyncingPoint = true;
     if (almanacMode) renderAlmanacPanel();                   // 今天条：「同步到点」→「同步中…」
-    $('#sp-body .sp-refresh-schedule').addClass('sp-refresh-busy');   // 点面板此刻正开着也即时置灰，不等重渲染
+    $in('#sp-body .sp-refresh-schedule').addClass('sp-refresh-busy');   // 点面板此刻正开着也即时置灰，不等重渲染
     try {
         const ctx = getContext();
         const cfg = loadCfg();
@@ -2982,7 +2982,7 @@ async function syncPointToToday(auto = false) {
         if (_autoRegenSchedAbort === myCtrl) _autoRegenSchedAbort = null;
         _almSyncingPoint = false;
         if (almanacMode) renderAlmanacPanel();               // 恢复今天条（同步键消失，或仍需同步则复现）
-        $('#sp-body .sp-refresh-schedule').removeClass('sp-refresh-busy');   // 同步结束：解除刷新圆圈置灰
+        $in('#sp-body .sp-refresh-schedule').removeClass('sp-refresh-busy');   // 同步结束：解除刷新圆圈置灰
         // 自对账：同步在飞期间被丢过新的「今天」推进 → 若点仍落后今天且环境未变，收尾补一轮，保证都开态最终收敛（不会永久停在旧日期）。
         if (_almSyncPending) {
             _almSyncPending = false;
@@ -3235,7 +3235,7 @@ function openAnchorAtChat(chatId) {
     _anchorView = { level: 'items', charName: null, chatId, itemId: null };
     showPanel();
     if (anchorMode) renderAnchorPanel();
-    else $('.sp-view-btn[data-view="anchor"]').trigger('click');
+    else $in('.sp-view-btn[data-view="anchor"]').trigger('click');
 }
 
 // 跨模块跳转只复用现有侧栏切换，并在目标 DOM 就绪后做可选预填；它不发送消息，也不建立第二套路由状态。
@@ -3319,7 +3319,7 @@ function setExtBtnState(state) {
     if (state) $fab.addClass(`sp-btn-${state}`);
     // 点生成中只锁「我/TA」子切换（本次生成绑定当前视角，中途换视角无意义，另有 .sp-view-btn 里 3207 JS 守卫兜底）；
     // 侧栏模块 tab(历/线/面/棱/锚) 绝不锁——切模块随时可用（点正文按状态重建，见 .sp-view-btn 处理器 schedule 分支）。
-    $('.sp-sub-toggle').toggleClass('sp-locked', state === 'generating');
+    $in('.sp-sub-toggle').toggleClass('sp-locked', state === 'generating');
 }
 
 // ─── FAB ─────────────────────────────────────────────────────────────────────
@@ -4096,7 +4096,7 @@ function injectModal() {
     });
     $(document).off('click.spIntro').on('click.spIntro', function (e) {
         if ($(e.target).closest('#sp-module-intro-pop, #sp-module-intro-btn').length) return;
-        $('#sp-module-intro-pop').hide();
+        $in('#sp-module-intro-pop').hide();
     });
     inEl('#sp-debug-drawer')?.addEventListener('toggle', function () {
         if (this.open) {
@@ -4113,15 +4113,15 @@ function injectModal() {
 
     // Outline chat
     function doSendChat() {
-        const msg = $('#sp-chat-input').val().trim();
-        if (msg && !isOutlineChatting) { const $i = $('#sp-chat-input'); $i.val(''); autoGrowTextarea($i[0]); sendOutlineChat(msg); }
+        const msg = $in('#sp-chat-input').val().trim();
+        if (msg && !isOutlineChatting) { const $i = $in('#sp-chat-input'); $i.val(''); autoGrowTextarea($i[0]); sendOutlineChat(msg); }
     }
-    $('#sp-chat-send').on('click', doSendChat);
+    $in('#sp-chat-send').on('click', doSendChat);
     // 回车换行、只用按钮发送（用户偏好）——不再拦 Enter；自动长高保留。
-    $('#sp-chat-input').on('input', function () { autoGrowTextarea(this); });
+    $in('#sp-chat-input').on('input', function () { autoGrowTextarea(this); });
 
     // Delete a single message (leaves the rest alone — user chose "just this one")
-    $('#sp-chat-msgs').on('click', '.sp-chat-msg-delete', function () {
+    $in('#sp-chat-msgs').on('click', '.sp-chat-msg-delete', function () {
         if (isOutlineChatting) return;
         const idx = Number($(this).closest('.sp-chat-msg-wrap').attr('data-idx'));
         if (!Number.isInteger(idx) || idx < 0 || idx >= outlineChatHistory.length) return;
@@ -4131,7 +4131,7 @@ function injectModal() {
     });
 
     // Edit user message → inline editor
-    $('#sp-chat-msgs').on('click', '.sp-chat-msg-edit', function () {
+    $in('#sp-chat-msgs').on('click', '.sp-chat-msg-edit', function () {
         if (isOutlineChatting) return;
         const $msg = $(this).closest('.sp-chat-msg-wrap');
         const idx  = Number($msg.attr('data-idx'));
@@ -4139,7 +4139,7 @@ function injectModal() {
         startInlineEdit($msg, idx);
     });
 
-    $('#sp-chat-clear').on('click', async () => {
+    $in('#sp-chat-clear').on('click', async () => {
         if (isOutlineChatting) return;
         if (!outlineChatHistory.length) return;
         const ok = await spConfirm({
@@ -4151,19 +4151,19 @@ function injectModal() {
         if (!ok) return;
         outlineChatHistory = [];
         saveCreativeChatHistory();
-        $('#sp-chat-msgs').empty();
+        $in('#sp-chat-msgs').empty();
     });
 
     // Space chat (间)
     function doSendSpaceChat() {
-        const msg = $('#sp-space-input').val().trim();
-        if (msg && !isSpaceChatting) { const $i = $('#sp-space-input'); $i.val(''); autoGrowTextarea($i[0]); sendSpaceChat(msg); }
+        const msg = $in('#sp-space-input').val().trim();
+        if (msg && !isSpaceChatting) { const $i = $in('#sp-space-input'); $i.val(''); autoGrowTextarea($i[0]); sendSpaceChat(msg); }
     }
-    $('#sp-space-send').on('click', doSendSpaceChat);
+    $in('#sp-space-send').on('click', doSendSpaceChat);
     // 回车换行、只用按钮发送（用户偏好）——不再拦 Enter；自动长高保留。
-    $('#sp-space-input').on('input', function () { autoGrowTextarea(this); });
+    $in('#sp-space-input').on('input', function () { autoGrowTextarea(this); });
 
-    $('#sp-space-msgs').on('click', '.sp-chat-msg-delete', function () {
+    $in('#sp-space-msgs').on('click', '.sp-chat-msg-delete', function () {
         if (isSpaceChatting) return;
         const idx = Number($(this).closest('.sp-chat-msg-wrap').attr('data-idx'));
         if (!Number.isInteger(idx) || idx < 0 || idx >= spaceChatHistory.length) return;
@@ -4173,7 +4173,7 @@ function injectModal() {
     });
 
     // 逐条复制：取该条干净文本（AI 剥 widget 标签）写剪贴板，图标闪一下 ✓ 反馈。不受生成中态限制（只读操作）。
-    $('#sp-space-msgs').on('click', '.sp-chat-msg-copy', async function () {
+    $in('#sp-space-msgs').on('click', '.sp-chat-msg-copy', async function () {
         const idx = Number($(this).closest('.sp-chat-msg-wrap').attr('data-idx'));
         if (!Number.isInteger(idx) || idx < 0 || idx >= spaceChatHistory.length) return;
         const text = spaceMsgPlainText(spaceChatHistory[idx]);
@@ -4188,7 +4188,7 @@ function injectModal() {
         $btn.data('sp-copy-reset', t);
     });
 
-    $('#sp-space-msgs').on('click', '.sp-chat-msg-edit', function () {
+    $in('#sp-space-msgs').on('click', '.sp-chat-msg-edit', function () {
         if (isSpaceChatting) return;
         const $msg = $(this).closest('.sp-chat-msg-wrap');
         const idx  = Number($msg.attr('data-idx'));
@@ -4197,7 +4197,7 @@ function injectModal() {
     });
 
     // Widget apply: attach the AI-generated Event/Line to current chat's cache
-    $('#sp-space-msgs').on('click', '.sp-space-widget-apply', function () {
+    $in('#sp-space-msgs').on('click', '.sp-space-widget-apply', function () {
         const $btn = $(this);
         if ($btn.prop('disabled')) return;
         const wid = $btn.attr('data-wid');
@@ -4209,7 +4209,7 @@ function injectModal() {
         else if (stored.kind === 'era_widget') applyEraWidget(stored.body, $btn);
     });
 
-    $('#sp-space-clear').on('click', async () => {
+    $in('#sp-space-clear').on('click', async () => {
         if (isSpaceChatting) return;
         if (!spaceChatHistory.length) return;
         const ok = await spConfirm({
@@ -4221,17 +4221,17 @@ function injectModal() {
         if (!ok) return;
         spaceChatHistory = [];
         saveSpaceChatHistory();
-        $('#sp-space-msgs').empty();
+        $in('#sp-space-msgs').empty();
     });
-    $('#sp-outline-beats').on('click', '#sp-gen-outline-now', triggerGenerateOutline);
-    $('#sp-lines-list').on('click', '#sp-gen-lines-now', triggerGenerateLines);
-    $('#sp-body').on('click', '#sp-gen-schedule-now, .sp-refresh-schedule', onRegenClick);
+    $in('#sp-outline-beats').on('click', '#sp-gen-outline-now', triggerGenerateOutline);
+    $in('#sp-lines-list').on('click', '#sp-gen-lines-now', triggerGenerateLines);
+    $in('#sp-body').on('click', '#sp-gen-schedule-now, .sp-refresh-schedule', onRegenClick);
     // 点视图头部 📌：固定/取消固定当前 char（只在 char 视角出现）。名字取按钮 data-name，兜底 charViewName。
-    $('#sp-body').on('click', '.sp-point-pin-char', function () {
+    $in('#sp-body').on('click', '.sp-point-pin-char', function () {
         onCharPinToggle($(this).attr('data-name'));
     });
     // TA▾ 抽屉委托：点固定槽切人 / ✕ 移除槽 / 「添加·查看角色」开填写框。
-    $('#sp-ta-drawer').on('click', '.sp-ta-slot-del', function (e) {
+    $in('#sp-ta-drawer').on('click', '.sp-ta-slot-del', function (e) {
         e.stopPropagation();   // 别冒泡到槽本身的「切人」
         const name = $(this).attr('data-name');
         store.removePinnedChar(name);
@@ -4239,17 +4239,17 @@ function injectModal() {
         else closeTaDrawer();
         refreshCharPinIcon();   // 若删的正是当前 char，头部 📌 同步回未固定态
     });
-    $('#sp-ta-drawer').on('click', '.sp-ta-slot', function () {
+    $in('#sp-ta-drawer').on('click', '.sp-ta-slot', function () {
         activateCharView($(this).attr('data-name'));
     });
-    $('#sp-ta-drawer').on('click', '.sp-ta-add', function () {
+    $in('#sp-ta-drawer').on('click', '.sp-ta-add', function () {
         closeTaDrawer();
         switchToCharView();
     });
-    $('#sp-outline-beats').on('click', '.sp-refresh-outline', triggerGenerateOutline);
+    $in('#sp-outline-beats').on('click', '.sp-refresh-outline', triggerGenerateOutline);
     // 手选当前剧情点：写游标 → 重渲染（高亮跟着走）→ 刷注入（开着自动注入才真注入，否则只清）。
     // 再点已选中的节点 = 取消狙击（游标→0：清高亮、清注入、停自动推进判定，直到再次手选）。
-    $('#sp-outline-beats').on('click', '.sp-beat-setcur', function () {
+    $in('#sp-outline-beats').on('click', '.sp-beat-setcur', function () {
         const idx = Number($(this).attr('data-idx'));
         if (!Number.isFinite(idx) || idx < 1) return;
         const next = (getOutlineCursor() === idx) ? 0 : idx;
@@ -4259,7 +4259,7 @@ function injectModal() {
         refreshOutlineInjection();
     });
     // 面·逐 step 复制：取该节点干净文本写剪贴板，图标闪 ✓ 反馈（只读操作，不受生成态限制；照抄间的 .sp-chat-msg-copy）。
-    $('#sp-outline-beats').on('click', '.sp-beat-copy', async function () {
+    $in('#sp-outline-beats').on('click', '.sp-beat-copy', async function () {
         const text = _copyTexts[$(this).data('cid')];
         if (text == null) return;
         const $btn = $(this);
@@ -4273,34 +4273,57 @@ function injectModal() {
         $btn.data('sp-copy-reset', t);
     });
     // Refresh lines — button appears in both panel toolbar and inline block
-    $('#sp-lines-list, #chat').on('click', '.sp-refresh-lines, .sp-inline-refresh-lines', function (e) {
+    // 双绑拆分：面板行在 shadow 内走 $in；楼内行在 light DOM #chat 保持原查询。
+    $in('#sp-lines-list').on('click', '.sp-refresh-lines, .sp-inline-refresh-lines', function (e) {
+        e.stopPropagation();   // inline button lives in <summary>, don't toggle details
+        triggerGenerateLines();
+    });
+    $('#chat').on('click', '.sp-refresh-lines, .sp-inline-refresh-lines', function (e) {
         e.stopPropagation();   // inline button lives in <summary>, don't toggle details
         triggerGenerateLines();
     });
     // Advance lines — button appears in both panel toolbar and inline block
-    $('#sp-lines-list, #chat').on('click', '.sp-advance-lines, .sp-inline-advance-lines', function (e) {
+    $in('#sp-lines-list').on('click', '.sp-advance-lines, .sp-inline-advance-lines', function (e) {
+        e.stopPropagation();   // inline button lives in <summary>, don't toggle details
+        triggerAdvanceLines();
+    });
+    $('#chat').on('click', '.sp-advance-lines, .sp-inline-advance-lines', function (e) {
         e.stopPropagation();   // inline button lives in <summary>, don't toggle details
         triggerAdvanceLines();
     });
     // Refresh 冷知识（虚线）— 独立键，放冷知识自己的区块内（主面板 + 楼内块）
-    $('#sp-lines-list, #chat').on('click', '.sp-refresh-dashed, .sp-inline-refresh-dashed', function (e) {
+    $in('#sp-lines-list').on('click', '.sp-refresh-dashed, .sp-inline-refresh-dashed', function (e) {
+        e.stopPropagation();
+        runGenerateDashed();
+    });
+    $('#chat').on('click', '.sp-refresh-dashed, .sp-inline-refresh-dashed', function (e) {
         e.stopPropagation();
         runGenerateDashed();
     });
     // Per-line delete (× on each line card, panel + inline). No full-clear button anymore.
-    $('#sp-lines-list, #chat').on('click', '.sp-line-del-one', function (e) {
+    $in('#sp-lines-list').on('click', '.sp-line-del-one', function (e) {
+        e.stopPropagation();
+        const idx = Number($(this).attr('data-line-idx'));
+        if (Number.isInteger(idx)) triggerDeleteOneLine(idx);
+    });
+    $('#chat').on('click', '.sp-line-del-one', function (e) {
         e.stopPropagation();
         const idx = Number($(this).attr('data-line-idx'));
         if (Number.isInteger(idx)) triggerDeleteOneLine(idx);
     });
     // Per-line lock/unlock toggle (panel only — inline block shows a read-only marker).
-    $('#sp-lines-list, #chat').on('click', '.sp-line-pin-toggle', function (e) {
+    $in('#sp-lines-list').on('click', '.sp-line-pin-toggle', function (e) {
+        e.stopPropagation();
+        const idx = Number($(this).attr('data-line-idx'));
+        if (Number.isInteger(idx)) triggerToggleLinePin(idx);
+    });
+    $('#chat').on('click', '.sp-line-pin-toggle', function (e) {
         e.stopPropagation();
         const idx = Number($(this).attr('data-line-idx'));
         if (Number.isInteger(idx)) triggerToggleLinePin(idx);
     });
     // Per-point lock/unlock toggle (schedule panel only; pin 存 raw、机制对齐线，无楼内块)。
-    $('#sp-body').on('click', '.sp-point-pin-toggle', function (e) {
+    $in('#sp-body').on('click', '.sp-point-pin-toggle', function (e) {
         e.stopPropagation();
         const day = $(this).attr('data-day');
         const idx = Number($(this).attr('data-ev'));
@@ -4308,7 +4331,14 @@ function injectModal() {
         triggerTogglePointPin(day === 'future' ? 'future' : Number(day), idx);
     });
     // Per-point delete (× on each event, 点面板 + 楼内块抽屉；对齐线的 .sp-line-del-one 双绑 #sp-lines-list/#chat)。
-    $('#sp-body, #chat').on('click', '.sp-sch-del-one', function (e) {
+    $in('#sp-body').on('click', '.sp-sch-del-one', function (e) {
+        e.stopPropagation();
+        const day = $(this).attr('data-day');
+        const idx = Number($(this).attr('data-ev'));
+        if (!Number.isInteger(idx)) return;
+        triggerDeletePointEvent(day === 'future' ? 'future' : Number(day), idx);
+    });
+    $('#chat').on('click', '.sp-sch-del-one', function (e) {
         e.stopPropagation();
         const day = $(this).attr('data-day');
         const idx = Number($(this).attr('data-ev'));
@@ -4368,29 +4398,29 @@ function injectModal() {
     });
 
     // 点/线面板底部「和间聊聊」引导 → 一键切到间（间能把讨论落地成点/线）
-    $('#sp-body, #sp-lines-list').on('click', '.sp-jump-link', () => $('.sp-view-btn[data-view="space"]').trigger('click'));
+    $in('#sp-body, #sp-lines-list').on('click', '.sp-jump-link', () => $in('.sp-view-btn[data-view="space"]').trigger('click'));
 
     // Abort buttons (event delegation) — 即时撤下 UI，见 abort*Gen
-    $('#sp-body').on('click', '#sp-abort-generate', abortScheduleGen);
-    $('#sp-outline-beats').on('click', '#sp-abort-outline', abortOutlineGen);
-    $('#sp-lines-list').on('click', '#sp-abort-lines', abortLinesGen);
+    $in('#sp-body').on('click', '#sp-abort-generate', abortScheduleGen);
+    $in('#sp-outline-beats').on('click', '#sp-abort-outline', abortOutlineGen);
+    $in('#sp-lines-list').on('click', '#sp-abort-lines', abortLinesGen);
 
     // ── 棱（小剧场）事件（全部委托到 #sp-theater-wrap，内容动态重渲染）──
-    const $theater = $('#sp-theater-wrap');
+    const $theater = $in('#sp-theater-wrap');
     // 模板点选（内联列表）→ 内容填入输入框（可二次编辑），并收起选择器
     $theater.on('click', '.sp-theater-tpl-pick', function () {
         const uid = $(this).data('uid');
         const tpl = _theaterTemplateCache.find(t => String(t.uid) === String(uid));
         if (tpl) {
-            $('#sp-theater-input').val(tpl.text);
-            $('#sp-theater-tpl-picker').removeAttr('open');
-            $('#sp-theater-input').trigger('focus');
+            $in('#sp-theater-input').val(tpl.text);
+            $in('#sp-theater-tpl-picker').removeAttr('open');
+            $in('#sp-theater-input').trigger('focus');
         }
     });
     // 生成 / 重新生成
     $theater.on('click', '.sp-theater-generate', function () {
         if (isGeneratingTheater) return;
-        const input = String($('#sp-theater-input').val() || '').trim();
+        const input = String($in('#sp-theater-input').val() || '').trim();
         if (!input) { showToast('请先填写小剧场需求', null, true); return; }
         runGenerateTheater(input);
     });
@@ -4406,13 +4436,13 @@ function injectModal() {
         const pick = pool[Math.floor(Math.random() * pool.length)];
         const text = String(pick?.text || '').trim();
         if (!text) { showToast('随机到的模板内容为空，去设置补一下内容', null, true); return; }
-        $('#sp-theater-input').val(text);               // 让用户看到抽中了什么，也便于中止后二次编辑
-        $('#sp-theater-tpl-picker').removeAttr('open'); // 收起模板选择器
+        $in('#sp-theater-input').val(text);               // 让用户看到抽中了什么，也便于中止后二次编辑
+        $in('#sp-theater-tpl-picker').removeAttr('open'); // 收起模板选择器
         runGenerateTheater(text);
     });
     $theater.on('click', '.sp-theater-regen', function () {
         if (isGeneratingTheater) return;
-        const input = String($('#sp-theater-input').val() || '').trim();
+        const input = String($in('#sp-theater-input').val() || '').trim();
         if (!input) { showToast('改一下输入再重新生成', null, true); return; }
         runGenerateTheater(input);
     });
@@ -4420,7 +4450,7 @@ function injectModal() {
     $theater.on('click', '.sp-theater-back', renderTheaterPanel);
     // 预览框展开 / 收起
     $theater.on('click', '.sp-theater-fullscreen-btn', function () {
-        const el = document.getElementById('sp-theater-result');
+        const el = document.inEl('#sp-theater-result');
         if (!el) return;
         const on = el.classList.toggle('sp-theater-fullscreen');
         // 全屏时强制展开（去折叠），退出时按原逻辑重新判定是否需要折叠
@@ -4433,9 +4463,9 @@ function injectModal() {
             if (!_theaterFsEsc) {
                 _theaterFsEsc = (ev) => {
                     if (ev.key === 'Escape') {
-                        const r = document.getElementById('sp-theater-result');
+                        const r = document.inEl('#sp-theater-result');
                         if (r && r.classList.contains('sp-theater-fullscreen')) {
-                            $('.sp-theater-fullscreen-btn').trigger('click');
+                            $in('.sp-theater-fullscreen-btn').trigger('click');
                         }
                     }
                 };
@@ -4447,7 +4477,7 @@ function injectModal() {
     });
 
     $theater.on('click', '.sp-theater-fold-toggle', function () {
-        const el = document.getElementById('sp-theater-result');
+        const el = document.inEl('#sp-theater-result');
         if (!el) return;
         const collapsed = el.classList.toggle('sp-theater-result-collapsed');
         const $btn = $(this);
@@ -4459,7 +4489,7 @@ function injectModal() {
     // 永久保存当前结果（带标题）
     $theater.on('click', '.sp-theater-save', function () {
         if (!theaterCurrentPiece) return;
-        theaterCurrentPiece.title = String($('#sp-theater-title').val() || '').trim();
+        theaterCurrentPiece.title = String($in('#sp-theater-title').val() || '').trim();
         // 同步更新草稿里的同 id 条目（标题），再升永久
         syncDraftMeta(theaterCurrentPiece);
         theater.promoteToSaved(theaterCurrentPiece);
@@ -4474,7 +4504,7 @@ function injectModal() {
             theaterCurrentPiece = piece;
             renderTheaterPanel();
             // 结果区在顶部、列表在底部——查看后把滚动条拉回顶部，否则像"没反应"
-            $('#sp-theater-body').scrollTop(0);
+            $in('#sp-theater-body').scrollTop(0);
         }
     });
     $theater.on('click', '.sp-theater-promote', function () {
@@ -4496,7 +4526,7 @@ function injectModal() {
     });
 
     // ── 锚（收藏楼层）事件（委托到 #sp-anchor-wrap，三层抽屉动态重渲染）──
-    const $anchor = $('#sp-anchor-wrap');
+    const $anchor = $in('#sp-anchor-wrap');
     $anchor.on('click', '.sp-anchor-char-card', function () {
         _anchorView = { level: 'chats', charName: $(this).attr('data-char'), chatId: null, itemId: null };
         renderAnchorPanel();
@@ -4650,7 +4680,7 @@ function injectModal() {
     });
 
     // ── 历（日历）事件（委托到 #sp-almanac-wrap，两个 sheet 动态重渲染）──
-    const $almanac = $('#sp-almanac-wrap');
+    const $almanac = $in('#sp-almanac-wrap');
     $almanac.on('click', '.sp-alm-sheet-btn', function () { almSetSheet($(this).attr('data-sheet')); });
     // 暗账页：自动标注开关 / 间隔 / 立即标注。委托到 #sp-almanac-wrap，随 sheet 重渲染存活。
     $almanac.on('change', '.sp-ledger-auto-toggle', function () {
@@ -4775,15 +4805,15 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-today-edit', function () {
         _almTodayEditing = true;
         renderAlmanacPanel();
-        setTimeout(() => $('#sp-alm-today-month').trigger('focus'), 30);
+        setTimeout(() => $in('#sp-alm-today-month').trigger('focus'), 30);
     });
     $almanac.on('click', '.sp-alm-today-cancel', function () { _almTodayEditing = false; renderAlmanacPanel(); });
     $almanac.on('click', '.sp-alm-today-save', function () {
         if (storyClockEnabled()) { _almTodayEditing = false; renderAlmanacPanel(); return; }   // 戳开时手动钉禁用（防陈旧 DOM 误触）
         const key = charStableKey(getContext());
         if (!key) { showToast('当前没有角色卡，无法钉日期', null, true); return; }
-        const mo = parseInt($('#sp-alm-today-month').val(), 10);
-        const da = parseInt($('#sp-alm-today-day').val(), 10);
+        const mo = parseInt($in('#sp-alm-today-month').val(), 10);
+        const da = parseInt($in('#sp-alm-today-day').val(), 10);
         const _tcal = loadCalDesc();
         const _tmc = calMonthCount(_tcal);
         if (!(mo >= 1 && mo <= _tmc)) { showToast(`请填 1-${_tmc} 月`, null, true); return; }
@@ -4814,7 +4844,7 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-cal-detail .sp-alm-item', function (e) {
         if ($(e.target).closest('button').length) return;   // 不劫持锁/编辑/删除按钮
         const wasLinked = $(this).hasClass('sp-alm-item-linked');
-        $('#sp-almanac-wrap .sp-alm-item-linked').removeClass('sp-alm-item-linked');
+        $in('#sp-almanac-wrap .sp-alm-item-linked').removeClass('sp-alm-item-linked');
         almClearHilite();
         if (wasLinked) return;   // 再点=取消高亮
         $(this).addClass('sp-alm-item-linked');
@@ -4828,8 +4858,8 @@ function injectModal() {
         if (_almanacCalDay != null) {
             _almanacCalDay = null;
             renderAlmanacPanel();   // 重渲染顺带把联动高亮的 class 冲掉
-        } else if ($('#sp-almanac-wrap .sp-alm-item-linked').length) {
-            $('#sp-almanac-wrap .sp-alm-item-linked').removeClass('sp-alm-item-linked');
+        } else if ($in('#sp-almanac-wrap .sp-alm-item-linked').length) {
+            $in('#sp-almanac-wrap .sp-alm-item-linked').removeClass('sp-alm-item-linked');
             almClearHilite();       // 只清高亮 class，不重渲，避免闪
         }
     });
@@ -4911,12 +4941,12 @@ function injectModal() {
     $almanac.on('input', '.sp-alm-manager-edit-fields input', function () {
         if (!_almanacManager?.error) return;
         _almanacManager.error = '';
-        $('#sp-almanac-wrap .sp-alm-manager-error').remove();
+        $in('#sp-almanac-wrap .sp-alm-manager-error').remove();
     });
     $almanac.on('click', '.sp-alm-manager-edit-save', async function () {
         _almanacManager.draft = readCalendarDraftForm();
         _almanacManager.error = '';
-        $('#sp-almanac-wrap .sp-alm-manager-error').remove();
+        $in('#sp-almanac-wrap .sp-alm-manager-error').remove();
         const checked = validateCalendarDesc(_almanacManager.draft);
         if (!checked.value) {
             showToast(checked.error, null, true);
@@ -5040,13 +5070,13 @@ function injectModal() {
     });
 
     // Tab switching: sidebar (schedule/outline/lines) + sub-toggle (user/char)
-    $(`#${MODAL_ID}`).on('click', '.sp-view-btn', function () {
+    $in('.sp-sidebar').on('click', '.sp-view-btn', function () {
         // 点生成不再冻结整个侧栏：切模块(历/线/面/棱/锚)随时可用——点正文按状态重建（下方 schedule 分支），
         // 生成完成走 stillOnView 守卫写进(可能隐藏的) #sp-body，切走不被覆盖、切回自动补正。
         // 仅「我/TA」子切换在点生成途中仍挡（点按视角生成，中途换视角无意义）。
         const view = $(this).data('view');
         if (!view) return;
-        $('#sp-module-intro-pop').hide();   // 切模块即收起介绍气泡
+        $in('#sp-module-intro-pop').hide();   // 切模块即收起介绍气泡
 
         const $btn      = $(this);
         const isSideTab = $btn.hasClass('sp-side-tab');
@@ -5065,11 +5095,11 @@ function injectModal() {
 
         // Update active state within the button's group
         if (isSideTab) {
-            $('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
+            $in('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
             $btn.addClass('sp-view-active');
             _lastMainView = view;   // 记住当前模块视图，供下次打开面板时恢复（同 chat）
         } else if (isSubBtn) {
-            $('.sp-sub-btn').removeClass('sp-view-active');
+            $in('.sp-sub-btn').removeClass('sp-view-active');
             $btn.addClass('sp-view-active');
         }
 
@@ -5083,15 +5113,15 @@ function injectModal() {
                 theaterMode = false;
                 anchorMode = false;
                 almanacMode = false;
-                $('#sp-body').hide();
-                $('#sp-lines-wrap').hide();
-                $('#sp-space-wrap').hide();
-                $('#sp-theater-wrap').hide();
-                $('#sp-anchor-wrap').hide();
-                $('#sp-almanac-wrap').hide();
-                $('#sp-outline-wrap').css('display', 'flex');
-                $('#sp-sub-toggle').hide();
-                $('#sp-content-title').text('面');
+                $in('#sp-body').hide();
+                $in('#sp-lines-wrap').hide();
+                $in('#sp-space-wrap').hide();
+                $in('#sp-theater-wrap').hide();
+                $in('#sp-anchor-wrap').hide();
+                $in('#sp-almanac-wrap').hide();
+                $in('#sp-outline-wrap').css('display', 'flex');
+                $in('#sp-sub-toggle').hide();
+                $in('#sp-content-title').text('面');
                 loadCreativeChatHistory();
                 updateCreativeChatModeUI();
                 renderCreativeChatHistory();
@@ -5113,15 +5143,15 @@ function injectModal() {
                 theaterMode = false;
                 anchorMode = false;
                 almanacMode = false;
-                $('#sp-body').hide();
-                $('#sp-outline-wrap').hide();
-                $('#sp-space-wrap').hide();
-                $('#sp-theater-wrap').hide();
-                $('#sp-anchor-wrap').hide();
-                $('#sp-almanac-wrap').hide();
-                $('#sp-lines-wrap').css('display', 'flex');
-                $('#sp-sub-toggle').hide();
-                $('#sp-content-title').text('线');
+                $in('#sp-body').hide();
+                $in('#sp-outline-wrap').hide();
+                $in('#sp-space-wrap').hide();
+                $in('#sp-theater-wrap').hide();
+                $in('#sp-anchor-wrap').hide();
+                $in('#sp-almanac-wrap').hide();
+                $in('#sp-lines-wrap').css('display', 'flex');
+                $in('#sp-sub-toggle').hide();
+                $in('#sp-content-title').text('线');
                 // 生成在途时切回来：重建 loading，别 fallback 到"生成线"空态误导用户
                 if (isGeneratingLines) {
                     setLinesBody(loadingHtml('正在推演线', 'sp-abort-lines'));
@@ -5140,16 +5170,16 @@ function injectModal() {
                 theaterMode = false;
                 anchorMode = false;
                 almanacMode = false;
-                $('#sp-body').hide();
-                $('#sp-outline-wrap').hide();
-                $('#sp-lines-wrap').hide();
-                $('#sp-theater-wrap').hide();
-                $('#sp-anchor-wrap').hide();
-                $('#sp-almanac-wrap').hide();
-                $('#sp-space-wrap').css('display', 'flex');
-                $('#sp-sub-toggle').hide();
-                $('#sp-content-title').text('间');
-                $('#sp-space-input').attr('placeholder', getSpaceChatPlaceholder());
+                $in('#sp-body').hide();
+                $in('#sp-outline-wrap').hide();
+                $in('#sp-lines-wrap').hide();
+                $in('#sp-theater-wrap').hide();
+                $in('#sp-anchor-wrap').hide();
+                $in('#sp-almanac-wrap').hide();
+                $in('#sp-space-wrap').css('display', 'flex');
+                $in('#sp-sub-toggle').hide();
+                $in('#sp-content-title').text('间');
+                $in('#sp-space-input').attr('placeholder', getSpaceChatPlaceholder());
                 loadSpaceChatHistory();
                 renderSpaceChatHistory();
                 return;
@@ -5162,15 +5192,15 @@ function injectModal() {
                 spaceMode = false;
                 anchorMode = false;
                 almanacMode = false;
-                $('#sp-body').hide();
-                $('#sp-outline-wrap').hide();
-                $('#sp-lines-wrap').hide();
-                $('#sp-space-wrap').hide();
-                $('#sp-anchor-wrap').hide();
-                $('#sp-almanac-wrap').hide();
-                $('#sp-theater-wrap').css('display', 'flex');
-                $('#sp-sub-toggle').hide();
-                $('#sp-content-title').text('棱');
+                $in('#sp-body').hide();
+                $in('#sp-outline-wrap').hide();
+                $in('#sp-lines-wrap').hide();
+                $in('#sp-space-wrap').hide();
+                $in('#sp-anchor-wrap').hide();
+                $in('#sp-almanac-wrap').hide();
+                $in('#sp-theater-wrap').css('display', 'flex');
+                $in('#sp-sub-toggle').hide();
+                $in('#sp-content-title').text('棱');
                 // 打开棱面板即预取剧情上下文（世界书/人设，异步），供写作 agent 用
                 refreshTheaterStoryContext().catch(() => {});
                 if (isGeneratingTheater) {
@@ -5191,15 +5221,15 @@ function injectModal() {
                 spaceMode = false;
                 theaterMode = false;
                 almanacMode = false;
-                $('#sp-body').hide();
-                $('#sp-outline-wrap').hide();
-                $('#sp-lines-wrap').hide();
-                $('#sp-space-wrap').hide();
-                $('#sp-theater-wrap').hide();
-                $('#sp-almanac-wrap').hide();
-                $('#sp-anchor-wrap').css('display', 'flex');
-                $('#sp-sub-toggle').hide();
-                $('#sp-content-title').text('坐标');
+                $in('#sp-body').hide();
+                $in('#sp-outline-wrap').hide();
+                $in('#sp-lines-wrap').hide();
+                $in('#sp-space-wrap').hide();
+                $in('#sp-theater-wrap').hide();
+                $in('#sp-almanac-wrap').hide();
+                $in('#sp-anchor-wrap').css('display', 'flex');
+                $in('#sp-sub-toggle').hide();
+                $in('#sp-content-title').text('坐标');
                 renderAnchorPanel();
                 return;
             }
@@ -5211,29 +5241,29 @@ function injectModal() {
                 spaceMode = false;
                 theaterMode = false;
                 anchorMode = false;
-                $('#sp-body').hide();
-                $('#sp-outline-wrap').hide();
-                $('#sp-lines-wrap').hide();
-                $('#sp-space-wrap').hide();
-                $('#sp-theater-wrap').hide();
-                $('#sp-anchor-wrap').hide();
-                $('#sp-almanac-wrap').css('display', 'flex');
-                $('#sp-sub-toggle').hide();
-                $('#sp-content-title').text('轴');
+                $in('#sp-body').hide();
+                $in('#sp-outline-wrap').hide();
+                $in('#sp-lines-wrap').hide();
+                $in('#sp-space-wrap').hide();
+                $in('#sp-theater-wrap').hide();
+                $in('#sp-anchor-wrap').hide();
+                $in('#sp-almanac-wrap').css('display', 'flex');
+                $in('#sp-sub-toggle').hide();
+                $in('#sp-content-title').text('轴');
                 renderAlmanacPanel();
                 return;
             }
             // view === 'schedule' — leaving outline/lines/space/theater/anchor/almanac, restore body
-            if (outlineMode) { outlineMode = false; $('#sp-outline-wrap').hide(); }
-            if (linesMode)   { linesMode   = false; $('#sp-lines-wrap').hide(); }
-            if (spaceMode)   { spaceMode   = false; $('#sp-space-wrap').hide(); }
-            if (theaterMode) { theaterMode = false; $('#sp-theater-wrap').hide(); }
-            if (anchorMode)  { anchorMode  = false; $('#sp-anchor-wrap').hide(); }
-            if (almanacMode) { almanacMode = false; $('#sp-almanac-wrap').hide(); }
-            $('#sp-body').show();
-            $('#sp-sub-toggle').show();
-            $('#sp-content-title').text('点');
-            $('.sp-sub-btn').removeClass('sp-view-active');
+            if (outlineMode) { outlineMode = false; $in('#sp-outline-wrap').hide(); }
+            if (linesMode)   { linesMode   = false; $in('#sp-lines-wrap').hide(); }
+            if (spaceMode)   { spaceMode   = false; $in('#sp-space-wrap').hide(); }
+            if (theaterMode) { theaterMode = false; $in('#sp-theater-wrap').hide(); }
+            if (anchorMode)  { anchorMode  = false; $in('#sp-anchor-wrap').hide(); }
+            if (almanacMode) { almanacMode = false; $in('#sp-almanac-wrap').hide(); }
+            $in('#sp-body').show();
+            $in('#sp-sub-toggle').show();
+            $in('#sp-content-title').text('点');
+            $in('.sp-sub-btn').removeClass('sp-view-active');
             $(`.sp-sub-btn[data-view="${currentView}"]`).addClass('sp-view-active');
             updateTaTriggerLabel();   // 回点视图：TA▾ 标签跟随当前视角（char 显名 / user 回落 TA）
             // 生成在途/切走再切回：从状态重建正文（镜像 线/面/棱），别露上次残留或僵尸转圈
@@ -5255,21 +5285,21 @@ function injectModal() {
         }
     });
 
-    $('#sp-cfg-save').on('click',      saveSettings);
-    $('#sp-key-toggle').on('click',    toggleKeyVisibility);
-    $('#sp-fetch-models').on('click',  fetchModels);
+    $in('#sp-cfg-save').on('click',      saveSettings);
+    $in('#sp-key-toggle').on('click',    toggleKeyVisibility);
+    $in('#sp-fetch-models').on('click',  fetchModels);
     bindApiPresetEvents();
     renderApiPresetList();
     renderUtilityPresetList();
     // 插件总开关：立刻生效——关则全隐身（藏球/清楼内块/断后台/撤注入），开则按各子开关恢复。
     // 用 stSaveSettings 立即落盘，避免用户切完立刻刷新丢状态（与 customPrompt 同理）。
-    $('#sp-plugin-enabled').on('change', function () {
+    $in('#sp-plugin-enabled').on('change', function () {
         getSettings().pluginEnabled = this.checked;
         stSaveSettings();
         applyPluginEnabled(this.checked);
     });
     // 潜伏注入总闸：立刻生效——重设线 / 面 / 暗历三路注入（关时内部各自清空）。
-    $('#sp-inject-enabled').on('change', function () {
+    $in('#sp-inject-enabled').on('change', function () {
         getSettings().injectEnabled = this.checked;
         saveSettingsDebounced();
         refreshLinesInjection();
@@ -5278,7 +5308,7 @@ function injectModal() {
     });
     // Master switch: apply immediately so the user sees inline blocks appear/
     // disappear the moment they toggle, not on next AI message.
-    $('#sp-lines-enabled').on('change', function () {
+    $in('#sp-lines-enabled').on('change', function () {
         getSettings().linesEnabled = this.checked;
         saveSettingsDebounced();
         // Refresh chat area: on → back-fill latest floor with block; off → clear all
@@ -5286,37 +5316,37 @@ function injectModal() {
     });
     // 线·楼内块显隐开关（独立于线主开关 linesEnabled）：立刻生效。渲染窗口按段开关重算所有窗内楼。
     // 线的推进与潜伏注入不受影响（refreshLinesInjection 另在 backfill/sync 路径）。
-    $('#sp-lines-inline-enabled').on('change', function () {
+    $in('#sp-lines-inline-enabled').on('change', function () {
         getSettings().linesInlineEnabled = this.checked;
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
     // 历·七天条开关：立刻生效。段开关变 → 重算所有窗内楼（每层楼的历段随之显/隐）。
-    $('#sp-almanac-inline-enabled').on('change', function () {
+    $in('#sp-almanac-inline-enabled').on('change', function () {
         getSettings().almanacInlineEnabled = this.checked;
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
     // 点·日程条开关：立刻生效。段开关变 → 重算所有窗内楼。
-    $('#sp-schedule-inline-enabled').on('change', function () {
+    $in('#sp-schedule-inline-enabled').on('change', function () {
         getSettings().scheduleInlineEnabled = this.checked;
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
     // 标注池·显隐开关（AI 楼）：只控这只读回显框显/隐，与注入 ledgerInject 解耦（关它注入照旧、只是不回显）。
-    $('#sp-ledger-inline-enabled').on('change', function () {
+    $in('#sp-ledger-inline-enabled').on('change', function () {
         getSettings().ledgerInlineEnabled = this.checked;
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
     // 召回·显隐开关（用户楼）：独立于标注池，只控用户楼召回框显/隐；与注入解耦。
-    $('#sp-recall-inline-enabled').on('change', function () {
+    $in('#sp-recall-inline-enabled').on('change', function () {
         getSettings().recallInlineEnabled = this.checked;
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
     // 统一框渲染深度：0=跟随酒馆助手（读不到再兜底），正数=用它。改了立即重算窗口。
-    $('#sp-inline-render-depth').on('change', function () {
+    $in('#sp-inline-render-depth').on('change', function () {
         const n = Math.max(0, Math.floor(Number(this.value) || 0));
         getSettings().inlineRenderDepth = n;
         this.value = String(n);   // 规范化回填（负数/小数 → 0/取整）
@@ -5324,21 +5354,21 @@ function injectModal() {
         refreshInlineWindow(true);
     });
     // 潜伏注入开关：立刻生效——on → 注入当前活跃线；off → 清空扩展 prompt
-    $('#sp-lines-inject').on('change', function () {
+    $in('#sp-lines-inject').on('change', function () {
         getSettings().linesInject = this.checked;
         saveSettingsDebounced();
         refreshLinesInjection();
     });
     // 时间戳开关：on → 立即注入首尾戳指令；off → 清空扩展 prompt（下楼主模型就不再被要求打戳）。
     // 面板开着则重渲染历，让「时间戳」只读行随之出现/消失（读回不依赖开关，但显示随开关走更直观）。
-    $('#sp-storyclock-enabled').on('change', function () {
+    $in('#sp-storyclock-enabled').on('change', function () {
         getSettings().storyClockEnabled = this.checked;
         saveSettingsDebounced();
         refreshStoryClockInjection();
         if (almanacMode) renderAlmanacPanel();
     });
     // 虚线开关：off → 清掉已存冷知识；面板开着则刷新那一块（不主动生成，等下次线生成时跟随）
-    $('#sp-dashed-enabled').on('change', function () {
+    $in('#sp-dashed-enabled').on('change', function () {
         getSettings().dashedEnabled = this.checked;
         saveSettingsDebounced();
         if (!this.checked) removeStore(getDashedCacheKey());
@@ -5346,7 +5376,7 @@ function injectModal() {
         syncLatestInlineBlock();   // 虚线已折进线块 → 重挂合并块（off 时无内容自然不显示）
     });
     // 大纲自动注入（面）开关：on → 按当前大纲+游标立即注入；off → 清空扩展 prompt（游标留 chat_metadata，再开即续）
-    $('#sp-outline-inject').on('change', function () {
+    $in('#sp-outline-inject').on('change', function () {
         getSettings().outlineInject = this.checked;
         saveSettingsDebounced();
         outlineJudgeMsgCounter = 0;   // 开/关都重置计数，避免残留计数导致刚开就判
@@ -5355,7 +5385,7 @@ function injectModal() {
         if (outlineMode) { const s = readStore(getOutlineCacheKey()); if (s?.raw) { cachedOutline = renderOutline(s.raw, getOutlineCursor()); setOutlineBody(cachedOutline); } }
     });
     // 大纲判定间隔：改完即重新计数（避免旧计数立刻触发判定）
-    $('#sp-outline-judge-interval').on('change', function () {
+    $in('#sp-outline-judge-interval').on('change', function () {
         const n = Math.max(1, parseInt(this.value, 10) || 3);
         getSettings().outlineJudgeInterval = n;
         this.value = String(n);
@@ -5363,13 +5393,13 @@ function injectModal() {
         outlineJudgeMsgCounter = 0;
     });
     // 历·自动确认当前日期 开关：改完重置历计数（避免残留计数刚开就判）
-    $('#sp-almanac-autodetect').on('change', function () {
+    $in('#sp-almanac-autodetect').on('change', function () {
         getSettings().almanacAutoDetect = this.checked;
         saveSettingsDebounced();
         almanacJudgeCounter = 0;
     });
     // 历·确认间隔：改完重新计数
-    $('#sp-almanac-judge-interval').on('change', function () {
+    $in('#sp-almanac-judge-interval').on('change', function () {
         const n = Math.max(1, parseInt(this.value, 10) || 3);
         getSettings().almanacJudgeInterval = n;
         this.value = String(n);
@@ -5381,61 +5411,61 @@ function injectModal() {
         const s = Math.min(1.3, Math.max(0.8, Math.round(v * 20) / 20));
         getSettings().uiScale = s;
         document.documentElement.style.setProperty('--sp-scale', String(s));
-        $('#sp-uiscale-val').text(Math.round(s * 100) + '%');
+        $in('#sp-uiscale-val').text(Math.round(s * 100) + '%');
         saveSettingsDebounced();
     }
-    $('#sp-uiscale-minus').on('click', () => applyUiScale((Number(getSettings().uiScale) || 1) - 0.05));
-    $('#sp-uiscale-plus').on('click',  () => applyUiScale((Number(getSettings().uiScale) || 1) + 0.05));
+    $in('#sp-uiscale-minus').on('click', () => applyUiScale((Number(getSettings().uiScale) || 1) - 0.05));
+    $in('#sp-uiscale-plus').on('click',  () => applyUiScale((Number(getSettings().uiScale) || 1) + 0.05));
     // 点·后台自动跟随「今天」：只写值。点无独立判定车，跟随经 runAnchorAftermath 门控，无计数器可重置。
-    $('#sp-schedule-autodetect').on('change', function () {
+    $in('#sp-schedule-autodetect').on('change', function () {
         getSettings().scheduleAutoDetect = this.checked;
         saveSettingsDebounced();
     });
     // 暗历·潜伏注入开关（原挂暗历 sheet，2.x 挪进设置「轴」区）：on → 按当前账+场景立即注入；off → 清空扩展 prompt + 回显。
-    $('#sp-ledger-inject').on('change', function () {
+    $in('#sp-ledger-inject').on('change', function () {
         getSettings().ledgerInject = this.checked;
         saveSettingsDebounced();
         refreshLedgerInjection();
         refreshInlineWindow(true);   // 回显框随注入集变——开/关即时刷窗，让「标注打捞」出现/消失
     });
     // 楼内渲染框·主开关：关 → 整框全清、停观察；开 → 重算窗口挂回。三个子开关只在它开时才起效。
-    $('#sp-inline-render-enabled').on('change', function () {
+    $in('#sp-inline-render-enabled').on('change', function () {
         getSettings().inlineRenderEnabled = this.checked;
         saveSettingsDebounced();
         refreshInlineWindow(true);
     });
     // 通知提醒·三档：off 全静音 / lite 仅手动生成·刷新 / full 另在后台自动改动时提示
-    $(`#${MODAL_ID} input[name="sp-notify-mode"]`).on('change', function () {
-        getSettings().notifyMode = $(`#${MODAL_ID} input[name="sp-notify-mode"]:checked`).val();
+    $in('input[name="sp-notify-mode"]').on('change', function () {
+        getSettings().notifyMode = $in('input[name="sp-notify-mode"]:checked').val();
         saveSettingsDebounced();
     });
     // 锚：楼层收藏入口开关——on → 补按钮；off → 清掉所有已注入按钮
-    $('#sp-anchor-inline-btn').on('change', function () {
+    $in('#sp-anchor-inline-btn').on('change', function () {
         getSettings().anchorInlineBtn = this.checked;
         saveSettingsDebounced();
         scanAnchorButtons();
     });
     // Inline model list: pick an item → write to input + refresh active highlight
-    $('#sp-model-list-items').on('click', '.sp-model-list-item', function () {
+    $in('#sp-model-list-items').on('click', '.sp-model-list-item', function () {
         const model = $(this).attr('data-model');
-        $('#sp-cfg-model').val(model);
-        $('.sp-model-list-item').removeClass('sp-model-list-item-active');
+        $in('#sp-cfg-model').val(model);
+        $in('.sp-model-list-item').removeClass('sp-model-list-item-active');
         $(this).addClass('sp-model-list-item-active');
     });
     // Inline model list: live-filter as user types
-    $('#sp-model-list-search').on('input', function () {
+    $in('#sp-model-list-search').on('input', function () {
         renderModelList(_cachedModels, $(this).val());
     });
-    $('#sp-cfg-key')
-        .on('focus', () => { const r = $('#sp-cfg-key').data('real'); if (r) $('#sp-cfg-key').val(r); })
-        .on('blur',  () => { const r = $('#sp-cfg-key').val().trim() || $('#sp-cfg-key').data('real') || ''; if (r) $('#sp-cfg-key').data('real', r).val(maskKey(r)); });
+    $in('#sp-cfg-key')
+        .on('focus', () => { const r = $in('#sp-cfg-key').data('real'); if (r) $in('#sp-cfg-key').val(r); })
+        .on('blur',  () => { const r = $in('#sp-cfg-key').val().trim() || $in('#sp-cfg-key').data('real') || ''; if (r) $in('#sp-cfg-key').data('real', r).val(maskKey(r)); });
 
-    $('#sp-body').on('click', '.sp-tab', function () {
+    $in('#sp-body').on('click', '.sp-tab', function () {
         const idx   = parseInt($(this).data('day'));
-        const total = parseInt($('.sp-days-track').data('total')) || 4;
-        $('.sp-tab').removeClass('sp-tab-active');
+        const total = parseInt($in('.sp-days-track').data('total')) || 4;
+        $in('.sp-tab').removeClass('sp-tab-active');
         $(this).addClass('sp-tab-active');
-        $('.sp-days-track').css('transform', `translateX(-${idx * 100 / total}%)`);
+        $in('.sp-days-track').css('transform', `translateX(-${idx * 100 / total}%)`);
     });
 
     // Desktop drag: content header acts as the handle (like a title bar).
@@ -5530,7 +5560,7 @@ function setView(view, charName) {
     if (view === 'char' && charName) charViewName = charName;
     refreshLinesInjection();   // 视角切换 → 活跃线集合变了，重设潜伏注入跟随当前视角
     refreshOutlineInjection(); // 视角切换 → 大纲/游标随视角变，重设注入（loadCached 已带高亮）
-    $('.sp-view-btn').removeClass('sp-view-active');
+    $in('.sp-view-btn').removeClass('sp-view-active');
     $(`.sp-view-btn[data-view="${view}"]`).addClass('sp-view-active');
     cachedSchedule = loadCachedForCurrentChat();
     cachedOutline  = loadCachedOutlineForCurrentChat();
@@ -5540,7 +5570,7 @@ function setView(view, charName) {
         updateCreativeChatModeUI();
         renderCreativeChatHistory();
     } else {
-        $('#sp-chat-msgs').empty();
+        $in('#sp-chat-msgs').empty();
     }
     if (outlineMode && cachedOutline) setOutlineBody(cachedOutline);
 }
@@ -5568,21 +5598,21 @@ function switchToCharView() {
         ${chipsHtml}
         <p class="sp-char-picker-sub">${guessed ? '根据近期对话预填，可直接修改。' : ''}不必是主角，任何出场人物、NPC、反派都能查看其点；查看不占固定槽，想常驻再去 📌 固定</p>
     </div>`);
-    $('.sp-view-btn').removeClass('sp-view-active');
+    $in('.sp-view-btn').removeClass('sp-view-active');
     $(`.sp-view-btn[data-view="char"]`).addClass('sp-view-active');
     // .off().on() prevents duplicate bindings on repeated calls
-    $('#sp-char-name-input').off('keydown.charview').on('keydown.charview', e => { if (e.key === 'Enter') confirmCharView(); });
-    $('#sp-char-name-confirm').off('click.charview').on('click.charview', confirmCharView);
+    $in('#sp-char-name-input').off('keydown.charview').on('keydown.charview', e => { if (e.key === 'Enter') confirmCharView(); });
+    $in('#sp-char-name-confirm').off('click.charview').on('click.charview', confirmCharView);
     // 点 chip：填进输入框（不直接确认，留一步给用户改），聚焦到末尾。
-    $('.sp-char-recent-chip').off('click.charview').on('click.charview', function () {
-        $('#sp-char-name-input').val($(this).attr('data-name')).focus();
+    $in('.sp-char-recent-chip').off('click.charview').on('click.charview', function () {
+        $in('#sp-char-name-input').val($(this).attr('data-name')).focus();
     });
-    setTimeout(() => { $('#sp-char-name-input').focus().select(); }, 50);
+    setTimeout(() => { $in('#sp-char-name-input').focus().select(); }, 50);
 }
 
 function confirmCharView() {
-    const name = $('#sp-char-name-input').val().trim();
-    if (!name) { $('#sp-char-name-input').focus(); return; }
+    const name = $in('#sp-char-name-input').val().trim();
+    if (!name) { $in('#sp-char-name-input').focus(); return; }
     store.pushRecentCharName(name);   // 记进"最近填过的名字"，供多人卡下次预填
     setView('char', name);
     updateTaTriggerLabel();
@@ -5689,7 +5719,7 @@ function onCharPinToggle(name) {
 // 就地刷新 📌 图标态（不重渲整份点正文）。图标恒 solid，只切颜色类 .sp-pinned（见 renderSchedule 注释）。
 // 以 DOM 上按钮的 data-name 为准（兜底 charViewName）。
 function refreshCharPinIcon() {
-    const $btn = $('#sp-body .sp-point-pin-char');
+    const $btn = $in('#sp-body .sp-point-pin-char');
     const pinned = store.isPinnedChar(String($btn.attr('data-name') || charViewName || '').trim());
     $btn.attr('title', pinned ? '已固定·点击取消固定' : '固定 TA 到 TA▾ 抽屉');
     $btn.toggleClass('sp-pinned', pinned);
