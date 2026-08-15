@@ -12737,7 +12737,7 @@ function saveSettings() {
         stream       : $in('#sp-cfg-stream').is(':checked'),
     });
     saveLinesInterval($in('#sp-lines-interval').val());
-    saveLinesMode($('input[name="sp-lines-mode"]:checked').val());
+    saveLinesMode($in('input[name="sp-lines-mode"]:checked').val());
     // Save world-info entry filter and narrative scale for current character
     const ctx = getContext();
     const charKey = charStableKey(ctx);
@@ -12747,7 +12747,7 @@ function saveSettings() {
             if (!this.checked) disabled.add($(this).data('key'));
         });
         setDisabledKeys(charKey, disabled);
-        const scaleVal = $('input[name="sp-lines-scale"]:checked').val() || 'auto';
+        const scaleVal = $in('input[name="sp-lines-scale"]:checked').val() || 'auto';
         setScale(charKey, scaleVal);
     }
     $k.data('real', key).val(maskKey(key)).attr('type', 'password');
