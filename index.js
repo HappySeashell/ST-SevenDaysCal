@@ -3435,6 +3435,7 @@ function injectFab() {
         fabDragState = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, origLeft: rect.left, origTop: rect.top };
         document.addEventListener('touchmove', onFabTouchMove, { passive: false });
         document.addEventListener('touchend', onFabDragEnd);
+        document.addEventListener('touchcancel', onFabDragEnd);   // 同 divider：手机端被滚动/系统打断发的是 touchcancel，漏接就黏手
     }, { passive: true });
 
     $(`#${FAB_ID} .sp-fab-btn`).on('click', function () {
@@ -3446,6 +3447,8 @@ function injectFab() {
 
 function onFabTouchMove(ev) {
     if (!fabDragState) return;
+    // 自愈：触点已全部离开却还在收 move（touchcancel 漏接）→ 收尾，兼防 ev.touches[0] 取空崩。
+    if (!ev.touches || ev.touches.length === 0) { onFabDragEnd(); return; }
     const ex = ev.touches[0].clientX;
     const ey = ev.touches[0].clientY;
     if (Math.abs(ex - fabDragState.startX) > 5 || Math.abs(ey - fabDragState.startY) > 5) fabDragged = true;
@@ -3467,6 +3470,7 @@ function onFabDragEnd() {
     $(document).off('mousemove.fabdrag mouseup.fabdrag');
     document.removeEventListener('touchmove', onFabTouchMove);
     document.removeEventListener('touchend', onFabDragEnd);
+    document.removeEventListener('touchcancel', onFabDragEnd);
 }
 
 function injectModal() {
@@ -5600,9 +5604,12 @@ function injectModal() {
         document.addEventListener('mouseup',   onDivEnd);
         document.addEventListener('touchmove', onDivMove, { passive: false });
         document.addEventListener('touchend',  onDivEnd);
+        document.addEventListener('touchcancel', onDivEnd);   // 手机端被系统/滚动打断时派发的是 touchcancel 而非 touchend；漏接它 divState 就卡住 → 黏手
     }
     function onDivMove(e) {
         if (!divState) return;
+        // 自愈：触点/按键已松开却还在收 move（手机 touchcancel 漏接、或 PC 鼠标出窗漏 mouseup）→ 立即收尾，别黏住。
+        if ((e.touches && e.touches.length === 0) || (!e.touches && e.buttons === 0)) { onDivEnd(); return; }
         e.preventDefault();
         const cy   = e.touches ? e.touches[0].clientY : e.clientY;
         const newH = Math.max(80, Math.min(420, divState.startH + divState.startY - cy));
@@ -5616,6 +5623,7 @@ function injectModal() {
         document.removeEventListener('mouseup',   onDivEnd);
         document.removeEventListener('touchmove', onDivMove);
         document.removeEventListener('touchend',  onDivEnd);
+        document.removeEventListener('touchcancel', onDivEnd);
     }
     divEl.addEventListener('mousedown',  onDivStart);
     divEl.addEventListener('touchstart', onDivStart, { passive: false });
