@@ -239,6 +239,14 @@
     white-space   : normal;
 }
 
+/* 统一滚动条（shadow 内所有可滚区兜底）：进 shadow 后无显式规则的文本框/页面会退回浏览器原生，
+   这里照现有 per-container 视觉（var(--sp-divider)/4px/2px）铺一层默认。per-container 规则更具体、
+   照旧优先（含 .sp-chat-msgs 3px、.sp-sidebar-tabs 隐藏）。scrollbar-* 可继承（display:contents
+   不挡继承）。light DOM 里 .sp-root=host（display:none、无子元素）→ `.sp-root *` 匹配为空、不外泄 ST。 */
+.sp-root ::-webkit-scrollbar        { width: 4px; height: 4px; }
+.sp-root ::-webkit-scrollbar-thumb  { background: var(--sp-divider); border-radius: 2px; }
+.sp-root { scrollbar-width: thin; scrollbar-color: var(--sp-divider) transparent; }
+
 .sp-backdrop { display: none; }
 
 /* ─── Sheet ──────────────────────────────────────────────────────────────────── */
@@ -259,7 +267,12 @@
     grid-template-rows   : 1fr;
     overflow      : hidden;
     min-height    : 0;
-    animation     : sp-sheet-in 0.22s cubic-bezier(0.34, 1.3, 0.64, 1) both;
+    /* fill-mode 用 backwards 不用 both：both 的 forwards 段会永久保留末帧 transform:scale(1)，
+       它虽视觉等于 none 却仍建立 position:fixed 的包含块，把内部全屏卡片的 left/right:15vw 困在
+       360px sheet 内（288+288>360 → 宽度塌成窄条/空白，电脑端随机三态的根因）。backwards 只保留
+       首帧 from 防开场 opacity 闪，末帧播完回退 transform:none → fixed 后代锚回视口。手机端 sheet
+       另有静态 transform:translateX(-50%)(见 @2046)，不靠 fill-mode，故居中不受影响。 */
+    animation     : sp-sheet-in 0.22s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
 }
 
 @keyframes sp-sheet-in {
@@ -703,7 +716,6 @@
     max-height    : 240px;
     overflow-y    : auto;
     overflow-x    : hidden;
-    -webkit-overflow-scrolling: touch;
     overscroll-behavior       : contain;
     margin-bottom : 6px;
     padding       : 4px;
@@ -856,7 +868,6 @@ select.sp-input { appearance: none; cursor: pointer; }
     max-height    : 260px;                 /* cap height; inner scroll takes over */
     overflow-y    : auto;
     overflow-x    : hidden;
-    -webkit-overflow-scrolling: touch;
     overscroll-behavior       : contain;   /* don't bounce parent when reaching bounds */
     padding-right : 2px;
 }
@@ -955,7 +966,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     padding        : 8px 0 4px;
     scrollbar-width: thin;
     scrollbar-color: var(--sp-divider) transparent;
-    -webkit-overflow-scrolling: touch;
+    /* 不设 -webkit-overflow-scrolling:touch：iOS 里容器内 <details> 抽屉一展开改高度就冻结动量滚动层，
+       得开闭面板 reflow 才恢复；iOS13+ 动量滚动本就是默认，该属性只剩触发这坑的副作用（全库同理都不设）。 */
 }
 .sp-settings-body::-webkit-scrollbar       { width: 4px; }
 .sp-settings-body::-webkit-scrollbar-thumb { background: var(--sp-divider); border-radius: 2px; }
@@ -1386,7 +1398,6 @@ select.sp-input { appearance: none; cursor: pointer; }
     word-break     : break-word;
     scrollbar-width: thin;
     scrollbar-color: var(--sp-divider) transparent;
-    -webkit-overflow-scrolling: touch;
 }
 .sp-wi-fullview-body::-webkit-scrollbar       { width: 4px; }
 .sp-wi-fullview-body::-webkit-scrollbar-thumb { background: var(--sp-divider); border-radius: 2px; }
@@ -1701,7 +1712,6 @@ select.sp-input { appearance: none; cursor: pointer; }
     scrollbar-width: thin;
     scrollbar-color: var(--sp-divider) transparent;
     touch-action  : pan-y;
-    -webkit-overflow-scrolling: touch;
 }
 .sp-day-panel::-webkit-scrollbar       { width: 4px; }
 .sp-day-panel::-webkit-scrollbar-thumb { background: var(--sp-divider); border-radius: 2px; }
@@ -3845,7 +3855,15 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-theater-fullscreen-btn:hover { opacity: 1; background: color-mix(in oklab, var(--sp-primary) 16%, var(--sp-sheet-bg)); }
 
-/* 结果区进入全屏：脱离面板、铺满视口、内部滚动 */
+/* 全屏时去掉 .sp-sheet 的 transform：transform 会让 sheet 成为 fixed 的包含块，全屏内容便只铺满
+   sheet 而非视口。仅桌面需要（桌面 sheet 是右侧窄面板，须逃出到视口）；手机 sheet 本就近整屏、且靠
+   left:50%+translateX(-50%) 居中，去 transform 会右移半屏（回归 bug），故 desktop-only。 */
+@media (min-width: 641px) {
+    .sp-sheet.sp-fs-flat { transform: none !important; }
+}
+
+/* 结果区进入全屏。base 用 inset:0 铺满「包含块」：手机=保留 transform 的 .sp-sheet（≈整屏），
+   桌面=去 transform 后锚到视口（真全屏，阅读用，不留白）。 */
 .sp-theater-result.sp-theater-fullscreen {
     position   : fixed;
     inset      : 0;
@@ -3854,11 +3872,10 @@ select.sp-input { appearance: none; cursor: pointer; }
     border     : 0;
     border-radius: 0;
     /* 双层背景（同 .sp-sheet:245）：不透明底板(-legacy) + 覆一层酒馆 tint。全屏时
-       脱离面板铺满视口，若只用带 alpha 的 --sp-sheet-bg，透明酒馆主题下会露出底层。*/
+       脱离面板铺满，若只用带 alpha 的 --sp-sheet-bg，透明酒馆主题下会露出底层。*/
     background-color: var(--sp-sheet-bg-legacy);
     background-image: linear-gradient(var(--sp-sheet-bg), var(--sp-sheet-bg));
     overflow-y : auto;
-    -webkit-overflow-scrolling: touch;
     padding    : 20px clamp(10px, 1.4vw, 16px);   /* 左右压到最小、只留一点不糊边 */
 }
 .sp-theater-result.sp-theater-fullscreen .sp-theater-result-inner {
@@ -3869,25 +3886,50 @@ select.sp-input { appearance: none; cursor: pointer; }
 /* 全屏时锁背景滚动 */
 body.sp-theater-fs-lock { overflow: hidden; }
 
-/* 坐标全屏浏览（照搬小剧场全屏）：普通 DOM 容器 .sp-anchor-scroll 脱离面板、铺满视口、内部滚动，便于系统截图 */
-.sp-anchor-scroll.sp-anchor-fullscreen {
+/* 坐标全屏浏览：状态类挂 #sp-anchor-body 本身（含头部+滚动区），退出按钮随头部一起在卡片里、
+   无需 :has() 钉位。base inset:0 铺满包含块（手机=.sp-sheet ≈整屏）；桌面留白成浮卡（见下媒体查询）。
+   #sp-anchor-body 本就是 flex column（头 flex-shrink:0 + .sp-anchor-scroll flex:1 overflow:auto），
+   fixed 后 overflow:hidden 只让滚动区滚、头部固定。 */
+#sp-anchor-body.sp-anchor-fs-on {
     position     : fixed;
     inset        : 0;
     z-index      : 2000010;              /* 高于面板 .sp-root(2000001) */
+    overflow     : hidden;
     /* 双层背景（同 .sp-sheet:245）：不透明底板兜底，透明酒馆主题下才不会露出底层面板 */
     background-color: var(--sp-sheet-bg-legacy);
     background-image: linear-gradient(var(--sp-sheet-bg), var(--sp-sheet-bg));
-    padding      : 20px clamp(10px, 1.4vw, 16px) 40px;
-    overflow-y   : auto;
-    -webkit-overflow-scrolling: touch;
 }
 body.sp-anchor-fs-lock { overflow: hidden; }
-/* 全屏时把「退出全屏」按钮钉到视口右上，盖在全屏内容之上（按钮在 .sp-anchor-head，随 body 脱离流故 fixed 钉住） */
-body.sp-anchor-fs-lock .sp-anchor-fullscreen {
-    position: fixed;
-    top     : 14px;
-    right   : 14px;
-    z-index : 2000011;
+/* 缩放角标：仅坐标全屏态 + 桌面显示（手机全屏不允许拖拽，靠媒体查询天然隐藏）。 */
+.sp-anchor-fs-resize { display: none; }
+/* 桌面：不真·全屏，四周留白成浮卡（用户反馈真全屏铺满酒馆「不好看」）。手机维持 base inset:0 铺满面板。 */
+@media (min-width: 641px) {
+    #sp-anchor-body.sp-anchor-fs-on {
+        top          : 8vh;
+        bottom       : 8vh;
+        left         : 15vw;
+        right        : 15vw;
+        border-radius: 16px;
+        box-shadow   : var(--sp-shadow);
+    }
+    /* 拖头部移动整卡（JS 委托里排除按钮区）；拖右下角标缩放。都是 PC 专属。 */
+    #sp-anchor-body.sp-anchor-fs-on .sp-anchor-head { cursor: move; }
+    #sp-anchor-body.sp-anchor-fs-on .sp-anchor-fs-resize {
+        display : block;
+        position: absolute;
+        right   : 0;
+        bottom  : 0;
+        width   : 20px;
+        height  : 20px;
+        cursor  : se-resize;
+        z-index : 6;                 /* 盖在快照滚动区之上，够得着 */
+        opacity : 0.55;
+        /* 右下角两条 45° 短纹，视觉沿用 textarea 原生 resize grip 语言，不依赖字体图标 */
+        background-image:
+            linear-gradient(135deg, transparent 46%, var(--sp-subtle) 46%, var(--sp-subtle) 54%, transparent 54%),
+            linear-gradient(135deg, transparent 66%, var(--sp-subtle) 66%, var(--sp-subtle) 74%, transparent 74%);
+    }
+    #sp-anchor-body.sp-anchor-fs-on .sp-anchor-fs-resize:hover { opacity: 1; }
 }
 /* 全屏时把退出按钮钉到视口右上，盖在全屏内容之上（否则被 fixed 的结果区遮住，只能靠 Esc 退） */
 .sp-theater-result-wrap:has(> .sp-theater-result.sp-theater-fullscreen) .sp-theater-fullscreen-btn {

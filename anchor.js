@@ -494,13 +494,14 @@ export function sanitizeSnapshot(htmlRaw) {
 
 // 剥掉快照里不该留的「渲染框」：
 //   .TH-render / iframe —— 酒馆助手用 <iframe srcdoc> 现场渲染的动态框，冻不成静态快照；
+//   .sp-inline-box      —— 构画塞进楼层的点/历/召回注入框（`.sp-inline-box` 统一外壳），纯插件 UI 非正文，整块剥掉；
 //   .sp-lines-inline    —— 构画塞进楼层的「线」内联块（伏笔展示，虚线冷知识也折在其 body 内），
 //                          纯插件 UI 不是正文，整块剥掉即连虚线一并剥；
 //   .sp-dashed-inline   —— 合并前旧版独立虚线块的兜底，扫掉遗留 DOM。
 function stripRenderBoxes(htmlStr) {
     const div = document.createElement('div');
     div.innerHTML = String(htmlStr || '');
-    div.querySelectorAll('.TH-render, iframe, .sp-lines-inline, .sp-dashed-inline').forEach(el => el.remove());
+    div.querySelectorAll('.TH-render, iframe, .sp-inline-box, .sp-lines-inline, .sp-dashed-inline').forEach(el => el.remove());
     return div.innerHTML;
 }
 

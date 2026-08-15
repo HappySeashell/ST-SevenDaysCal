@@ -4119,6 +4119,15 @@ function injectModal() {
     host.style.cssText = 'display:none;position:fixed;z-index:2000001';
     const root = host.attachShadow({ mode: 'open' });
     _spShadow = root;
+    // 键盘边界：shadow 内 input 的 keydown 是 composed 事件，冒泡到 document 时 ST 的
+    // isInputElementInFocus() 读 document.activeElement = 宿主 div（非 shadow 内 input）→ 守卫
+    // 失效 → 方向键等触发重roll/swipe。在 shadowRoot（冒泡先经此、后到 document；此处 target 不
+    // retarget、是真实 input）截断输入框内非 Esc 按键。放行 Esc：各全屏/菜单的 document 级退出仍需收到。
+    root.addEventListener('keydown', ev => {
+        if (ev.key === 'Escape') return;
+        const t = ev.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) ev.stopPropagation();
+    });
     // shadow 内第一层 wrapper 必须带 sp-root + 主题类：style.css 里 13 处 `.sp-root ...`
     // 前缀选择器、.sp-night/.sp-day 色板、.sp-forced-* 强制主题覆盖全靠它匹配
     // （applyTheme 同步它的主题类）。display:contents 不产生布局盒子，fixed 语义
@@ -4521,6 +4530,10 @@ function injectModal() {
         const el = inEl('#sp-theater-result');
         if (!el) return;
         const on = el.classList.toggle('sp-theater-fullscreen');
+        // 桌面去掉 .sp-sheet 的 transform，全屏 fixed 才能逃出面板锚到视口（否则被 sheet 的 transform
+        // 包含块困在面板内、只满面板）。.sp-fs-flat 在 CSS 里 desktop-only：手机保留 sheet 的居中
+        // translateX(-50%)、不位移，全屏铺满面板（≈手机整屏）即可。
+        inEl('.sp-sheet')?.classList.toggle('sp-fs-flat', on);
         // 全屏时强制展开（去折叠），退出时按原逻辑重新判定是否需要折叠
         if (on) el.classList.remove('sp-theater-result-collapsed');
         const $i = $(this).find('i');
@@ -4616,6 +4629,12 @@ function injectModal() {
         renderAnchorPanel();
     });
     $anchor.on('click', '.sp-anchor-fullscreen', function () { toggleAnchorFullscreen(this); });
+    // 全屏浮卡拖拽（PC 专属）：拖右下角标缩放；拖头部空白处移动（排除头部按钮，避免和返回/退出/删除冲突）。
+    $anchor.on('mousedown', '.sp-anchor-fs-resize', function (e) { _anchorFsGestureStart('resize', e); });
+    $anchor.on('mousedown', '.sp-anchor-fs-on .sp-anchor-head', function (e) {
+        if ($(e.target).closest('button, .sp-icon-btn, .sp-anchor-back').length) return;
+        _anchorFsGestureStart('move', e);
+    });
     $anchor.on('click', '.sp-anchor-tag-edit', function () {
         if (!_anchorCurrentItem) return;
         _anchorFullTagEdit = true;
@@ -5896,6 +5915,11 @@ function closePanel() {
     // is out-of-band, we just remove the overlay directly; the awaiting Promise
     // will get its CHAT_CHANGED escape hatch on next chat switch. If user reopens
     // without switching, they'll see the confirm was gone and click again.
+    // 收全屏残留：全屏中经背景/FAB 关面板时，若不清这些类，body 的滚动锁会滞留（酒馆卡死），
+    // 且 .sp-sheet 的 sp-fs-flat 会带到下次打开（手机右移半屏）。棱、坐标一并清。
+    _clearAnchorFs();
+    inEl('#sp-theater-result')?.classList.remove('sp-theater-fullscreen');
+    document.body.classList.remove('sp-theater-fs-lock');
     $in('#sp-confirm .sp-confirm-cancel').trigger('click');
     customDialog.cancelActive();
     $(`#${MODAL_ID}`).stop(true).animate({ opacity: 0 }, 150, function () {
@@ -8739,6 +8763,9 @@ function renderTagChips(tagIds, tagMap) {
 
 async function renderAnchorPanel() {
     if (!anchorMode) return;
+    // 离开全文视图（返回/删除/切档/外部刷新到非 full）时清全屏态；停在同一 full 则不清，
+    // 由 renderAnchorFull 读 #sp-anchor-body 的 fs 类自行保留（「编辑标签」重渲即靠此不丢全屏）。
+    if (_anchorView.level !== 'full') _clearAnchorFs();
     setAnchorBody('<div class="sp-anchor-loading"><div class="sp-spinner"></div></div>');
     try {
         if (_anchorView.level === 'full' && _anchorView.itemId) { await renderAnchorFull(_anchorView.itemId); return; }
@@ -8933,6 +8960,9 @@ async function renderAnchorFull(itemId) {
     const it = await anchor.getItem(itemId);
     if (!it) { _anchorView = { level: 'chars', charName: null, chatId: null, itemId: null }; await renderAnchorChars(); return; }
     _anchorCurrentItem = it;
+    // 全屏态挂在 #sp-anchor-body（跨重渲持久）；重建头部时按当前态给全屏按钮初始图标/标题，
+    // 否则「编辑标签」重渲后按钮会被复位成 fa-expand（虽仍在全屏、图标却成「进入全屏」）。
+    const fsOn = !!inEl('#sp-anchor-body')?.classList.contains('sp-anchor-fs-on');
     const tagMap = new Map((await anchor.getTags()).map(t => [t.id, t]));
     // 标签区：只读态（chips + 编辑标签按钮）/ 内联编辑态（chip 点选即写 + 新建行 + 完成）。
     // 内联而非 body 浮层——全文视图铺满面板，浮层会被面板盖住看不见（用户反馈）。
@@ -8963,7 +8993,7 @@ async function renderAnchorFull(itemId) {
             <button class="sp-anchor-back" data-to="items" data-chatid="${escapeAttr(it.chatId ?? '')}"><i class="fa-solid fa-chevron-left"></i></button>
             <span class="sp-anchor-head-title">${escapeHtml(it.charName || '')}<span class="sp-anchor-head-floor"> · #${it.floorIndex ?? '?'}</span></span>
             <span class="sp-anchor-head-actions">
-                <button class="sp-icon-btn sp-anchor-fullscreen" title="全屏浏览（便于截图）"><i class="fa-solid fa-expand"></i></button>
+                <button class="sp-icon-btn sp-anchor-fullscreen" title="${fsOn ? '退出全屏' : '全屏浏览（便于截图）'}"><i class="fa-solid ${fsOn ? 'fa-compress' : 'fa-expand'}"></i></button>
                 <button class="sp-icon-btn sp-anchor-del"    title="删除此收藏"><i class="fa-solid fa-trash"></i></button>
             </span>
         </div>
@@ -8971,7 +9001,8 @@ async function renderAnchorFull(itemId) {
             ${tagsBlock}
             <div class="sp-anchor-full-host" id="sp-anchor-full-host"></div>
             <div class="sp-anchor-full-ts">收藏于 ${fmtAnchorTs(it.ts)}</div>
-        </div>`);
+        </div>
+        <div class="sp-anchor-fs-resize" title="拖拽调整大小"></div>`);
     const host = inEl('#sp-anchor-full-host');
     if (host) {
         // Shadow DOM 的 :host{all:initial} 会切断颜色继承；只设字色救不了——快照里状态栏常自带
@@ -8999,14 +9030,33 @@ async function renderAnchorFull(itemId) {
 }
 
 // ─── 坐标·导出图片 ─────────────────────────────────────────────────────────────
-// 坐标全屏浏览：纯 CSS 切 class 铺满视口 + 锁背景滚动 + Esc 退出（照搬小剧场全屏，稳且不依赖任何库）。
-// 目标是 .sp-anchor-scroll（普通 DOM 容器），不碰 shadow host——避开 :host{all:initial} 级联坑，标签区也一起可见。
-// 全屏后只剩内容卡片，用户直接用系统截图即可。
+// 坐标全屏浏览：纯 CSS 切 class + 锁背景滚动 + Esc 退出（照搬小剧场全屏，稳且不依赖任何库）。
+// 状态类挂 #sp-anchor-body 本身（不是 .sp-anchor-scroll）：setAnchorBody 只换 innerHTML、不动元素本身，
+// 「编辑标签」触发的重渲因此不丢全屏态；头部退出按钮也随卡片一起 fixed，无需 :has() 钉位。
+// 桌面留白成卡片、手机铺满面板（尺寸/留白见 style.css 媒体查询）。
 let _anchorFsEsc = null;
+// 清全屏浮卡的拖拽 inline 尺寸/坐标：退出全屏时必须清，否则 width/height 会黏到非全屏的
+// in-flow #sp-anchor-body 上（它此时是 flex:1 子项），把列表视图撑破版。
+function _clearAnchorFsInline() {
+    const b = inEl('#sp-anchor-body');
+    if (!b) return;
+    b.style.left = b.style.top = b.style.right = b.style.bottom = b.style.width = b.style.height = '';
+}
+// 清坐标全屏态（三个类一起去）：返回/删除/切档等离开全文视图时调用，避免 fixed 卡片黏在列表视图上。
+function _clearAnchorFs() {
+    inEl('#sp-anchor-body')?.classList.remove('sp-anchor-fs-on');
+    inEl('.sp-sheet')?.classList.remove('sp-fs-flat');
+    document.body.classList.remove('sp-anchor-fs-lock');
+    _clearAnchorFsInline();
+}
 function toggleAnchorFullscreen(btnEl) {
-    const el = inEl('#sp-anchor-body .sp-anchor-scroll');
-    if (!el) return;
-    const on = el.classList.toggle('sp-anchor-fullscreen');
+    const body = inEl('#sp-anchor-body');
+    if (!body) return;
+    const on = body.classList.toggle('sp-anchor-fs-on');
+    if (!on) _clearAnchorFsInline();   // 退出：清掉拖拽留下的 inline 尺寸/坐标
+    // 桌面去掉 .sp-sheet 的 transform 让 fixed 卡片逃出面板锚到视口（.sp-fs-flat 在 CSS 里 desktop-only，
+    // 手机不动 → sheet 的居中 translateX(-50%) 保留、卡片不再右移半屏）。
+    inEl('.sp-sheet')?.classList.toggle('sp-fs-flat', on);
     const $i = $(btnEl).find('i');
     $i.attr('class', on ? 'fa-solid fa-compress' : 'fa-solid fa-expand');
     $(btnEl).attr('title', on ? '退出全屏' : '全屏浏览（便于截图）');
@@ -9014,11 +9064,59 @@ function toggleAnchorFullscreen(btnEl) {
     if (on && !_anchorFsEsc) {
         _anchorFsEsc = (ev) => {
             if (ev.key !== 'Escape') return;
-            const r = inEl('#sp-anchor-body .sp-anchor-scroll.sp-anchor-fullscreen');
-            if (r) $in('.sp-anchor-fullscreen').trigger('click');
+            if (inEl('#sp-anchor-body.sp-anchor-fs-on')) $in('.sp-anchor-fullscreen').trigger('click');
         };
         document.addEventListener('keydown', _anchorFsEsc);
     }
+}
+
+// 坐标全屏浮卡·拖拽移动 + 右下角缩放（PC 专属：手机全屏铺满面板、不允许拖，故只绑鼠标、不碰 touch）。
+// 机制镜像主面板 sheet 的 drag/resize：卡片默认位置由 CSS vw/vh 锚定，首次手势时 snap 成显式 px
+// （left/top/width/height + right/bottom:auto），之后 inline 坐标驱动。退出全屏时由 _clearAnchorFs /
+// toggle-off 清掉这些 inline，避免黏到非全屏的 in-flow #sp-anchor-body 上（width/height 会破版）。
+let _anchorFsGesture = null;
+function _anchorFsSnapToPx(card) {
+    if (card.style.width) return;   // 已 snap 过：本次全屏会话内保留用户调好的尺寸
+    const r = card.getBoundingClientRect();
+    card.style.left = r.left + 'px'; card.style.top = r.top + 'px';
+    card.style.width = r.width + 'px'; card.style.height = r.height + 'px';
+    card.style.right = 'auto'; card.style.bottom = 'auto';
+}
+function _anchorFsGestureStart(mode, e) {
+    if (isMobile()) return;
+    const card = inEl('#sp-anchor-body');
+    if (!card || !card.classList.contains('sp-anchor-fs-on')) return;
+    e.preventDefault(); e.stopPropagation();
+    _anchorFsSnapToPx(card);
+    const r = card.getBoundingClientRect();
+    _anchorFsGesture = { mode, startX: e.clientX, startY: e.clientY,
+        origLeft: r.left, origTop: r.top, origW: r.width, origH: r.height };
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', _anchorFsGestureMove);
+    document.addEventListener('mouseup', _anchorFsGestureEnd);
+}
+function _anchorFsGestureMove(e) {
+    if (!_anchorFsGesture) return;
+    if (e.buttons === 0) { _anchorFsGestureEnd(); return; }   // 自愈：鼠标离窗错过 mouseup 时别卡住
+    const card = inEl('#sp-anchor-body');
+    if (!card) return;
+    const g = _anchorFsGesture;
+    if (g.mode === 'move') {
+        const left = Math.max(0, Math.min(g.origLeft + e.clientX - g.startX, window.innerWidth  - card.offsetWidth));
+        const top  = Math.max(0, Math.min(g.origTop  + e.clientY - g.startY, window.innerHeight - 40));
+        card.style.left = left + 'px'; card.style.top = top + 'px';
+    } else {
+        const w = Math.max(320, Math.min(window.innerWidth  - g.origLeft - 8, g.origW + e.clientX - g.startX));
+        const h = Math.max(240, Math.min(window.innerHeight - g.origTop  - 8, g.origH + e.clientY - g.startY));
+        card.style.width = w + 'px'; card.style.height = h + 'px';
+    }
+}
+function _anchorFsGestureEnd() {
+    if (!_anchorFsGesture) return;
+    _anchorFsGesture = null;
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', _anchorFsGestureMove);
+    document.removeEventListener('mouseup', _anchorFsGestureEnd);
 }
 
 function setLinesBody(html) { $in('#sp-lines-list').html(html); renderDashedSection(); }
@@ -12687,6 +12785,9 @@ function applyTheme(theme) {
         wrapper.classList.add(`sp-${theme}`);
         if (forced) wrapper.classList.add(`sp-forced-${theme}`);
     }
+    // 坐标全屏快照的字/底色是按 currentTheme 烘死内联进嵌套 shadow 的（renderAnchorFull），变量级
+    // 换类救不到；正看全文快照时重渲一次让它跟主题（覆盖手动切主题 + ST 自动跟随两条路径）。
+    if (_anchorView.level === 'full' && _anchorCurrentItem) renderAnchorFull(_anchorCurrentItem.id);
 }
 
 // ─── Theme mode toggle (day / night / auto) ─────────────────────────────────
