@@ -971,15 +971,6 @@ function deleteApiPreset(id) {
     saveSettingsDebounced();
 }
 
-// 给已存预设改名（就地，不动 url/key/model 等）。空名→保留原名。
-function renameApiPreset(id, name) {
-    const p = loadApiPresets().find(x => x.id === id);
-    if (!p) return;
-    const nm = String(name || '').trim();
-    if (nm) p.name = nm;
-    saveSettingsDebounced();
-}
-
 function fabEnabled() { return getSettings().fabShow !== false; }
 
 // ─── 插件总开关（③）───────────────────────────────────────────────────────────
@@ -12574,7 +12565,7 @@ function renderApiPresetList() {
     const list = loadApiPresets();
     const activeId = getSettings().apiPresetActiveId || '';
     $list.html(list.length
-        ? list.map(p => `<div class="sp-preset-item-row" data-id="${escapeAttr(p.id)}"><button type="button" class="sp-preset-item${p.id === activeId ? ' sp-preset-item-active' : ''}" data-id="${escapeAttr(p.id)}">${escapeHtml(p.name)}</button><button type="button" class="sp-preset-rename" data-id="${escapeAttr(p.id)}" title="给这个预设改名"><i class="fa-solid fa-pen"></i></button></div>`).join('')
+        ? list.map(p => `<div class="sp-preset-item-row" data-id="${escapeAttr(p.id)}"><button type="button" class="sp-preset-item${p.id === activeId ? ' sp-preset-item-active' : ''}" data-id="${escapeAttr(p.id)}">${escapeHtml(p.name)}</button><button type="button" class="sp-preset-rename" data-id="${escapeAttr(p.id)}" title="编辑这条预设（名字 / 模型）"><i class="fa-solid fa-pen"></i></button></div>`).join('')
         : `<div class="sp-preset-empty">暂无预设，填好 API 后点右侧＋存一个</div>`);
     $in('#sp-preset-del').prop('disabled', !activeId);
     syncPresetLabel();
@@ -12616,34 +12607,42 @@ function bindApiPresetEvents() {
         showPresetHint(`已填入「${p.name}」，点下方「保存」生效`);
     });
 
-    // 改名（内联，无弹窗）：点 ✎ → 名字就地变输入框；Enter / ✓ 提交，Esc 取消
-    const commitPresetRename = ($row) => {
+    // 编辑一条预设（内联，无弹窗）：点 ✎ → 顺手把这条填进输入框并选中它，名字就地变输入框。
+    // 用户可改名，或去下方模型栏换模型（输入框已是这条，换模型只动这条）。Enter / ✓ 提交，Esc 取消。
+    // 提交 = 把「名字 + 当前输入框整套(含模型)」写回这条预设；走 upsertApiPreset，**不碰生效配置**（脱钩）。
+    const commitPresetEdit = ($row) => {
         const $inp = $row.find('.sp-preset-rename-input');
         if (!$inp.length) return;
         const id = $row.attr('data-id');
-        const name = $inp.val().trim();
-        if (name) renameApiPreset(id, name);
-        renderApiPresetList();       // 回到按钮态（名字已更新）
+        const p = loadApiPresets().find(x => x.id === id);
+        const name = $inp.val().trim() || (p ? p.name : '');
+        upsertApiPreset(name, readApiInputs(), id);   // 名字+模型(整套)写回这条；不动 s.apiModel 等生效配置
+        renderApiPresetList();       // 回到按钮态（名字/模型已更新）
         renderUtilityPresetList();   // 机械预设列表同名同步
+        showPresetHint(`已更新预设「${name}」（名字 / 模型）`);
     };
     $in('#sp-preset-list').on('click', '.sp-preset-rename', function (e) {
         e.preventDefault(); e.stopPropagation();
         const id = $(this).attr('data-id');
         const p = loadApiPresets().find(x => x.id === id);
         if (!p) return;
+        getSettings().apiPresetActiveId = id;   // 进编辑=顺手选中这条
+        fillApiInputs(p);                        // 把这条填进输入框，保证「去下方模型栏换模型」只动这条
+        syncPresetLabel();
         const $row = $(this).closest('.sp-preset-item-row');
         $row.addClass('sp-preset-item-row-edit').html(
             `<input type="text" class="sp-input sp-preset-rename-input" value="${escapeAttr(p.name)}" maxlength="40" spellcheck="false">` +
-            `<button type="button" class="sp-preset-rename-ok" title="确定改名"><i class="fa-solid fa-check"></i></button>`
+            `<button type="button" class="sp-preset-rename-ok" title="保存到这条预设（名字 / 模型）"><i class="fa-solid fa-check"></i></button>`
         );
         $row.find('.sp-preset-rename-input').trigger('focus').trigger('select');
+        showPresetHint(`编辑「${p.name}」：可改名，或去下方模型栏换模型，改完点 ✓ 存回这条`);
     });
     $in('#sp-preset-list').on('click', '.sp-preset-rename-ok', function (e) {
         e.preventDefault(); e.stopPropagation();
-        commitPresetRename($(this).closest('.sp-preset-item-row'));
+        commitPresetEdit($(this).closest('.sp-preset-item-row'));
     });
     $in('#sp-preset-list').on('keydown', '.sp-preset-rename-input', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); commitPresetRename($(this).closest('.sp-preset-item-row')); }
+        if (e.key === 'Enter') { e.preventDefault(); commitPresetEdit($(this).closest('.sp-preset-item-row')); }
         else if (e.key === 'Escape') { e.preventDefault(); renderApiPresetList(); }
     });
 

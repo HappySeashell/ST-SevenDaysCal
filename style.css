@@ -1892,8 +1892,12 @@ select.sp-input { appearance: none; cursor: pointer; }
 #sp-toast-wrap {
     position      : fixed;
     top           : 20px;
-    left          : 50%;
-    transform     : translateX(-50%);
+    left          : 0;
+    right         : 0;   /* 满宽透明容器 + align-items:center 居中 toast。
+                            不可用 left:50%+translateX：fixed 元素 left:50%/right:auto/width:auto 时，
+                            shrink-to-fit 的可用宽度会塌成 50vw → toast 永远 ≤50vw、显窄（正是"太窄"根因，
+                            改 .sp-toast 的 max-width 没用，被这层顶死）。left:0;right:0 让容器占满视口，
+                            .sp-toast 的 max-width 才真正说了算。 */
     z-index       : 2000002;   /* 高于面板 .sp-root(2000001)，否则设置页内的 toast 被面板盖住看不见 */
     display       : flex;
     flex-direction: column;
@@ -1920,11 +1924,11 @@ select.sp-input { appearance: none; cursor: pointer; }
     opacity    : 0;
     transform  : translateY(-12px);
     transition : opacity 0.25s, transform 0.25s;
-    /* 长文案换行不撑破视图：wrap 居中(left:50% + translateX)且无宽度约束，nowrap 会把长
-       报错顶成超宽单行 → 两头等量溢出屏幕被裁(手机窄屏尤甚)。改为可换行 + 视口内封顶 +
-       长串可断；border-box 让 padding 计入 max-width、保证总宽真 ≤ 92vw。 */
+    /* 长文案换行不撑破视图：容器 #sp-toast-wrap 已改 left:0;right:0 占满视口(见其注释)，
+       这里的 max-width 才真正生效。border-box 让 padding 计入 max-width；overflow-wrap 断长串。
+       封顶 94vw(留少量边距)/桌面 560px——手机上 px 项恒不生效，起效的是 94vw。 */
     box-sizing   : border-box;
-    max-width    : min(92vw, 420px);
+    max-width    : min(94vw, 560px);
     white-space  : normal;
     overflow-wrap: anywhere;
 }
