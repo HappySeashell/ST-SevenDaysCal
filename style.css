@@ -5854,6 +5854,8 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     gap         : 6px;
     padding     : 1px 0 8px;
 }
+/* 普通态只有一个入口，靠右贴齐所在独立行；批量态保留原有全选/计数/操作布局。 */
+.sp-batch-bar:not(.sp-batch-active) { justify-content: flex-end; }
 .sp-batch-bar .sp-batch-all {
     display     : inline-flex;
     align-items : center;
