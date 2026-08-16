@@ -4732,6 +4732,8 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     align-items    : center;
     justify-content: space-between;
     gap            : 8px;
+    box-sizing     : border-box;
+    min-height     : 42px;
     padding        : 8px 12px;
     border-bottom  : 1px solid var(--sp-divider);
     flex-shrink    : 0;
@@ -4739,6 +4741,8 @@ body.sp-anchor-fs-lock { overflow: hidden; }
 .sp-alm-sheet-toggle,
 .sp-lines-sheet-toggle {
     display      : inline-flex;
+    align-items  : stretch;
+    height       : 26px;
     border       : 1px solid var(--sp-divider);
     border-radius: 8px;
     overflow     : hidden;
@@ -4748,7 +4752,12 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     background : transparent;
     border     : 0;
     color      : var(--sp-subtle);
-    padding    : 5px 14px;
+    box-sizing : border-box;
+    display    : inline-flex;
+    align-items: center;
+    justify-content: center;
+    height     : 26px;
+    padding    : 0 14px;
     font-size  : var(--sp-fs-78);
     font-weight: 500;
     line-height: 1;
@@ -4999,8 +5008,6 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     display      : flex;
     align-items  : center;
     gap          : 8px;
-    margin-top   : 0;
-    padding-top  : 0;
     padding-bottom: 10px;
     margin-bottom: 10px;
     border-bottom: 1px solid var(--sp-divider);
