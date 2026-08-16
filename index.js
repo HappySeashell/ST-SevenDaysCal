@@ -77,6 +77,8 @@ const DEFAULT_SETTINGS = {
     linesMode: 'turns',  // 'turns' | 'days'
     linesInject: false,  // 潜伏注入：活跃线隐形注入主楼 AI（IN_CHAT/SYSTEM）；默认关（改 AI 行为+token 成本，opt-in）
     dashedEnabled: false, // 冷知识自动生成/楼层展示：跟线多生成两条；历史与面板手动生成不受此开关删除或阻断
+    dashedCleanupEnabled: true, // 冷知识历史自动清理：只限制未锁条目，锁定项不计入数量
+    dashedKeepCount: 15,
     outlineInject: false,       // 大纲自动注入：开启后每 N 楼独立判定剧情推进到哪个节点，把当前/下个节点隐形注入主楼 AI。多判定 API 调用，默认关 opt-in
     outlineJudgeInterval: 3,    // 大纲推进判定节奏：每几条 AI 回复跑一次推进判定（独立于线的 linesInterval，不耦合）
     almanacInlineEnabled: true, // 历·日程块：最新 AI 楼底部挂一块折叠条——标题条仿线块，点开是未来七天（周X+日期，有节日可点开看当天安排）；只读，独立于线主开关；默认开，关掉即不注入聊天
@@ -3922,6 +3924,14 @@ function injectModal() {
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">开启后，每次线生成 / 推进会额外新增两条冷知识，并在最新楼层展示。关闭只停止自动生成和楼层展示，已保存的冷知识仍可在线面板查看。<b>纯娱乐、不注入任何地方</b>。多一次 API，默认关。</p>
 
+                                    <div class="sp-mode-opt sp-mode-opt-sub" style="margin-top:6px">
+                                        <input type="checkbox" id="sp-dashed-cleanup-enabled" ${getSettings().dashedCleanupEnabled !== false ? 'checked' : ''}>
+                                        <label for="sp-dashed-cleanup-enabled">只保留最近</label>
+                                        <input id="sp-dashed-keep-count" class="sp-input sp-interval-input" type="number" min="2" step="1" value="${escapeAttr(String(getDashedKeepCount()))}" ${getSettings().dashedCleanupEnabled !== false ? '' : 'disabled'} aria-label="保留最近多少条未锁冷知识">
+                                        <span>条未锁冷知识</span>
+                                    </div>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">锁定项不计入数量，也不会被自动清除。修改后当前聊天立即生效，其他聊天会在下次修改冷知识时按新规则整理。</p>
+
                                     <hr class="sp-mem-divider">
 
                                     <p class="sp-cfg-group">推进策略</p>
@@ -4313,6 +4323,7 @@ function injectModal() {
         refreshLinesPanel();
     });
     $linesWrap.on('click', '.sp-lines-dashed-add', openDashedGeneratorDialog);
+    $linesWrap.on('click', '.sp-lines-dashed-lock', function () { triggerToggleDashedLock($(this).attr('data-id')); });
     $linesWrap.on('click', '.sp-lines-dashed-delete', function () { triggerDeleteDashedItem($(this).attr('data-id')); });
     $in('#sp-body').on('click', '#sp-gen-schedule-now, .sp-refresh-schedule', onRegenClick);
     // 点视图头部 📌：固定/取消固定当前 char（只在 char 视角出现）。名字取按钮 data-name，兜底 charViewName。
@@ -5477,6 +5488,19 @@ function injectModal() {
         saveSettingsDebounced();
         if (linesMode) refreshLinesPanel();
         syncLatestInlineBlock();
+    });
+    $in('#sp-dashed-cleanup-enabled').on('change', function () {
+        getSettings().dashedCleanupEnabled = this.checked;
+        $in('#sp-dashed-keep-count').prop('disabled', !this.checked);
+        saveSettingsDebounced();
+        if (this.checked) applyDashedCleanupToCurrent(true);
+    });
+    $in('#sp-dashed-keep-count').on('change', function () {
+        const count = normalizeDashedKeepCount(this.value);
+        getSettings().dashedKeepCount = count;
+        this.value = String(count);
+        saveSettingsDebounced();
+        if (getSettings().dashedCleanupEnabled !== false) applyDashedCleanupToCurrent(true);
     });
     // 大纲自动注入（面）开关：on → 按当前大纲+游标立即注入；off → 清空扩展 prompt（游标留 chat_metadata，再开即续）
     $in('#sp-outline-inject').on('change', function () {
@@ -9464,6 +9488,11 @@ const DASHED_TOPIC_CONFIG = Object.freeze([
 const DASHED_AVOID_COUNT = 12;
 
 function getDashedCacheKey() { return keyDesc('dashed', 'user', ''); }
+function normalizeDashedKeepCount(value) {
+    const count = Math.floor(Number(value));
+    return Number.isFinite(count) && count >= 2 ? Math.min(count, Number.MAX_SAFE_INTEGER) : 15;
+}
+function getDashedKeepCount() { return normalizeDashedKeepCount(getSettings().dashedKeepCount); }
 
 // 原始返回 → 文本数组。只剥真正的列表序号，不误伤「3000年前」等正文数字。
 function _dashedItemsFromRaw(raw) {
@@ -9492,6 +9521,7 @@ function normalizeDashedStore(saved) {
             id: String(item?.id || _dashedLegacyId(item?.text, index)),
             text: String(item?.text || '').trim(),
             createdAt: Number(item?.createdAt) || ts,
+            locked: item?.locked === true,
         })).filter(item => {
             if (!item.text || seen.has(item.text)) return false;
             seen.add(item.text);
@@ -9505,11 +9535,47 @@ function normalizeDashedStore(saved) {
         seen.add(text);
         return true;
     })
-        .map((text, index) => ({ id: _dashedLegacyId(text, index), text, createdAt: ts }));
+        .map((text, index) => ({ id: _dashedLegacyId(text, index), text, createdAt: ts, locked: false }));
 }
 
 function readDashedItems() { return normalizeDashedStore(readStore(getDashedCacheKey())); }
 function parseDashedItems(limit = Infinity) { return readDashedItems().slice(0, limit).map(item => item.text); }
+
+// 锁定项完全独立于保留数量；只从最新到最旧计数未锁条目，超出部分才进入自动清理。
+function pruneDashedItems(items, keepCount, enabled = true) {
+    if (!enabled) return { items: [...(items || [])], removed: [] };
+    const limit = normalizeDashedKeepCount(keepCount);
+    let unlockedCount = 0;
+    const kept = [];
+    const removed = [];
+    for (const item of items || []) {
+        if (item?.locked === true || unlockedCount < limit) {
+            kept.push(item);
+            if (item?.locked !== true) unlockedCount += 1;
+        } else removed.push(item);
+    }
+    return { items: kept, removed };
+}
+
+// 冷知识唯一写入咽喉：所有真实修改都在这里统一执行保留策略并落盘。
+function commitDashedItems(items, ts = Date.now()) {
+    const result = pruneDashedItems(items, getDashedKeepCount(), getSettings().dashedCleanupEnabled !== false);
+    if (result.items.length) writeStore(getDashedCacheKey(), { items: result.items, ts });
+    else removeStore(getDashedCacheKey());
+    return result;
+}
+
+function applyDashedCleanupToCurrent(notify = false) {
+    if (getSettings().dashedCleanupEnabled === false) return 0;
+    const current = readDashedItems();
+    const preview = pruneDashedItems(current, getDashedKeepCount(), true);
+    if (!preview.removed.length) return 0;
+    commitDashedItems(current);
+    if (linesMode) refreshLinesPanel();
+    syncLatestInlineBlock();
+    if (notify && getSettings().notifyMode !== 'off') showToast(`已清理 ${preview.removed.length} 条较旧冷知识`);
+    return preview.removed.length;
+}
 
 function mergeDashedItems(newTexts, currentItems, createdAt = Date.now()) {
     const freshSeen = new Set();
@@ -9519,7 +9585,7 @@ function mergeDashedItems(newTexts, currentItems, createdAt = Date.now()) {
         return true;
     });
     const added = fresh.filter(text => !(currentItems || []).some(item => item.text === text))
-        .map((text, index) => ({ id: _newDashedId(createdAt, index), text, createdAt }));
+        .map((text, index) => ({ id: _newDashedId(createdAt, index), text, createdAt, locked: false }));
     const merged = [...added];
     const seen = new Set(added.map(item => item.text));
     for (const item of currentItems || []) {
@@ -9592,12 +9658,14 @@ async function runGenerateDashed(options = {}) {
         if (!returned.length) throw new Error('模型没有返回可用的冷知识');
         const now = Date.now();
         const merged = mergeDashedItems(returned, readDashedItems(), now);
-        if (merged.added.length) writeStore(getDashedCacheKey(), { items: merged.items, ts: now });
+        const committed = merged.added.length ? commitDashedItems(merged.items, now) : { items: merged.items, removed: [] };
+        const keptIds = new Set(committed.items.map(item => item.id));
+        const addedCount = merged.added.filter(item => keptIds.has(item.id)).length;
         isGeneratingDashed = false;
         dashedAbortController = null;
         if (manual && getSettings().notifyMode !== 'off') {
-            const suffix = merged.added.length < targetCount ? `（期望 ${targetCount} 条，实际有效新增 ${merged.added.length} 条）` : '';
-            showToast(merged.added.length ? `已新增 ${merged.added.length} 条冷知识${suffix}` : '本次内容与已有冷知识重复，没有新增');
+            const suffix = addedCount < targetCount ? `（期望 ${targetCount} 条，实际有效新增 ${addedCount} 条）` : '';
+            showToast(addedCount ? `已新增 ${addedCount} 条冷知识${suffix}` : '本次内容与已有冷知识重复，没有新增');
         }
         if (linesMode) refreshLinesPanel();
         syncLatestInlineBlock();
@@ -9630,7 +9698,14 @@ async function openDashedGeneratorDialog() {
         initialValues: ['random'],
         custom: { value: 'custom', placeholder: '填写想了解的冷知识方向…', maxLength: 200 },
         confirmText: '生成',
-        validate: value => !value.values.length ? '请至少选择一个主题' : (value.values.includes('custom') && !value.customValue ? '请填写自定义主题' : ''),
+        validate: value => {
+            if (!value.values.length) return '请至少选择一个主题';
+            if (value.values.includes('custom') && !value.customValue) return '请填写自定义主题';
+            const count = value.values.includes('random') ? 2 : dashedTargetCount(value.values.length);
+            return getSettings().dashedCleanupEnabled !== false && count > getDashedKeepCount()
+                ? `当前只保留最近 ${getDashedKeepCount()} 条未锁冷知识，请减少主题或调高保留数量`
+                : '';
+        },
     });
     if (!result || getContext().chatId !== chatIdSnap) return;
     let topics = result.values;
@@ -9647,10 +9722,24 @@ async function triggerDeleteDashedItem(id) {
     const latest = readDashedItems();
     if (!latest.some(item => item.id === id)) { if (linesMode) refreshLinesPanel(); return; }
     const items = latest.filter(item => item.id !== id);
-    if (items.length) writeStore(getDashedCacheKey(), { items, ts: Date.now() });
-    else removeStore(getDashedCacheKey());
+    commitDashedItems(items);
     if (linesMode) refreshLinesPanel();
     syncLatestInlineBlock();
+}
+
+function triggerToggleDashedLock(id) {
+    const latest = readDashedItems();
+    const target = latest.find(item => item.id === id);
+    if (!target) { showToast('这条冷知识已不存在', null, true); if (linesMode) refreshLinesPanel(); return; }
+    const wasLocked = target.locked === true;
+    const next = latest.map(item => item.id === id ? { ...item, locked: !wasLocked } : item);
+    const committed = commitDashedItems(next);
+    const targetKept = committed.items.some(item => item.id === id);
+    if (linesMode) refreshLinesPanel();
+    syncLatestInlineBlock();
+    if (wasLocked && !targetKept) showToast('已解锁，并按保留规则清理这条较旧冷知识');
+    else if (committed.removed.length) showToast(`${wasLocked ? '已解锁' : '已锁定'}；同时清理 ${committed.removed.length} 条较旧冷知识`);
+    else showToast(wasLocked ? '已解锁这条冷知识' : '已锁定这条冷知识');
 }
 
 // ─── 虚线楼内子块（折进 .sp-lines-inline 的 body，与线合并成一个楼内窗口）──────────
@@ -9989,7 +10078,10 @@ function renderDashedPanel() {
     }
     const rows = items.map(item => `<div class="sp-lines-dashed-item" data-id="${escapeAttr(item.id)}">
         <div class="sp-lines-dashed-text">${escapeHtml(item.text)}</div>
-        <button type="button" class="sp-lines-dashed-delete" data-id="${escapeAttr(item.id)}" title="删除这条冷知识" aria-label="删除这条冷知识"><i class="fa-solid fa-trash"></i></button>
+        <div class="sp-lines-dashed-actions">
+            <button type="button" class="sp-lines-dashed-lock${item.locked ? ' sp-lines-dashed-locked' : ''}" data-id="${escapeAttr(item.id)}" title="${item.locked ? '取消锁定这条冷知识' : '锁定这条冷知识'}" aria-label="${item.locked ? '取消锁定这条冷知识' : '锁定这条冷知识'}"><i class="fa-solid ${item.locked ? 'fa-lock' : 'fa-lock-open'}"></i></button>
+            <button type="button" class="sp-lines-dashed-delete" data-id="${escapeAttr(item.id)}" title="删除这条冷知识" aria-label="删除这条冷知识"><i class="fa-solid fa-trash"></i></button>
+        </div>
     </div>`).join('');
     return `${status}<div class="sp-lines-dashed-list">${rows}</div>`;
 }

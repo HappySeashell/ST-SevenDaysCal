@@ -4656,10 +4656,16 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     line-height: 1.6;
     word-break : break-word;
 }
+.sp-lines-dashed-actions {
+    display    : inline-flex;
+    align-items: center;
+    gap        : 2px;
+    flex-shrink: 0;
+}
+.sp-lines-dashed-lock,
 .sp-lines-dashed-delete {
     width          : 26px;
     height         : 26px;
-    flex-shrink    : 0;
     display        : flex;
     align-items    : center;
     justify-content: center;
@@ -4671,7 +4677,9 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     cursor         : pointer;
     font-size      : var(--sp-fs-72);
 }
+.sp-lines-dashed-lock:hover,
 .sp-lines-dashed-delete:hover { color: var(--sp-on-surface); background: var(--sp-surface-high); }
+.sp-lines-dashed-lock.sp-lines-dashed-locked { color: var(--sp-primary); }
 .sp-lines-dashed-status,
 .sp-lines-dashed-error {
     padding      : 9px 14px;
