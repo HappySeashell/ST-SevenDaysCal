@@ -2158,9 +2158,11 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-lines-toolbar {
     flex-shrink  : 0;
-    padding      : 8px 12px;
+    padding      : 10px 12px;
     border-bottom: 1px solid var(--sp-divider);
 }
+/* 工具栏带分隔线后，列表顶部的跳转提示不再贴线 */
+.sp-lines-list .sp-jump-hint { padding-top: 10px; }
 .sp-lines-toolbar-inner {
     display        : flex;
     align-items    : center;
