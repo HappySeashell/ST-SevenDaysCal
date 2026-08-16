@@ -3920,7 +3920,7 @@ function injectModal() {
 
                                     <label class="sp-mode-opt" style="margin-top:10px">
                                         <input type="checkbox" id="sp-dashed-enabled" ${getSettings().dashedEnabled === true ? 'checked' : ''}>
-                                        <span>随线自动生成冷知识并在楼层展示</span>
+                                        <span>虚线 · 冷知识（跟随线生成）</span>
                                     </label>
                                     <p class="sp-cfg-hint" style="margin-top:2px">开启后，每次线生成 / 推进会额外新增两条冷知识，并在最新楼层展示。关闭只停止自动生成和楼层展示，已保存的冷知识仍可在线面板查看。<b>纯娱乐、不注入任何地方</b>。多一次 API，默认关。</p>
 
@@ -3930,7 +3930,7 @@ function injectModal() {
                                         <input id="sp-dashed-keep-count" class="sp-input sp-interval-input" type="number" min="2" step="1" value="${escapeAttr(String(getDashedKeepCount()))}" ${getSettings().dashedCleanupEnabled !== false ? '' : 'disabled'} aria-label="保留最近多少条未锁冷知识">
                                         <span>条未锁冷知识</span>
                                     </div>
-                                    <p class="sp-cfg-hint" style="margin-top:2px">锁定项不计入数量，也不会被自动清除。修改后当前聊天立即生效，其他聊天会在下次修改冷知识时按新规则整理。</p>
+                                    <p class="sp-cfg-hint" style="margin-top:2px">修改后会对当前聊天立刻生效，其他聊天会在下次冷知识更新时按规则清理。锁定的冷知识不会被自动清除。</p>
 
                                     <hr class="sp-mem-divider">
 
@@ -9717,7 +9717,7 @@ async function triggerDeleteDashedItem(id) {
     const target = readDashedItems().find(item => item.id === id);
     if (!target) { showToast('这条冷知识已不存在', null, true); if (linesMode) refreshLinesPanel(); return; }
     const chatIdSnap = getContext().chatId;
-    const ok = await customDialog.confirm({ title: '删除冷知识', body: `确定删除「${target.text}」吗？`, confirmText: '删除', cancelText: '取消' });
+    const ok = await customDialog.confirm({ title: '删除冷知识', body: '确认删除这条冷知识吗？', confirmText: '删除', cancelText: '取消' });
     if (!ok || getContext().chatId !== chatIdSnap) return;
     const latest = readDashedItems();
     if (!latest.some(item => item.id === id)) { if (linesMode) refreshLinesPanel(); return; }
@@ -10076,12 +10076,15 @@ function renderDashedPanel() {
     if (!items.length) {
         return `${status}<div class="sp-empty sp-lines-dashed-empty"><i class="fa-solid fa-lightbulb"></i><p>还没有冷知识，可以点击右上角新增</p></div>`;
     }
-    const rows = items.map(item => `<div class="sp-lines-dashed-item" data-id="${escapeAttr(item.id)}">
-        <div class="sp-lines-dashed-text">${escapeHtml(item.text)}</div>
-        <div class="sp-lines-dashed-actions">
-            <button type="button" class="sp-lines-dashed-lock${item.locked ? ' sp-lines-dashed-locked' : ''}" data-id="${escapeAttr(item.id)}" title="${item.locked ? '取消锁定这条冷知识' : '锁定这条冷知识'}" aria-label="${item.locked ? '取消锁定这条冷知识' : '锁定这条冷知识'}"><i class="fa-solid ${item.locked ? 'fa-lock' : 'fa-lock-open'}"></i></button>
-            <button type="button" class="sp-lines-dashed-delete" data-id="${escapeAttr(item.id)}" title="删除这条冷知识" aria-label="删除这条冷知识"><i class="fa-solid fa-trash"></i></button>
+    const rows = items.map((item, index) => `<div class="sp-beat sp-lines-dashed-item${item.locked ? ' sp-lines-dashed-pinned' : ''}" data-id="${escapeAttr(item.id)}">
+        <div class="sp-beat-head">
+            <span class="sp-seq-badge">#${index + 1}</span>
+            <span class="sp-beat-actions">
+                <button type="button" class="sp-lines-dashed-lock" data-id="${escapeAttr(item.id)}" title="${item.locked ? '取消锁定这条冷知识' : '锁定这条冷知识'}" aria-label="${item.locked ? '取消锁定这条冷知识' : '锁定这条冷知识'}"><i class="fa-solid ${item.locked ? 'fa-lock' : 'fa-lock-open'}"></i></button>
+                <button type="button" class="sp-lines-dashed-delete" data-id="${escapeAttr(item.id)}" title="删除这条冷知识" aria-label="删除这条冷知识"><i class="fa-solid fa-xmark"></i></button>
+            </span>
         </div>
+        <div class="sp-beat-scene">${escapeHtml(item.text)}</div>
     </div>`).join('');
     return `${status}<div class="sp-lines-dashed-list">${rows}</div>`;
 }

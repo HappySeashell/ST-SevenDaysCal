@@ -3535,9 +3535,10 @@ select.sp-input { appearance: none; cursor: pointer; }
     cursor    : default;
 }
 
-/* 单条删除 × —— 放在 head 行内，紧挨注入按钮并排，二者同尺寸。
+/* 线 / 冷知识的单条删除 × —— 放在 head 行内，紧挨其他操作并排、保持同尺寸。
    不用 absolute，避免跟常驻显示的注入按钮重叠、互相遮挡点击（楼内尤甚）。 */
-.sp-line-del-one {
+.sp-line-del-one,
+.sp-lines-dashed-delete {
     width          : var(--sp-btn-22);
     height         : var(--sp-btn-22);
     padding        : 0;
@@ -3555,16 +3556,19 @@ select.sp-input { appearance: none; cursor: pointer; }
     transition     : opacity 0.15s, color 0.15s, background 0.15s;
 }
 /* 面板：跟注入按钮一样，hover 卡片才浮现 */
-.sp-beat:hover .sp-line-del-one { opacity: 1; }
-.sp-line-del-one:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); }
+.sp-beat:hover .sp-line-del-one,
+.sp-beat:hover .sp-lines-dashed-delete { opacity: 1; }
+.sp-line-del-one:hover,
+.sp-lines-dashed-delete:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); }
 /* 楼内：移动端无 hover，默认淡显（对齐注入按钮的 0.55 逻辑） */
 .sp-inline-line .sp-line-del-one { opacity: 0.55; color: inherit; }
 .sp-inline-line:hover .sp-line-del-one,
 .sp-inline-line .sp-line-del-one:hover { opacity: 1; }
 .sp-inline-line .sp-line-del-one:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); }
 
-/* 锁定切换按钮 —— 仿 .sp-line-del-one 骨架，尺寸/布局一致，颜色语义不同（非危险操作） */
-.sp-line-pin-toggle {
+/* 线 / 冷知识的锁定切换按钮——与删除键同骨架，颜色语义不同（非危险操作）。 */
+.sp-line-pin-toggle,
+.sp-lines-dashed-lock {
     width          : var(--sp-btn-22);
     height         : var(--sp-btn-22);
     padding        : 0;
@@ -3581,10 +3585,13 @@ select.sp-input { appearance: none; cursor: pointer; }
     opacity        : 0;
     transition     : opacity 0.15s, color 0.15s, background 0.15s;
 }
-.sp-beat:hover .sp-line-pin-toggle { opacity: 1; }
-.sp-line-pin-toggle:hover { color: var(--sp-primary); background: rgba(125, 125, 235, 0.12); }
+.sp-beat:hover .sp-line-pin-toggle,
+.sp-beat:hover .sp-lines-dashed-lock { opacity: 1; }
+.sp-line-pin-toggle:hover,
+.sp-lines-dashed-lock:hover { color: var(--sp-primary); background: rgba(125, 125, 235, 0.12); }
 /* 已锁定时常驻亮出（不必 hover 才看到锁着没锁着） */
-.sp-line-card.sp-line-pinned .sp-line-pin-toggle { opacity: 0.85; color: var(--sp-primary); }
+.sp-line-card.sp-line-pinned .sp-line-pin-toggle,
+.sp-lines-dashed-item.sp-lines-dashed-pinned .sp-lines-dashed-lock { opacity: 0.85; color: var(--sp-primary); }
 
 /* 锁定态卡片：左边框改用主色调、轻微底色区分，一眼看出"保命线" */
 .sp-line-card.sp-line-pinned {
@@ -4636,50 +4643,9 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     opacity : 0.6;
 }
 
-/* 主面板历史：一条一行，删除动作固定在右侧；颜色、圆角、按钮密度沿用既有卡片规范。 */
+/* 主面板历史直接复用线卡的卡片、头部、编号和正文区，只保留必要的正文收口。 */
 .sp-lines-dashed-list { display: flex; flex-direction: column; }
-.sp-lines-dashed-item {
-    display      : flex;
-    align-items  : center;
-    gap          : 8px;
-    padding      : 11px 14px;
-    border-bottom: 1px solid var(--sp-divider);
-    transition   : background 0.1s;
-}
-.sp-lines-dashed-item:hover { background: var(--sp-hover-bg); }
-.sp-lines-dashed-item:last-child { border-bottom: none; }
-.sp-lines-dashed-text {
-    flex       : 1;
-    min-width  : 0;
-    color      : var(--sp-on-surface);
-    font-size  : var(--sp-fs-82);
-    line-height: 1.6;
-    word-break : break-word;
-}
-.sp-lines-dashed-actions {
-    display    : inline-flex;
-    align-items: center;
-    gap        : 2px;
-    flex-shrink: 0;
-}
-.sp-lines-dashed-lock,
-.sp-lines-dashed-delete {
-    width          : 26px;
-    height         : 26px;
-    display        : flex;
-    align-items    : center;
-    justify-content: center;
-    padding        : 0;
-    border         : 0;
-    border-radius  : 50%;
-    background     : transparent;
-    color          : var(--sp-subtle);
-    cursor         : pointer;
-    font-size      : var(--sp-fs-72);
-}
-.sp-lines-dashed-lock:hover,
-.sp-lines-dashed-delete:hover { color: var(--sp-on-surface); background: var(--sp-surface-high); }
-.sp-lines-dashed-lock.sp-lines-dashed-locked { color: var(--sp-primary); }
+.sp-lines-dashed-item .sp-beat-scene { margin-bottom: 0; }
 .sp-lines-dashed-status,
 .sp-lines-dashed-error {
     padding      : 9px 14px;
