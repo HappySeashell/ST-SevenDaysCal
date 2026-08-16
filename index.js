@@ -303,6 +303,10 @@ let _lastSeenMaxMesId   = -1;
 let _pendingSwipeGen    = null;   // { mesId }：swipe 触发新生成，等对应 RENDERED 后从楼层基线 B0 重算
 let _floorTextSig       = {};     // mesId → 楼主文本签名；「同 mesId 内容变了」= 原楼重生成 = 重roll。版本无关，兜底「流式重roll的 CMR type=undefined、GENERATION_STARTED 不 latch」的实测坑
 let _pendingReroll      = false;  // 🔄重生成握手：ST 对 regenerate 先删旧 AI 楼再 push，saveReply 见末条是 user 楼便把 type 强制降成 'normal'（script.js:10677）并回写调用处 → 非流式下 CMR 到手已非 'regenerate'。改在 GENERATION_STARTED（type 尚未降级）置位、下一条 CMR 消费，覆盖流式/非流式两路
+// regenerate 的旧 assistant 可能在 GENERATION_STARTED 时仍暂留于 ctx.chat。
+// 记录楼层位置与旧文本快照；buildMessages 只排除仍保持旧文本的那一条，
+// 同一楼层被新回复就地替换后自动恢复纳入，避免把新 assistant 一并过滤。
+let _rerollExcludedAssistant = null; // { mesId, text }
 let _stStreamUntil      = 0;      // 流式输出活跃截止时间戳：Date.now()<此值 = ST 正流式重写末楼 .mes_text，此间 observer 不塞楼内块（防频闪）。基于「最近一个流式 token 的时间」自动续期、到点自愈，绝不会像布尔闸那样卡死（ENDED 事件在 quiet 生成里不保证触发）
 let isGeneratingDashed  = false;   // 虚线·冷知识生成中
 let dashedAbortController = null;  // 虚线独立 abort，跟线互不干扰
@@ -341,6 +345,13 @@ let _almSyncPending      = false;  // 同步在飞时又有新的「今天」推
 const _injectTexts      = {};
 let   _injectIdSeq      = 0;
 let viewportSyncBound   = false;
+
+// 历面板批量模式（可复用框架，执行动作按 scope 分开）：一次只在一个可见列表内生效。
+//   scope: null=未进入; 'almanac'=日历条目批量删除; 'ledger-active'=活跃刻度批量归档; 'ledger-archive'=归档刻度批量删除
+//   _batchSelected: 当前勾选的 id 集合。切 sheet / 切档 / 退窗 一律清空。
+let _batchScope    = null;
+let _batchSelected = new Set();
+function batchReset() { _batchScope = null; _batchSelected = new Set(); }
 
 const isMobile = () => window.innerWidth <= 640;
 
@@ -531,6 +542,7 @@ jQuery(async () => {
         _almTodayEditing = false;
         _almSyncingPoint = false;
         _almSyncPending = false;
+        batchReset();                    // 批量模式勾选/scope 随切档/退窗清空
         _lastMainView = 'schedule';   // 跨 chat：下次打开面板默认回到点（第一页）
         $inAll('.sp-side-tab.sp-view-btn').removeClass('sp-view-active');
         $in('.sp-side-tab.sp-view-btn[data-view="schedule"]').addClass('sp-view-active');
@@ -726,7 +738,20 @@ jQuery(async () => {
         if (dryRun) return;
         _stStreamUntil = Date.now() + 3000;   // 盖住首 token 前的模型延迟；无 token 也 3s 自愈
         // 🔄重生成：此刻 type 尚是原始 'regenerate'（还没进 saveReply 被降级成 'normal'）→ 置位待下一条 CMR 消费。
-        if (genType === 'regenerate') _pendingReroll = true;
+        if (genType === 'regenerate') {
+            _pendingReroll = true;
+            const chat = getContext().chat;
+            _rerollExcludedAssistant = null;
+            if (Array.isArray(chat) && chat.length) {
+                const i = chat.length - 1;
+                const msg = chat[i];
+                // 若旧 assistant 已先被 ST 移除，末楼通常是 user；不向前
+                // 搜索，否则会误删更早、仍有效的 assistant 历史。
+                if (msg && !msg.is_user) {
+                    _rerollExcludedAssistant = { mesId: i, text: String(msg.mes ?? '') };
+                }
+            }
+        }
     };
     eventSource.on(event_types.GENERATION_STARTED, _stListeners.genStart);
     if (_stListeners.streamTok) eventSource.removeListener?.(event_types.STREAM_TOKEN_RECEIVED, _stListeners.streamTok);
@@ -4385,7 +4410,7 @@ function injectModal() {
     // 楼层刷新仍直接广泛取材两条，不打开面板的主题选择弹窗。
     $('#chat').on('click', '.sp-inline-refresh-dashed', function (e) {
         e.stopPropagation();
-        runGenerateDashed();
+        runGenerateDashed({ reroll: true });
     });
     // Per-line delete (× on each line card, panel + inline). No full-clear button anymore.
     $linesWrap.on('click', '.sp-line-del-one', function (e) {
@@ -4901,6 +4926,40 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-pin', function () { toggleAlmanacPin($(this).attr('data-id')); });
     $almanac.on('click', '.sp-alm-edit', function () { openAlmanacEditor($(this).attr('data-id')); });
     $almanac.on('click', '.sp-alm-del', function () { deleteAlmanacItem($(this).attr('data-id')); });
+    // ── 历面板批量模式：入口 / 退出 / 全选 / 勾选 / 执行。scope 与执行动作见 execBatch。──
+    $almanac.on('click', '.sp-batch-enter', function (e) {
+        e.stopPropagation();
+        const scope = $(this).attr('data-scope');
+        if (!BATCH_SCOPES.includes(scope)) return;
+        _batchScope = scope;
+        _batchSelected = new Set();
+        renderAlmanacPanel();
+    });
+    $almanac.on('click', '.sp-batch-exit', function (e) {
+        e.stopPropagation();
+        batchReset();
+        renderAlmanacPanel();
+    });
+    $almanac.on('change', '.sp-batch-selall', function () {
+        if (!_batchScope || !BATCH_SCOPES.includes(_batchScope)) return;
+        if (this.checked) batchScopeIds(_batchScope).forEach(id => _batchSelected.add(id));
+        else _batchSelected = new Set();
+        renderAlmanacPanel();
+    });
+    $almanac.on('change', '.sp-batch-check', function () {
+        const id = $(this).closest('[data-id]').attr('data-id');
+        if (id == null) return;
+        if (this.checked) _batchSelected.add(id);
+        else _batchSelected.delete(id);
+        renderAlmanacPanel();
+    });
+    $almanac.on('click', '.sp-batch-exec', async function (e) {
+        e.stopPropagation();
+        const scope = _batchScope;
+        const ids = [..._batchSelected];
+        if (!scope || !BATCH_SCOPES.includes(scope) || !ids.length) return;
+        await execBatch(scope, ids);
+    });
     // 历面板「今天」栏：±1天 / 改（内联月日） / 自动（清锚） / 同步到点。前三者经 runAnchorAftermath 共享善后
     // （刷两条只读条 + 历面板）；改今天不再自动烧点，点要跟随由「同步到点」键显式触发（历点共用这枚今天锚点）。
     $almanac.on('click', '.sp-alm-today-prev', function () { almNudgeToday(-1); });
@@ -6186,10 +6245,10 @@ async function triggerGenerate() {
     setExtBtnState('generating');
     if (!$(`#${MODAL_ID}`).is(':visible')) showPanel();
     setBody(loadingHtml('正在规划', 'sp-abort-generate'));
-    runGenerate();
+    runGenerate(true);
 }
 
-async function runGenerate() {
+async function runGenerate(reroll = false) {
     // Snapshot view state — user may switch views while the request is in flight
     const viewSnap = currentView;
     const charSnap = charViewName;
@@ -6209,7 +6268,8 @@ async function runGenerate() {
             for (const d of pc.days) for (const ev of d.events) if (ev.pin) pinnedEvents.push(ev);
             if (pc.future) for (const ev of pc.future.events) if (ev.pin) pinnedEvents.push(ev);
         }
-        const raw = await generate(ctx, userName, charName, viewSnap, myCtrl.signal, pinnedEvents);
+        const raw = await generate(ctx, userName, charName, viewSnap, myCtrl.signal, pinnedEvents,
+            reroll ? { reroll: true, module: 'point' } : {});
         if (scheduleAbortController !== myCtrl) return;   // 生成途中被中止/取代：丢弃本次结果
         // F5：合并锁定，机制对齐 mergePinnedLines(oldRaw, aiRaw)
         let merged = prevRaw ? mergePinnedPoints(prevRaw, raw) : raw;
@@ -6318,14 +6378,14 @@ function findPieceById(id) {
         || null;
 }
 
-async function generate(ctx, userName, charName, perspective = 'user', signal = null, pinned = null) {
+async function generate(ctx, userName, charName, perspective = 'user', signal = null, pinned = null, opts = {}) {
     const cfg = loadCfg();
     if (!cfg.url || !cfg.key) {
         if (!settingsOpen) toggleSettings();
         throw new Error('请先在设置中填写自定义 API 的 URL 和 Key');
     }
     const prompt = buildPrompt(userName, charName, perspective, pinned);
-    return callCustomApi(ctx, prompt, cfg, userName, charName, signal);
+    return callCustomApi(ctx, prompt, cfg, userName, charName, signal, 10, opts);
 }
 
 // Normalize user-input OpenAI-compatible base URL:
@@ -7173,7 +7233,10 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10,
     const { personaDesc, authorNote } = readCardExtras(ctx);
 
     // Story memory (Plan C: objective memory + view tag)
-    const memText = await getMemText({ full: opts.fullMemory });
+    const memoryText = await getMemText({ full: opts.fullMemory });
+    // Memory is still valid narrative context, but serialized module widgets
+    // inside an old snapshot are not generation input during a reroll.
+    const memText = opts.reroll ? stripRerollModuleArtifacts(memoryText) : memoryText;
     const memBlock = memText
         ? `【故事记忆库】以下由本插件在对话过程中自动生成的客观摘要，反映从最早到近期的关键事件与伏笔。请**优先信任记忆库描述**，即使它与角色卡/世界书中较早的描述冲突（因为记忆库记录了事件后的最新状态）。以 ${currentView === 'char' ? charName : userName} 的视角优先关注对其有意义的信息。\n\n${memText}`
         : '';
@@ -7219,9 +7282,16 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10,
         // 与记忆采集(memory.getAiFloors)、间/面讨论(buildRecentChatContext)同口径。
         const s = getSettings();
         const stripOpts = { keepTags: s.keepTags, extraTags: s.extraTags };
-        history = allMsgs.slice(startIdx).map(m => ({
+        const excluded = _pendingReroll ? _rerollExcludedAssistant : null;
+        history = allMsgs.slice(startIdx).filter((m, offset) => {
+            if (!excluded) return true;
+            const mesId = startIdx + offset;
+            return !(mesId === excluded.mesId && String(m?.mes ?? '') === excluded.text);
+        }).map(m => ({
             role   : m.is_user ? 'user' : 'assistant',
-            content: substituteParams(memory.stripTags(m.mes ?? '', stripOpts)),
+            content: substituteParams(opts.reroll
+                ? stripRerollModuleArtifacts(memory.stripTags(m.mes ?? '', stripOpts))
+                : memory.stripTags(m.mes ?? '', stripOpts)),
         }));
     }
     return [{ role: 'system', content: sys }, ...history, { role: 'user', content: prompt }];
@@ -8422,8 +8492,6 @@ function setOutlineBody(html) { $in('#sp-outline-beats').html(html); }
 async function triggerGenerateOutline() {
     if (isGeneratingOutline) return;
     if (!await memoryPreCheckConfirm()) return;
-    removeStore(getOutlineCacheKey());
-    cachedOutline = null;
     isGeneratingOutline = true;
     setOutlineBody(loadingHtml('正在构思面', 'sp-abort-outline'));
     runGenerateOutline();
@@ -8444,7 +8512,8 @@ async function runGenerateOutline() {
             throw new Error('请先在设置中填写自定义 API 的 URL 和 Key');
         }
         const prompt   = buildOutlinePrompt(userName, charName, viewSnap);
-        const raw      = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal);
+        const raw      = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 10,
+            { reroll: true, module: 'outline' });
 
         if (outlineAbortController !== myCtrl) return;
         if (getContext().chatId !== chatIdSnap) {
@@ -8732,7 +8801,7 @@ function _regenLinesForSwipe(mesId, forceRegen = false) {
         linesAbortController = null;
     }
     isGeneratingLines = true;
-    runGenerateLines(true, { mesId: Number(mesId), swipeId, baselineRaw: baseline });
+    runGenerateLines(true, { mesId: Number(mesId), swipeId, baselineRaw: baseline, forceReroll: true });
 }
 
 function loadCachedLinesForCurrentChat(view, charName) {
@@ -9364,7 +9433,23 @@ async function triggerGenerateLines() {
     cachedLines = null;
     isGeneratingLines = true;
     setLinesBody(loadingHtml('正在推演线', 'sp-abort-lines'));
-    runGenerateLines();
+    runGenerateLines(false, { reroll: true });
+}
+
+// Module rerolls must not inherit serialized products from an earlier module
+// pass through ctx.chat. Keep narrative text, but remove structured widgets.
+function stripRerollModuleArtifacts(text) {
+    return String(text || '')
+        .replace(/<(?:calendar|schedule|storylines|line|outline|almanac|era)_widget(?:\s[^>]*)?>[\s\S]*?<\/(?:calendar|schedule|storylines|line|outline|almanac|era)_widget>/gi, '')
+        .replace(/<\/?(?:calendar|schedule|storylines|line|outline|almanac|era)_widget(?:\s[^>]*)?>/gi, '')
+        .trim();
+}
+
+// Full line reroll starts from a clean module state; only explicit pins are
+// carried forward. Advance/swipe continuity remains on the normal path.
+function pinnedLinesRaw(raw) {
+    const pinned = parseLines(raw).filter(line => line.pin);
+    return pinned.length ? linesToRaw(pinned) : '';
 }
 
 // Advance = generate based on existing raw (preserves previousRaw for continuity).
@@ -9625,6 +9710,7 @@ function buildDashedPrompt(userName, charName, avoidItems = [], options = {}) {
 async function runGenerateDashed(options = {}) {
     if (isGeneratingDashed) return;
     const manual = options.manual === true;
+    const reroll = manual || options.reroll === true;
     const targetCount = dashedTargetCount(options.count || options.topics?.length || 2);
     const chatIdSnap = getContext().chatId;
     const myCtrl = dashedAbortController = new AbortController();
@@ -9639,7 +9725,9 @@ async function runGenerateDashed(options = {}) {
         const cfg = loadCfg();
         if (!cfg.url || !cfg.key) throw new Error('未配置自定义 API');
         const topics = (options.topics || []).map(value => dashedTopicText(value, userName, charName, options.customValue)).filter(Boolean);
-        const avoidRecent = parseDashedItems(DASHED_AVOID_COUNT);
+        const currentItems = readDashedItems();
+        const lockedItems = currentItems.filter(item => item?.locked);
+        const avoidRecent = reroll ? [] : parseDashedItems(DASHED_AVOID_COUNT);
         const prompt = buildDashedPrompt(userName, charName, avoidRecent, { topics, count: targetCount });
         // 不喂最近对话，只靠人设、世界书、记忆库等 system 背景发散。
         const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 0);
@@ -9648,7 +9736,7 @@ async function runGenerateDashed(options = {}) {
         const returned = _dashedItemsFromRaw(raw).slice(0, targetCount);
         if (!returned.length) throw new Error('模型没有返回可用的冷知识');
         const now = Date.now();
-        const merged = mergeDashedItems(returned, readDashedItems(), now);
+        const merged = mergeDashedItems(returned, reroll ? lockedItems : currentItems, now);
         const committed = merged.added.length ? commitDashedItems(merged.items, now) : { items: merged.items, removed: [] };
         const keptIds = new Set(committed.items.map(item => item.id));
         const addedCount = merged.added.filter(item => keptIds.has(item.id)).length;
@@ -9776,13 +9864,14 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
         // 常规新楼/手动重生成则从 store 当前活跃集推进。
         let previousRaw = '';
         if (swipeCtx && typeof swipeCtx.baselineRaw === 'string') {
-            previousRaw = swipeCtx.baselineRaw;
+            previousRaw = swipeCtx.forceReroll ? pinnedLinesRaw(swipeCtx.baselineRaw) : swipeCtx.baselineRaw;
         } else {
             const savedLines = readStore(cacheKey);
             if (savedLines?.raw) previousRaw = savedLines.raw;
         }
         const prompt = buildLinesPrompt(userName, charName, viewSnap, previousRaw, getScale(charStableKey(ctx)));
-        const raw    = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal);
+        const raw    = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 10,
+            (swipeCtx?.forceReroll || swipeCtx?.reroll) ? { reroll: true, module: 'lines' } : {});
 
         if (linesAbortController !== myCtrl) return;
         // Chat may have switched while we were awaiting; do not touch cache or UI in that case
@@ -10800,20 +10889,25 @@ function almRowHtml(it, ctx) {
     const active = days > 1 && ctx?.todayDoy != null && almItemCoversDoy(it, ctx.todayDoy, ctx?.cal);
     const activeTag = active ? '<span class="sp-alm-active-tag">进行中</span>' : '';
     const srcTag = it.source === 'user' ? '<span class="sp-alm-src-tag">自填</span>' : '';
+    const batchOn = _batchScope === 'almanac';
+    const checked = batchOn && _batchSelected.has(it.id);
+    const checkbox = batchOn
+        ? `<input type="checkbox" class="sp-batch-check" ${checked ? 'checked' : ''} aria-label="选择此条">`
+        : '';
     // 三行布局（旧两行把日期/周几/名字/标签全塞第一行，长节日名会把末尾操作按钮顶掉）：
     //   L1 = 日期 + 周几 + 持续天数「共N天」…… 右对齐三个操作按钮（全是短、定宽内容，按钮永不被挤掉）
     //   L2 = 节日名 + 类型标签 + 自填 + 进行中（可变长的名字独占一行、溢出省略号，不再顶按钮）
     //   L3 = 备注（整行）
-    return `<div class="sp-alm-item sp-alm-type-${meta.cls}${it.pin ? ' sp-alm-pinned' : ''}" data-id="${it.id}">
+    return `<div class="sp-alm-item sp-alm-type-${meta.cls}${it.pin ? ' sp-alm-pinned' : ''}${batchOn ? ' sp-batch-row' : ''}${checked ? ' sp-batch-checked' : ''}" data-id="${it.id}">
         <div class="sp-alm-top">
-            <i class="fa-solid ${meta.icon} sp-alm-date-icon"></i>
+            ${checkbox}<i class="fa-solid ${meta.icon} sp-alm-date-icon"></i>
             <span class="sp-alm-date-txt">${escapeHtml(almDateLabel(it, ctx?.cal))}</span>
             <span class="sp-alm-wd">${wd}</span>${spanTag}
-            <span class="sp-alm-acts">
+            ${batchOn ? '' : `<span class="sp-alm-acts">
                 <button class="sp-icon-btn sp-alm-pin" data-id="${it.id}" title="${it.pin ? '已锁定 · 生成时保留（点击解锁）' : '锁定 · 生成时保留'}"><i class="fa-solid ${it.pin ? 'fa-lock' : 'fa-lock-open'}"></i></button>
                 <button class="sp-icon-btn sp-alm-edit" data-id="${it.id}" title="编辑"><i class="fa-solid fa-pen"></i></button>
                 <button class="sp-icon-btn sp-alm-del" data-id="${it.id}" title="删除"><i class="fa-solid fa-trash"></i></button>
-            </span>
+            </span>`}
         </div>
         <div class="sp-alm-meta">
             <span class="sp-alm-name">${escapeHtml(it.name)}</span>
@@ -10841,7 +10935,8 @@ function renderAlmanacUpcoming() {
     const anchor = almTodayAnchor();
     const cal = loadCalDesc();
     const ctx = { cal, wkRef: almWeekdayRef(cal), todayDoy: almDayOfYear(anchor.month, anchor.day, cal) };
-    return `<div class="sp-alm-list">${sortAlmanacUpcoming(items, cal).map(it => almRowHtml(it, ctx)).join('')}</div>`;
+    const sorted = sortAlmanacUpcoming(items, cal);
+    return batchBarHtml('almanac', sorted.length, '批量删除', true) + `<div class="sp-alm-list">${sorted.map(it => almRowHtml(it, ctx)).join('')}</div>`;
 }
 
 // ─── 暗账页（历面板第三 sheet：标注开关/间隔 + 手动标注 + 条目只读列表）──────────
@@ -10881,10 +10976,17 @@ function ledgerRowHtml(e, cal, archived = false) {
     // 无条件挪到第二行、换行标准统一（不再靠 flex-wrap 超出才折）。三者全空则整行不渲染。
     const dates = `${startTag}${cyc}${due}`;
     const r15 = dates ? `<div class="sp-ledger-dates">${dates}</div>` : '';
+    // 批量模式三入口之一：活跃刻度归档 / 归档刻度删。勾选即选中，操作钮隐藏避免误触。
+    const batchScope = archived ? 'ledger-archive' : 'ledger-active';
+    const batchOn = _batchScope === batchScope;
+    const checked = batchOn && _batchSelected.has(e.id);
+    const checkbox = batchOn
+        ? `<input type="checkbox" class="sp-batch-check" ${checked ? 'checked' : ''} aria-label="选择此条">`
+        : '';
     // 第一行＝元信息头（类型 + 人物 + 操作钮）；事由独占整行放在头下方，长了就自己逐行换、不再挤钮组。
-    const cls = `sp-ledger-row sp-ledger-${ledgerTypeClass(e.类型)}${locked ? ' sp-ledger-locked' : ''}${paused ? ' sp-ledger-paused' : ''}${archived ? ' sp-ledger-archived' : ''}`;
+    const cls = `sp-ledger-row sp-ledger-${ledgerTypeClass(e.类型)}${locked ? ' sp-ledger-locked' : ''}${paused ? ' sp-ledger-paused' : ''}${archived ? ' sp-ledger-archived' : ''}${batchOn ? ' sp-batch-row' : ''}${checked ? ' sp-batch-checked' : ''}`;
     return `<div class="${cls}" data-id="${escapeAttr(e.id)}">
-        <div class="sp-ledger-r1">${badge}${who}${acts}</div>
+        <div class="sp-ledger-r1">${checkbox}${badge}${who}${batchOn ? '' : acts}</div>
         <div class="sp-ledger-gist-row"><span class="sp-ledger-gist">${escapeHtml(e.事由)}</span></div>
         ${r15}
         <div class="sp-ledger-r2">${escapeHtml(e.现状 || '（无现状）')}</div>
@@ -10991,6 +11093,60 @@ function saveLedgerEditor() {
     closeLedgerEditor();
 }
 
+// ─── 历面板批量模式框架（入口 / 全选 / 计数 / 退出 / 执行；执行动作按 scope 分开）──────────
+// scope: 'almanac'=日历条目批量删除; 'ledger-active'=活跃刻度批量归档; 'ledger-archive'=归档刻度批量删除。
+// 严格限定这三入口，不接模板管理。
+function batchBarHtml(scope, total, actionLabel, danger) {
+    if (total <= 0) return '';
+    if (_batchScope !== scope) {
+        return `<div class="sp-batch-bar"><button class="sp-mini-btn sp-batch-enter" data-scope="${escapeAttr(scope)}"><i class="fa-solid fa-list-check"></i> 批量</button></div>`;
+    }
+    const n = _batchSelected.size;
+    const allChecked = n > 0 && n >= total;
+    return `<div class="sp-batch-bar sp-batch-active">
+        <label class="sp-batch-all"><input type="checkbox" class="sp-batch-selall" ${allChecked ? 'checked' : ''}><span>全选</span></label>
+        <span class="sp-batch-count">已选 ${n} / ${total}</span>
+        <span class="sp-batch-bar-actions">
+            <button class="sp-mini-btn sp-batch-exit">退出</button>
+            <button class="sp-mini-btn ${danger ? 'sp-mini-btn-danger' : ''} sp-batch-exec" data-scope="${escapeAttr(scope)}" ${n ? '' : 'disabled'}>${escapeHtml(actionLabel)}</button>
+        </span>
+    </div>`;
+}
+const BATCH_SCOPES = ['almanac', 'ledger-active', 'ledger-archive'];
+function batchScopeIds(scope) {
+    if (scope === 'almanac') return loadAlmanac().map(it => it.id);
+    if (scope === 'ledger-active') return ledger.listEntries().map(e => e.id);
+    if (scope === 'ledger-archive') return ledger.listEntries({ includeClosed: true }).filter(e => e.状态 === '已了结').map(e => e.id);
+    return [];
+}
+async function execBatch(scope, ids) {
+    if (!ids.length) return;
+    if (scope === 'almanac') {
+        const list = loadAlmanac();
+        const ok = await spConfirm({ title: '批量删除日期', body: `确定删除选中的 ${ids.length} 个日期条目？不可恢复。`, confirmText: '删除', cancelText: '取消' });
+        if (!ok) return;
+        saveAlmanacItems(list.filter(x => !ids.includes(x.id)));
+        batchReset();
+        if (almanacMode) renderAlmanacPanel();
+        syncLatestAlmanacBlock();
+        showToast(`已删除 ${ids.length} 个日期条目`);
+    } else if (scope === 'ledger-active') {
+        const ok = await spConfirm({ title: '批量归档', body: `把选中的 ${ids.length} 个活跃刻度移入归档？可在归档里捞回。`, confirmText: '归档', cancelText: '取消' });
+        if (!ok) return;
+        ids.forEach(id => ledger.closeEntry(id));
+        batchReset();
+        if (almanacMode) renderAlmanacPanel();
+        showToast(`已归档 ${ids.length} 个刻度条目`);
+    } else if (scope === 'ledger-archive') {
+        const ok = await spConfirm({ title: '批量删除', body: `选中的 ${ids.length} 个已归档刻度将被永久删除，无法恢复。确定？`, confirmText: '删除', cancelText: '取消' });
+        if (!ok) return;
+        ids.forEach(id => ledger.removeEntry(id));
+        batchReset();
+        if (almanacMode) renderAlmanacPanel();
+        showToast(`已删除 ${ids.length} 个刻度条目`);
+    }
+}
+
 function renderLedgerSheet() {
     const s = getSettings();
     const on = s.ledgerCaptureEnabled === true;
@@ -11017,7 +11173,7 @@ function renderLedgerSheet() {
                     <i class="fa-solid fa-chevron-${_ledgerArchiveOpen ? 'down' : 'right'}"></i>
                     <span>已了结 ${closed.length} 条</span>
                 </button>
-                ${_ledgerArchiveOpen ? `<div class="sp-ledger-list sp-ledger-archive-list">${closed.map(e => ledgerRowHtml(e, cal, true)).join('')}</div>` : ''}
+                ${_ledgerArchiveOpen ? batchBarHtml('ledger-archive', closed.length, '批量删除', true) + `<div class="sp-ledger-list sp-ledger-archive-list">${closed.map(e => ledgerRowHtml(e, cal, true)).join('')}</div>` : ''}
            </div>`
         : '';
     if (!entries.length) {
@@ -11025,7 +11181,7 @@ function renderLedgerSheet() {
             : `暂无活跃刻度条目。聊几楼后${on ? '自动标注' : '（先勾上「自动标注」）'}，或点右上「立即标注」。`;
         return ctrl + `<div class="sp-ledger-empty">${hint}</div>` + archive;
     }
-    return ctrl + `<div class="sp-ledger-list">${entries.map(e => ledgerRowHtml(e, cal)).join('')}</div>` + archive;
+    return ctrl + batchBarHtml('ledger-active', entries.length, '批量归档', false) + `<div class="sp-ledger-list">${entries.map(e => ledgerRowHtml(e, cal)).join('')}</div>` + archive;
 }
 
 // 历不挂年：年在实际游玩里是极模糊的概念（绝大多数卡都不是现实年份），只按月/日排。
@@ -11674,7 +11830,8 @@ async function runGenerateAlmanac() {
         const cfg = loadCfg();
         const prompt = buildAlmanacPrompt(userName, charName);
         // 抬温 1.05：锚定周年靠记忆撑着不会跑，受益的是次要节日/风味文案更发散、每次不雷同
-        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 4, { fullMemory: true });
+        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 4,
+            { fullMemory: true, reroll: true, module: 'almanac' });
         if (almanacAbortController !== myCtrl) return;
         if (getContext().chatId !== chatIdSnap) { isGeneratingAlmanac = false; almanacAbortController = null; return; }
         const aiItems = parseAlmanacWidget(raw);
@@ -13456,15 +13613,18 @@ function parseCalendar(raw) {
             if (cur && !inFuture) days.push(cur);
             // 日头可带天气：Day: N|天气|温度（旧数据无管道段 → 天气/温度为空，退化为旧行为）
             const dayParts = t.split('|').slice(1).map(s => s.trim());
-            cur = { events: [], weather: dayParts[0] || '', temp: dayParts[1] || '' };
+            const dayMatch = t.match(/^Day\s*:?\s*(\d+)/i);
+            const dayNo = dayMatch ? Number(dayMatch[1]) : days.length + 1;
+            while (days.length < dayNo - 1) days.push({ dayNo: days.length + 1, events: [], weather: '', temp: '' });
+            cur = { dayNo, events: [], weather: dayParts[0] || '', temp: dayParts[1] || '' };
             inFuture = false; continue;
         }
         if (/^Future\s*:/i.test(t) || /^未来\s*:/i.test(t)) {
             if (cur && !inFuture) days.push(cur);
-            future = { events: [] }; cur = future; inFuture = true; continue;
+            future = { dayNo: 'future', events: [] }; cur = future; inFuture = true; continue;
         }
         if (/^Event\s*:/i.test(t)) {
-            if (!cur) cur = { events: [] };
+            if (!cur) cur = { dayNo: days.length + 1, events: [], weather: '', temp: '' };
             const parts = t.replace(/^Event\s*:\s*/i, '').split('|');
             if (parts.length >= 4) cur.events.push({
                 type: (parts[0]||'user').trim().toLowerCase(), title: (parts[1]||'').trim(),
@@ -13475,7 +13635,15 @@ function parseCalendar(raw) {
         }
     }
     if (cur && !inFuture) days.push(cur);
-    return { days: days.filter(d => d.events.length > 0), future, startDate };
+    const slots = [];
+    for (const d of days) {
+        const n = Number(d?.dayNo) || slots.length + 1;
+        slots[n - 1] = { ...d, dayNo: n };
+    }
+    for (let i = 0; i < slots.length; i++) {
+        if (!slots[i]) slots[i] = { dayNo: i + 1, events: [], weather: '', temp: '' };
+    }
+    return { days: slots, future, startDate };
 }
 
 // ─── 点·锁定（F5，机制对齐「线」）──────────────────────────────────────────────
@@ -13509,10 +13677,11 @@ function serializeCalendar(days, future, startDate) {
         // 天气随日头走回 raw：Day: N|天气|温度。缺则退回纯 Day: N（旧行为），mergePinnedPoints 才不会丢天气。
         const w  = String(d.weather || '').trim();
         const tp = String(d.temp || '').trim();
-        out.push((w || tp) ? `Day: ${i + 1}|${w}|${tp}` : `Day: ${i + 1}`);
+        const dayNo = Number.isInteger(Number(d?.dayNo)) && Number(d.dayNo) > 0 ? Number(d.dayNo) : i + 1;
+        out.push((w || tp) ? `Day: ${dayNo}|${w}|${tp}` : `Day: ${dayNo}`);
         for (const ev of (d.events || [])) out.push(pointEventToRawLine(ev));
     });
-    if (future && Array.isArray(future.events) && future.events.length) {
+    if (future && Array.isArray(future.events)) {
         out.push('Future:');
         for (const ev of future.events) out.push(pointEventToRawLine(ev));
     }
@@ -13535,29 +13704,31 @@ function forceStartDate(raw, month, day) {
 function mergePinnedPoints(oldRaw, aiRaw) {
     const oldParsed = parseCalendar(oldRaw);
     const oldPinned = [];
-    oldParsed.days.forEach((d, i) => d.events.forEach(ev => { if (ev.pin) oldPinned.push({ ev, dayIndex: i }); }));
+    oldParsed.days.forEach((d, i) => d.events.forEach(ev => {
+        if (ev.pin) oldPinned.push({ ev, dayNo: Number(d.dayNo) || i + 1 });
+    }));
     if (oldParsed.future) oldParsed.future.events.forEach(ev => { if (ev.pin) oldPinned.push({ ev, dayIndex: 'future' }); });
     if (!oldPinned.length) return aiRaw;
 
     const parsed = parseCalendar(aiRaw);
     const all = [];
-    for (const d of parsed.days) for (const ev of d.events) all.push(ev);
-    if (parsed.future) for (const ev of parsed.future.events) all.push(ev);
+    for (const d of parsed.days) for (const ev of d.events) all.push({ ev, dayNo: Number(d.dayNo) || 1 });
+    if (parsed.future) for (const ev of parsed.future.events) all.push({ ev, dayNo: 'future' });
 
     for (const p of oldPinned) {
-        const hit = all.find(ev => samePoint(ev, p.ev));
-        if (hit) { hit.pin = true; continue; }   // AI 保留 → 采纳推进，重标 pin
+        const hit = all.find(item => samePoint(item.ev, p.ev) && item.dayNo === (p.dayIndex === 'future' ? 'future' : p.dayNo));
+        if (hit) { hit.ev.pin = true; continue; }
         const clone = { ...p.ev, pin: true };     // AI 删了 → 原样并回（保命）
-        if (p.dayIndex === 'future' || !Number.isInteger(p.dayIndex) || p.dayIndex >= parsed.days.length) {
-            if (parsed.future) parsed.future.events.push(clone);
-            else if (parsed.days.length) parsed.days[parsed.days.length - 1].events.push(clone);
-            else parsed.days.push({ events: [clone] });
-        } else if (p.dayIndex >= 0) {
-            parsed.days[p.dayIndex].events.push(clone);
-        } else if (parsed.days.length) {
-            parsed.days[0].events.push(clone);
+        if (p.dayIndex === 'future') {
+            if (!parsed.future) parsed.future = { dayNo: 'future', events: [] };
+            parsed.future.events.push(clone);
         } else {
-            parsed.days.push({ events: [clone] });
+            const targetNo = Number(p.dayNo) || 1;
+            while (parsed.days.length < targetNo) {
+                const no = parsed.days.length + 1;
+                parsed.days.push({ dayNo: no, events: [], weather: '', temp: '' });
+            }
+            parsed.days[targetNo - 1].events.push(clone);
         }
     }
     return serializeCalendar(parsed.days, parsed.future, parsed.startDate);
