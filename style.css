@@ -4733,8 +4733,10 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     justify-content: space-between;
     gap            : 8px;
     box-sizing     : border-box;
+    height         : 42px;
     min-height     : 42px;
-    padding        : 8px 12px;
+    flex           : 0 0 42px;
+    padding        : 0 12px;
     border-bottom  : 1px solid var(--sp-divider);
     flex-shrink    : 0;
 }
