@@ -13591,6 +13591,54 @@ function renderSchedule(raw, userName, perspective = 'user') {
         <div class="sp-days-wrap"><div class="sp-days-track" data-total="${totalTabs}" style="width:${totalTabs * 100}%">${panels.join('')}</div></div>${debug}`;
 }
 
+// Keep the schedule sheet on the same logical day when a point is toggled and
+// the whole sheet is rendered again. Rendered tabs use array indexes, while
+// dayNo (or the explicit Future identity) remains stable across slot changes.
+function scheduleTabIdentity(parsed, dayKey) {
+    if (dayKey === 'future') return { kind: 'future', index: parsed.days.length };
+    const index = Number(dayKey);
+    const day = Number.isInteger(index) ? parsed.days[index] : null;
+    const dayNo = Number(day?.dayNo);
+    return {
+        kind: 'day',
+        index: Number.isInteger(index) ? index : 0,
+        dayNo: Number.isFinite(dayNo) ? dayNo : index + 1,
+    };
+}
+
+function restoreScheduleTab(identity, raw) {
+    const parsed = parseCalendar(raw);
+    const hasFuture = Boolean(parsed.future?.events?.length);
+    const total = parsed.days.length + (hasFuture ? 1 : 0);
+    if (!total) return;
+
+    let index = -1;
+    if (identity?.kind === 'future' && hasFuture) {
+        index = parsed.days.length;
+    } else if (identity?.kind === 'day') {
+        index = parsed.days.findIndex(day => Number(day?.dayNo) === Number(identity.dayNo));
+        // If the target slot disappeared, retain the nearest valid day rather
+        // than silently sending the user to Day1.
+        if (index < 0 && parsed.days.length) {
+            index = Math.min(Math.max(Number(identity.index) || 0, 0), parsed.days.length - 1);
+        }
+    } else if (parsed.days.length) {
+        index = 0;
+    }
+    if (index < 0) index = Math.min(Math.max(Number(identity?.index) || 0, 0), total - 1);
+
+    const $tabs = $inAll('.sp-tab');
+    const $track = $in('.sp-days-track');
+    const domTotal = parseInt($track.data('total')) || total;
+    $tabs.removeClass('sp-tab-active');
+    const $tab = $tabs.filter(function () {
+        return Number($(this).attr('data-day')) === index;
+    });
+    if ($tab.length) $tab.addClass('sp-tab-active');
+    else index = 0;
+    $track.css('transform', `translateX(-${index * 100 / domTotal}%)`);
+}
+
 function parseCalendar(raw) {
     const m = raw.match(/<calendar_widget[^>]*>([\s\S]*?)<\/calendar_widget>/i);
     // Strip HTML comments across the whole widget body before splitting into lines.
@@ -13746,12 +13794,14 @@ function triggerTogglePointPin(dayKey, evIdx) {
         ? (parsed.future?.events?.[evIdx] || null)
         : (parsed.days?.[Number(dayKey)]?.events?.[evIdx] || null);
     if (!ev || !ev.title || !ev.title.trim()) { showToast('这个点已不存在，请刷新面板', null, true); return; }
+    const tabIdentity = scheduleTabIdentity(parsed, dayKey);
     ev.pin = !ev.pin;
     const newRaw = serializeCalendar(parsed.days, parsed.future, parsed.startDate);
     writeStore(key, { raw: newRaw, userName: saved.userName || '用户', ts: Date.now() });
     const html = renderSchedule(newRaw, saved.userName || '用户', currentView);
     cachedSchedule = html;
     setBody(html);
+    restoreScheduleTab(tabIdentity, newRaw);
     syncLatestScheduleBlock();   // 锁/解点 → 楼内日程条锁标即时刷
     showToast(ev.pin ? '已锁定这个点' : '已解锁这个点');
 }
