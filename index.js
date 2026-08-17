@@ -2530,6 +2530,7 @@ const LEDGER_EVENT_TYPES = `【什么算刻度事件】会随时间推移改变�
 - 持续状态：身体伤情 / 病症、怀孕、显著且会延续的情绪等——会随天数自然演变（如割伤→结痂→愈合）。
 - 约定待办：约好要做的事（哪天见面、答应帮忙），无论有没有定下具体日期都要记。
 - 周期：规律反复发生的事（月经、发薪、值班），带大致周期天数。
+【不归刻度·交给「历」】节日、生日、纪念日、周年庆这类**日历上年年固定的日子**，由「历」模块专管，一律不记进刻度——哪怕角色卡 / 世界书 / 正文里提到某个节日、或它快到了，也只当背景，别为它立刻度条。刻度只收**落在具体人物身上、在剧情里产生**的状态 / 约定 / 周期（如某人受的伤、这次新约的碰面、某人的月经周期）；注意「答应每周三陪你练舞」这种剧情里新缔结、系在具体人物身上的周期约定**仍要记**，它是承诺不是日历节日。
 【主语永远是「人」】每条都登记在某个人物身上——记 TA 的状态，或 TA 牵扯的约定/周期。不要给物品单独立条（如「桌上有把枪」「仓库存着粮」不记）；但物品作用到人身上的状态要记（如「A 中了毒、尚未解」「B 戴着诅咒项链、受其束缚」）。`;
 
 const LEDGER_FIELD_SPEC = `- 每个事件一行，用全角竖线「｜」分隔 7 个字段，顺序固定：
@@ -2634,7 +2635,7 @@ async function runLedgerCaptureStep(manual = false) {
         // 而非只捞对话正文里的新事件。零额外 API——角色卡/世界书本就在 buildMessages 的 system 里，只是换一段指令。
         const isFirst = ledger.listEntries({ includeClosed: true }).length === 0;
         const prompt = isFirst ? buildLedgerFirstScanPrompt() : buildLedgerCapturePrompt();
-        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, LEDGER_CAPTURE_FLOORS);
+        const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, LEDGER_CAPTURE_FLOORS, { noAlmanac: true });
         if (ledgerCaptureAbort !== myCtrl) return;                          // 被更新的标注取代
         if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃
         done();
@@ -7242,7 +7243,9 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10,
         : '';
 
     // 历（本世界观重要日期）：历自己不进主楼，只在这里作为数据源反哺点/线/大纲。
-    const almanacText = getAlmanacInjectText();
+    // 刻度标注例外（opts.noAlmanac）：历的节日/生日/纪念日归「历」专管，不能当刻度输入——
+    // 否则 AI 标注时会照着这张表把节日抄成刻度条目（历≠刻度，不共享输入）。
+    const almanacText = opts.noAlmanac ? '' : getAlmanacInjectText();
     const almanacBlock = almanacText
         ? `【本世界观·重要日期（历）】以下是这个世界的既定节日、生日、纪念日等重要日子，已按「当前剧情日期」标注倒计时；每条冒号后的「说明」是该日子的既定设定（由来、涉及人物阵营、习俗活动、持续天数等），是背景事实。\n${almanacText}\n\n★ 推演点/线/大纲时：凡列在【近期将至】里的日子（未来数日内或进行中），应**主动**把它纳入近期剧情——依据其「说明」里的设定生成与之相关的铺垫、筹备、事件或人物动向，让故事顺着该世界的历法自然推进；【全年其他重要日子】作为背景，时间线接近时再纳入考量。\n★ 务必尊重每条「说明」里的既定设定，据此展开合理、可延续的剧情；说明里没写到的细节可以合理补完，但**不得编造与既定设定冲突的内容**。`
         : '';
@@ -12283,6 +12286,11 @@ function renderMemorySection() {
     $in('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
     $in('#sp-storyclock-prompt').val(typeof s.storyClockPrompt === 'string' ? s.storyClockPrompt : '');
     $in('#sp-space-persona').val(typeof s.spacePersona === 'string' ? s.spacePersona : '');   // 间·人格覆盖：同为全局设置，须在按源 early-return 前回填
+    // 标签清洗（保留 keepTags / 剔除 extraTags）同为全局设置（对全部生成链路生效，非记忆源专属），
+    // 也必须在按源 early-return 前回填；否则记忆源选柏宝书/Anima 时函数提前 return，重开面板这俩框空白，
+    // 被误当成"没保存"（值其实已存盘、生成链路照常在用）。
+    $in('#sp-mem-keeptags').val(typeof s.keepTags  === 'string' ? s.keepTags  : 'content');
+    $in('#sp-mem-extratags').val(typeof s.extraTags === 'string' ? s.extraTags : '');
     if (useBbb) {
         $in('#sp-mem-internal').hide();
         $in('#sp-mem-anima-status').hide();
@@ -12316,8 +12324,6 @@ function renderMemorySection() {
     $in('#sp-mem-l1').val(Number.isFinite(+s.memoryL1Group) ? +s.memoryL1Group : 10);
     $in('#sp-mem-skipshort').val(Number.isFinite(+s.memorySkipShort) ? +s.memorySkipShort : 50);
     $in('#sp-mem-maxtokens').val(Number.isFinite(+s.memMaxTokens) ? +s.memMaxTokens : 60000);
-    $in('#sp-mem-keeptags').val(typeof s.keepTags  === 'string' ? s.keepTags  : 'content');
-    $in('#sp-mem-extratags').val(typeof s.extraTags === 'string' ? s.extraTags : '');
     refreshMemoryStatus();
 }
 

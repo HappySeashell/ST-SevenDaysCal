@@ -4,6 +4,14 @@
  * root（浏览器缓存，无感）。改样式注意两处同源——勿删全局份，shadow 那份负责窗口。
  * 2026-08-14 Shadow DOM 隔离改造批次1/5。
  */
+/* ST messageFormatting keeps literal quote characters inside <q>, while the
+   browser also adds quotes through q::before/q::after by default. ST disables
+   those pseudo-elements globally, but that rule cannot cross our shadow root. */
+q::before,
+q::after {
+    content: '';
+}
+
 /* 字体·构画自管控（不再跟随酒馆 --SmartThemeFontFamily）：
    --sp-font-user 承载「当前生效字体名」，默认＝内置 Nowar Rounded TW Wc（有爱圆体·
    经 index.js 动态 <link> 从 zeoseven 引入，unicode-range 分片、font-display:swap）。
