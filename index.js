@@ -1,4 +1,6 @@
 import { getContext, extension_settings } from '../../../extensions.js';
+import { selected_world_info, world_info } from '../../../world-info.js';
+import { equalsIgnoreCaseAndAccents, getCharaFilename } from '../../../utils.js';
 import { eventSource, event_types, substituteParams, saveSettingsDebounced, saveSettings as stSaveSettings } from '../../../../script.js';
 import {
     buildCreativeChatSystemPrompt,
@@ -4389,6 +4391,11 @@ function injectModal() {
         }, 1200);
         $btn.data('sp-copy-reset', t);
     });
+    // 单删一个面节点：仅移除该节点的 Beat/Scene/Subtext/Think 原文段，保留同一份大纲里的其它节点。
+    $in('#sp-outline-beats').on('click', '.sp-beat-delete', function () {
+        const idx = Number($(this).attr('data-idx'));
+        if (Number.isInteger(idx)) triggerDeleteOutlineBeat(idx);
+    });
     // Refresh lines — button appears in both panel toolbar and inline block
     // 双绑拆分：面板行在 shadow 内走 $in；楼内行在 light DOM #chat 保持原查询。
     $linesWrap.on('click', '.sp-refresh-lines, .sp-inline-refresh-lines', function (e) {
@@ -6736,13 +6743,19 @@ function getWiExcludeSet() {
     return new Set(arr.filter(x => typeof x === 'string' && x));
 }
 
+function hasWiExcluded(bookName, excluded = getWiExcludeSet()) {
+    const name = String(bookName || '').trim();
+    return !!name && [...excluded].some(saved => equalsIgnoreCaseAndAccents(saved, name));
+}
+
 function setWiExcluded(bookName, excluded) {
     const name = String(bookName || '').trim();
     if (!name) return;
     const s = getSettings();
-    const set = new Set(Array.isArray(s.wiExcludeBooks) ? s.wiExcludeBooks : []);
-    if (excluded) set.add(name); else set.delete(name);
-    s.wiExcludeBooks = [...set];
+    const current = Array.isArray(s.wiExcludeBooks) ? s.wiExcludeBooks : [];
+    const next = current.filter(saved => !equalsIgnoreCaseAndAccents(saved, name));
+    if (excluded) next.push(name);
+    s.wiExcludeBooks = next;
     saveSettingsDebounced();
 }
 
@@ -6830,6 +6843,14 @@ function getLinkedWorldNames(ctx) {
     const primary = String(char.data?.extensions?.world || '').trim();
     if (primary) names.add(primary);
     // Some cards only have the embedded name without linking
+    // 原生的角色附加书存于 world_info.charLore；TavernHelper 不在时也要一并读取。
+    try {
+        const fileName = getCharaFilename(ctx.characterId);
+        const extra = world_info?.charLore?.find(item => item?.name === fileName)?.extraBooks;
+        if (Array.isArray(extra)) {
+            for (const name of extra) if (name) names.add(String(name).trim());
+        }
+    } catch {}
     const embeddedName = String(char.data?.character_book?.name || '').trim();
     if (embeddedName && !primary) names.add(embeddedName);
     return [...names].filter(Boolean);
@@ -6839,7 +6860,7 @@ function getLinkedWorldNames(ctx) {
 // Three-layer resolution — first hit wins:
 //   1. TavernHelper.getLorebookSettings().selected_global_lorebooks (universal)
 //   2. Luker-only: ctx.chatWorldInfo.globalSelection
-//   3. Vanilla ST: globalThis.world_info.globalSelect
+//   3. Vanilla ST: world-info.js 正式导出的 selected_world_info
 // Empty on any failure — plugin still works with just character books.
 function getGlobalWorldNames(ctx) {
     // 1. TavernHelper
@@ -6857,13 +6878,17 @@ function getGlobalWorldNames(ctx) {
         const luker = ctx?.chatWorldInfo?.globalSelection;
         if (Array.isArray(luker)) return luker.filter(Boolean);
     } catch {}
-    // 3. Vanilla ST — world_info object is exposed on window when world-info.js
-    //    loads (see Object.assign(world_info, { globalSelect: selected_world_info }))
-    try {
-        const vanilla = globalThis?.world_info?.globalSelect;
-        if (Array.isArray(vanilla)) return vanilla.filter(Boolean);
-    } catch {}
+    // 3. Vanilla ST — ES module live binding（不依赖不存在的 window/globalThis 挂载）。
+    if (Array.isArray(selected_world_info)) return selected_world_info.filter(Boolean);
     return [];
+}
+
+// 当前聊天单独绑定的世界书（Chat Lore）。旧版 ST 存单个书名，新版允许多个书名，
+// 因此只读稳定的 chatMetadata.world_info 形状，不依赖新版才有的 Context helper。
+function getChatWorldNames(ctx) {
+    const raw = ctx?.chatMetadata?.world_info;
+    const list = Array.isArray(raw) ? raw : [raw];
+    return [...new Set(list.map(name => String(name || '').trim()).filter(Boolean))];
 }
 
 // Returns live world-info entries for the current character. Uses ctx.loadWorldInfo
@@ -6937,6 +6962,37 @@ async function getCharBookEntries(ctx) {
         }
     }
 
+    // 3. Chat Lore：只绑定当前聊天的书，换聊天不跟随。
+    // 与角色卡书共用下方同一条目清单和全局排除规则。
+    const chatWorldNames = getChatWorldNames(ctx);
+    for (const name of chatWorldNames) {
+        try {
+            const data = await ctx.loadWorldInfo(name);
+            if (!data?.entries) continue;
+            for (const [uid, entry] of Object.entries(data.entries)) {
+                if (entry?.disable) continue;
+                const label = entry.comment
+                    || (Array.isArray(entry.key) ? entry.key.join(', ') : entry.key)
+                    || `条目 ${uid}`;
+                const preview = String(entry.content || '')
+                    .replace(/\s+/g, ' ')
+                    .slice(0, 120);
+                const key = `${name}::${uid}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                items.push({
+                    key, uid,
+                    label,
+                    preview,
+                    content: entry.content || '',
+                    source : name,
+                    embedded: false,
+                    scope  : 'chat',
+                });
+            }
+        } catch { /* ignore individual load failure */ }
+    }
+
     // 3. Global world-info (enabled via ST's WI panel — top-right世界书面板中间"启用"列表)
     const globalNames = getGlobalWorldNames(ctx);
     for (const name of globalNames) {
@@ -7000,7 +7056,7 @@ async function getCharBookEntries(ctx) {
     // 全局排除（B方案）：被拉黑的书名一律剔除——优先级压过上面任何一条收录途径。放在最末统一
     // 过滤，故设置里「按角色卡挑选」列表也看不到这些书（buildWorldInfoContext 与 renderWiList 共用本函数）。
     const excluded = getWiExcludeSet();
-    return excluded.size ? items.filter(e => !excluded.has(e.source)) : items;
+    return excluded.size ? items.filter(e => !hasWiExcluded(e.source, excluded)) : items;
 }
 
 // Recent chat context — fills the gap between memory (delayed L0/L1 summaries)
@@ -8639,6 +8695,66 @@ function parseOutline(raw) {
     return beats;
 }
 
+// 从原始大纲中精确切走一个 Beat 段。按原文行位置操作而非重新序列化，故模型在
+// <outline_widget> 外写下的故事分析、以及未删除节点的原始格式都会保留。
+function deleteOutlineBeatFromRaw(raw, idx) {
+    const src = String(raw || '');
+    const widget = /<outline_widget[^>]*>([\s\S]*?)<\/outline_widget>/i.exec(src);
+    const contentStart = widget ? widget.index + widget[0].indexOf(widget[1]) : 0;
+    const content = widget ? widget[1] : src;
+    const contentEnd = contentStart + content.length;
+    const starts = [];
+    let offset = 0;
+    for (const lineWithBreak of content.matchAll(/.*(?:\n|$)/g)) {
+        const line = lineWithBreak[0];
+        if (!line) continue;
+        const text = line.replace(/\r?\n$/, '').trim().replace(/^[>#*\-\s]+/, '').replace(/\*+/g, '');
+        if (/^Beat\s*[:：]/i.test(text)) starts.push(contentStart + offset);
+        offset += line.length;
+    }
+    if (idx < 0 || idx >= starts.length) return null;
+    const removeStart = starts[idx];
+    const removeEnd = idx + 1 < starts.length ? starts[idx + 1] : contentEnd;
+    return src.slice(0, removeStart) + src.slice(removeEnd);
+}
+
+// 删除单个面：确认后写回同一份大纲，并把当前剧情点游标映射到删除后的正确节点。
+async function triggerDeleteOutlineBeat(idx) {
+    if (isGeneratingOutline) return;
+    const key = getOutlineCacheKey();
+    const saved = readStore(key);
+    const raw = saved?.raw || '';
+    const target = parseOutline(raw)[idx];
+    if (!target) { showToast('这个面已不存在，请刷新面板', null, true); return; }
+    const ok = await spConfirm({
+        title: '删除这个面',
+        body : `将删除「${target.title || '未命名'}」这一节点，其它面保留。此操作不可撤销。`,
+        confirmText: '删除',
+        cancelText : '取消',
+    });
+    if (!ok) return;
+    const newRaw = deleteOutlineBeatFromRaw(raw, idx);
+    if (newRaw == null) { showToast('删除失败：条目错位，请刷新后重试', null, true); return; }
+    const remaining = parseOutline(newRaw);
+    if (!remaining.length) {
+        removeStore(key);
+        cachedOutline = null;
+        refreshOutlineInjection();
+        if (outlineMode) setOutlineBody(renderEmptyOutlineState());
+        showToast('已删除，面已清空');
+        return;
+    }
+    const previousCursor = getOutlineCursor();
+    // 删除当前节点时停在同一序号（自然落到原来的下一节点）；删除其前节点时游标左移一格。
+    const nextCursor = previousCursor === 0 ? 0 : Math.min(remaining.length, previousCursor > idx + 1 ? previousCursor - 1 : previousCursor);
+    writeStore(key, { ...saved, raw: newRaw, ts: Date.now(), cursor: nextCursor });
+    refreshOutlineInjection();
+    const html = renderOutline(newRaw, nextCursor);
+    cachedOutline = html;
+    if (outlineMode) setOutlineBody(html);
+    showToast('已删除这个面');
+}
+
 function renderOutline(raw, cursor = 0) {
     const beats = parseOutline(raw);
     const toolbar = `<div class="sp-panel-toolbar"><button class="sp-panel-refresh sp-refresh-outline" title="重新生成面"><i class="fa-solid fa-rotate-right"></i></button></div>`;
@@ -8658,6 +8774,7 @@ function renderOutline(raw, cursor = 0) {
             b.subtext ? `"${cleanText(b.subtext)}"` : '',
         ].filter(Boolean).join('\n'));
         const isCur  = cursor >= 1 && i + 1 === cursor;
+        const deleteBtn = `<button class="sp-beat-delete" data-idx="${i}" title="删除这个面"><i class="fa-solid fa-trash-can"></i></button>`;
         const isNext = cursor >= 1 && i + 1 === cursor + 1;
         const hi = isCur ? ' sp-beat-current' : (isNext ? ' sp-beat-next' : '');
         const badge = isCur  ? `<span class="sp-beat-badge sp-beat-badge-cur">进行中</span>`
@@ -8671,7 +8788,7 @@ function renderOutline(raw, cursor = 0) {
                 ${badge}
                 <span class="sp-beat-time">${escapeHtml(b.time)}</span>
                 ${b.type ? `<span class="sp-beat-type">${escapeHtml(b.type)}</span>` : ''}
-                <span class="sp-beat-actions">${setcurBtn}${injectBtn}${copyBtn}</span>
+                <span class="sp-beat-actions">${setcurBtn}${injectBtn}${copyBtn}${deleteBtn}</span>
             </div>
             ${b.line ? `<span class="sp-beat-linerow">${escapeHtml(b.line)}</span>` : ''}
             <div class="sp-beat-title">${escapeHtml(b.title)}</div>
@@ -10483,7 +10600,7 @@ function parseWeekdayToken(text) {
 // 周几 token → 0..6，否则 null。存在意义：让「状态栏写死的周几」压过真实公历 getDay()（RP 用户要剧情
 // 自洽、不在乎真实历是周几）。之所以要求「紧贴日号」而非 parseWeekdayToken 那样认任意周几：正文对白里
 // 游离的「周五我们去吃饭」前面没有紧贴的日号，天然不匹配，避免把闲聊里的周几误当权威锚。
-const _WEEKDAY_ADJ_RE = /\d{1,2}\s*[日号]?[\s·.,，、｜|/／~〜—\-]{0,3}(?:(?:星期|週|周|礼拜|禮拜)\s*([一二三四五六日天])|\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b)/i;
+const _WEEKDAY_ADJ_RE = /(?:\d{1,2}|初?[零〇一二两兩三四五六七八九十廿卅壹贰貳叁參叄肆伍陆陸柒捌玖拾]+)\s*[日号]?[\s·.,，、｜|/／~〜—\-]{0,3}(?:(?:星期|週|周|礼拜|禮拜)\s*([一二三四五六日天])|\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b)/i;
 function weekdayAdjacent(text) {
     const m = _WEEKDAY_ADJ_RE.exec(String(text || ''));
     if (!m) return null;
@@ -10510,7 +10627,18 @@ function calRealWeekdayRef(timeStr, cal = loadCalDesc()) {
 // 取「参照日→周几」锚，优先级：柏宝书/记忆(真实年→现实周几，抠不到退周几token) > 聊天正文真实年 > 点 StartDate > 默认(1月1日=周一)。返回 {refDoy, refWd}。
 // 点 StartDate 排在正文之后：开点自动检测时它的年份是 forceStartDate 钉的固定 POINT_ANCHOR_YEAR，getDay() 为假年周几，不能压过正文里剧情/用户写的真实年。
 function almWeekdayRef(cal = loadCalDesc()) {
-    // ① 柏宝书快照 time：先按真实年**算**现实周几（年-正确，压过别处残留的年份），抠不到再退回周几 token
+    // ② 柏宝书快照：正文未提供可用锚点时的补充来源；真实年可算现实周几，退回周几 token。
+    // ① 正文是当前剧情的第一事实源：先认“日期 + 星期”，再仅对带真实年份的公历日期计算周几。
+    // 中文日号（如「六月十九｜星期二」）与阿拉伯日号同等有效；虚构纪年只有日期、没有星期时不套现实历法。
+    try {
+        const hit = almDateFromChat();
+        if (hit) {
+            let refWd = null;
+            if (hit.wd != null) refWd = hit.wd;
+            else if (cal === DEFAULT_CAL && hit.date instanceof Date && !isNaN(hit.date)) refWd = hit.date.getDay();
+            if (refWd != null) return { refDoy: almDayOfYear(hit.month, hit.day, cal), refWd };
+        }
+    } catch { /* 往下走 */ }
     try {
         const api = globalThis.STBaiBaiBook;
         if (api && typeof api.getSnapshot === 'function') {
@@ -10526,7 +10654,7 @@ function almWeekdayRef(cal = loadCalDesc()) {
             }
         }
     } catch { /* 往下走 */ }
-    // ② 记忆库「时间锚点」尾段：同样先按真实年算现实周几，再退回周几 token（配今天的月/日）
+    // ③ 记忆库「时间锚点」尾段：同样先按真实年算现实周几，再退回周几 token（配今天的月/日）
     try {
         const memText = typeof memory.getMemoryContext === 'function' ? memory.getMemoryContext() : '';
         const anchors = [...String(memText).matchAll(/时间锚点\s*[:：]\s*([^\n]+)/g)];
@@ -10538,31 +10666,7 @@ function almWeekdayRef(cal = loadCalDesc()) {
             if (wd != null) { const a = almTodayAnchor(); return { refDoy: almDayOfYear(a.month, a.day, cal), refWd: wd }; }
         }
     } catch { /* 往下走 */ }
-    // ③ 聊天正文（含状态栏）→ 周几：写死的周几 token 优先(剧情自洽 > 真实公历)，没写才退回真实年 getDay()。
-    //    排在点之前：正文年份是剧情/用户写的真实年；点 StartDate 的年份在开了点自动检测时会被
-    //    forceStartDate 钉成固定 POINT_ANCHOR_YEAR，其 getDay() 是假年周几，若压过正文就会把历
-    //    也拖到那个假年（bug：2021/8/20 周五被算成 2024 的周二）。
-    try {
-        const hit = almDateFromChat();
-        if (hit) {
-            let refWd = null;
-            if (hit.wd != null) refWd = hit.wd;                                               // 状态栏写死的周几：直接采信
-            else if (hit.date instanceof Date && !isNaN(hit.date)) refWd = hit.date.getDay();  // 没写周几：真实公历兜底
-            if (refWd != null) return { refDoy: almDayOfYear(hit.month, hit.day, cal), refWd };
-        }
-    } catch { /* 往下走 */ }
-    // ④ 点 StartDate：最后的真实年份来源（正文也没给日期时）。开了点自动检测时这里是
-    //    POINT_ANCHOR_YEAR 的周几——纯虚构、无其他日期锚的设定下无所谓对错，且点/历同源一致。
-    try {
-        const saved = readStore(getCacheKey());
-        if (saved?.raw) {
-            const { startDate } = parseCalendar(saved.raw);
-            if (startDate instanceof Date && !isNaN(startDate)) {
-                return { refDoy: almDayOfYear(startDate.getMonth() + 1, startDate.getDate(), cal), refWd: startDate.getDay() };
-            }
-        }
-    } catch { /* 往下走 */ }
-    // ⑤ 默认：无年份 → 1 月 1 日定为周一（任意但稳定）
+    // ④ 没有任何可信“日期 + 星期”信息时，才使用稳定默认锚点；不读取点缓存的临时年份。
     return { refDoy: 1, refWd: 1 };
 }
 // 某月日的周几（0..6），纯日序偏移，不涉年。ref 可复用（较重，整轮渲染算一次传进来）。
@@ -12859,7 +12963,7 @@ async function renderWiExcludeList() {
         return;
     }
     const rows = names.map(name => {
-        const on = excluded.has(name);
+        const on = hasWiExcluded(name, excluded);
         return `<label class="sp-wi-exclude-row${on ? ' sp-wi-exclude-on' : ''}" data-name="${escapeAttr(name)}">
             <input type="checkbox" class="sp-wi-exclude-cb" data-name="${escapeAttr(name)}"${on ? ' checked' : ''}>
             <span class="sp-wi-exclude-name">${escapeHtml(name)}</span>

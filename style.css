@@ -2266,7 +2266,8 @@ select.sp-input { appearance: none; cursor: pointer; }
 .sp-beat-setcur:hover            { color: var(--sp-primary); background: var(--sp-surface-high); }
 .sp-beat-setcur-on               { opacity: 1; color: var(--sp-primary); }
 /* 面·逐 step 复制钮：仿 .sp-beat-setcur/.sp-inject-btn，hover 节点卡片才显形 */
-.sp-beat-copy {
+.sp-beat-copy,
+.sp-beat-delete {
     width          : var(--sp-btn-22);
     height         : var(--sp-btn-22);
     border         : none;
@@ -2284,6 +2285,11 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-beat:hover .sp-beat-copy { opacity: 1; }
 .sp-beat-copy:hover          { color: var(--sp-primary); background: var(--sp-surface-high); }
+/* 删除按钮与其它节点操作一致：默认隐藏，卡片触碰/悬停时一同出现。 */
+.sp-beat-delete { opacity: 0; }
+.sp-beat:hover .sp-beat-delete,
+.sp-beat-delete:hover { opacity: 1; }
+.sp-beat-delete:hover { color: #d94545; background: rgba(217, 69, 69, 0.12); }
 .sp-beat-index {
     width          : 20px;
     height         : 20px;
