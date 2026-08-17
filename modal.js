@@ -233,6 +233,7 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
             let selected = String(initialValue || choices[0]?.value || '');
             const customValue = custom?.value == null ? '' : String(custom.value);
             const customLimit = Number(custom?.maxLength) > 0 ? Number(custom.maxLength) : 200;
+            const customInitialValue = String(custom?.initialValue ?? '').slice(0, customLimit);
             const customRows = normalizeTextareaRows(custom?.rows);
             const options = choices.map(choice => {
                 const value = String(choice?.value ?? '');
@@ -260,6 +261,7 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
                 </div>
             </div>`);
             const session = mountDialog($overlay, resolve);
+            if (customValue) $overlay.find('.sp-dialog-custom-input').val(customInitialValue);
             const syncSelection = () => {
                 $overlay.find('.sp-dialog-single-option').each(function () {
                     const on = String($(this).attr('data-dialog-value') || '') === selected;
@@ -301,7 +303,7 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
     }
 
     // 通用异步单选：第二类弹窗自行加载选项，可在同一弹窗内重新加载并中止上一轮请求。
-    function selectOneAsync({ title = '', body = '', loadChoices, refreshable = false, refreshText = '重新加载', confirmText = '确定', cancelText = '取消', loadingText = '正在加载…', emptyText = '没有可选内容' } = {}) {
+    function selectOneAsync({ title = '', body = '', loadChoices, refreshable = false, refreshText = '重新加载', confirmText = '确定', cancelText = '取消', cancelValue = null, loadingText = '正在加载…', emptyText = '没有可选内容' } = {}) {
         if (typeof loadChoices !== 'function') return Promise.resolve(null);
         return new Promise(resolve => {
             prepareDialog();
@@ -370,7 +372,7 @@ export function createDialogManager({ $, mount, getRootClass = () => '', subscri
             });
             $overlay.find('.sp-dialog-async-refresh').on('click', load);
             $overlay.find('.sp-dialog-submit').on('click', () => { if (selected) session.finish(selected); });
-            $overlay.find('.sp-dialog-cancel').on('click', session.close);
+            $overlay.find('.sp-dialog-cancel').on('click', () => session.finish(cancelValue));
             load();
         });
     }

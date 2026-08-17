@@ -3264,6 +3264,52 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-dialog-custom-input:focus { border-color: var(--sp-primary); }
 .sp-dialog-custom-input[hidden] { display: none; }
+
+/* 通用单选与异步选项弹窗。 */
+.sp-dialog-single-list {
+    display              : grid;
+    grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    gap                  : 6px;
+}
+.sp-dialog-single-option {
+    min-width    : 0;
+    padding      : 7px 9px;
+    border       : 0;
+    border-radius: 7px;
+    background   : transparent;
+    color        : var(--sp-subtle);
+    font-family  : var(--sp-font);
+    font-size    : var(--sp-fs-80);
+    cursor       : pointer;
+}
+.sp-dialog-single-option:hover { background: var(--sp-hover-bg); color: var(--sp-on-surface); }
+.sp-dialog-single-selected { background: color-mix(in oklab, var(--sp-primary) 16%, transparent); color: var(--sp-on-surface); }
+.sp-dialog-actions .sp-dialog-button:disabled { opacity: 0.45; cursor: default; }
+.sp-dialog-async-body { min-height: 44px; }
+.sp-dialog-async-list { grid-template-columns: 1fr; gap: 0; border-top: 1px solid var(--sp-divider); }
+.sp-dialog-async-list .sp-dialog-single-option {
+    width        : 100%;
+    display      : flex;
+    align-items  : flex-start;
+    gap          : 8px;
+    padding      : 10px 6px;
+    border       : 0;
+    border-bottom: 1px solid var(--sp-divider);
+    border-radius: 0;
+    background   : transparent;
+    color        : var(--sp-on-surface);
+    font-family  : var(--sp-font);
+    font-size    : var(--sp-fs-80);
+    line-height  : 1.5;
+    text-align   : left;
+    cursor       : pointer;
+}
+.sp-dialog-async-list .sp-dialog-single-option i { flex: 0 0 auto; margin-top: 3px; color: var(--sp-subtle); }
+.sp-dialog-async-list .sp-dialog-single-option span { min-width: 0; overflow-wrap: anywhere; }
+.sp-dialog-async-list .sp-dialog-single-selected { background: color-mix(in oklab, var(--sp-primary) 12%, transparent); }
+.sp-dialog-async-list .sp-dialog-single-selected i { color: var(--sp-primary); }
+.sp-dialog-async-loading,
+.sp-dialog-async-empty { color: var(--sp-subtle); font-size: var(--sp-fs-75); line-height: 1.5; }
 @media (max-width: 420px) {
     .sp-dialog-multi-list { grid-template-columns: 1fr; }
 }
@@ -4832,9 +4878,11 @@ body.sp-anchor-fs-lock { overflow: hidden; }
 .sp-action-menu-item:hover { background: var(--sp-hover-bg); color: var(--sp-primary); }
 .sp-action-menu-item:hover i { color: var(--sp-primary); }
 
-@container sp-almanac (max-width: 300px) {
+@container sp-almanac (max-width: 380px) {
     .sp-alm-wide-tools { display: none; }
     .sp-alm-narrow-tools { display: inline-flex; }
+    .sp-alm-cal-detail-head { flex-direction: column; align-items: stretch; }
+    .sp-alm-cal-detail-tools { width: 100%; justify-content: flex-end; flex-wrap: nowrap; }
 }
 
 /* 旧内核不支持容器查询时退回视口断点；现代环境始终按历内容区自身宽度切换。 */
@@ -5288,6 +5336,47 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     border-radius: 50%;
 }
 .sp-alm-cell-sel { background: var(--sp-hover-bg); box-shadow: inset 0 0 0 1.5px var(--sp-primary); }
+.sp-alm-cell-sel.sp-alm-cell-time-travel {
+    background: color-mix(in oklab, var(--sp-primary) 9%, var(--sp-hover-bg));
+    box-shadow: inset 0 0 0 1.5px var(--sp-primary);
+}
+.sp-alm-cell-time-travel::before,
+.sp-alm-cell-time-travel::after {
+    content       : '';
+    position      : absolute;
+    inset         : -1px;
+    border-radius : 9px;
+    pointer-events: none;
+}
+.sp-alm-cell-time-travel::before {
+    border    : 1px solid color-mix(in oklab, var(--sp-primary) 42%, transparent);
+    box-shadow: 0 0 4px color-mix(in oklab, var(--sp-primary) 20%, transparent);
+}
+@property --sp-alm-time-travel-angle {
+    syntax       : '<angle>';
+    inherits     : false;
+    initial-value: 0deg;
+}
+.sp-alm-cell-time-travel::after {
+    --sp-alm-time-travel-angle: 0deg;
+    padding   : 1.5px;
+    background: conic-gradient(
+        from var(--sp-alm-time-travel-angle),
+        transparent 0deg 245deg,
+        color-mix(in oklab, var(--sp-primary) 20%, transparent) 270deg,
+        var(--sp-primary) 325deg,
+        transparent 360deg
+    );
+    -webkit-mask          : linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask                  : linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite        : exclude;
+    filter                : drop-shadow(0 0 2px color-mix(in oklab, var(--sp-primary) 60%, transparent));
+    animation             : sp-alm-time-travel-orbit 1.25s linear infinite;
+}
+@keyframes sp-alm-time-travel-orbit {
+    to { --sp-alm-time-travel-angle: 360deg; }
+}
 .sp-alm-cell-dots {
     display    : flex;
     gap        : 3px;
@@ -5857,6 +5946,11 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     .sp-icon-btn:active, .sp-mini-btn:active, .sp-ledger-pill:active,
     .sp-anchor-btn:active, .sp-tab:active, .sp-side-tab:active,
     .sp-btn:active, .sp-gen-btn:active, .sp-fab-btn:active { transform: none !important; }
+    .sp-alm-cell-time-travel::after {
+        animation : none !important;
+        background: var(--sp-primary);
+        filter    : none;
+    }
 }
 
 /* ── 历面板批量模式（日历条目删 / 活跃刻度归档 / 归档刻度删）──────────────────── */
