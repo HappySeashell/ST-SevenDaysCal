@@ -944,6 +944,7 @@ select.sp-input { appearance: none; cursor: pointer; }
     border-radius : inherit;
     display       : none;
     flex-direction: column;
+    min-height    : 0;
     overflow      : hidden;
 }
 
@@ -971,6 +972,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     min-height     : 0;
     overflow-y     : auto;
     overflow-x     : hidden;   /* Prevent stray wide content from making the panel scroll sideways */
+    overscroll-behavior: contain;
+    touch-action   : pan-y;
     padding        : 8px 0 4px;
     scrollbar-width: thin;
     scrollbar-color: var(--sp-divider) transparent;
@@ -2513,6 +2516,8 @@ select.sp-input { appearance: none; cursor: pointer; }
     display       : flex;
     flex-direction: column;
     max-width     : 90%;
+    min-width     : 0;
+    box-sizing    : border-box;
 }
 .sp-chat-msg-wrap-user   { align-self: flex-end;   align-items: flex-end; }
 .sp-chat-msg-wrap-ai     { align-self: flex-start; align-items: flex-start; }
@@ -2523,11 +2528,116 @@ select.sp-input { appearance: none; cursor: pointer; }
     line-height  : 1.55;
     padding      : 5px 9px;
     border-radius: 8px;
+    min-width    : 0;
+    box-sizing   : border-box;
+    overflow-wrap: anywhere;
     word-break   : break-word;
     /* wrap now handles max-width + alignment; msg is just a filled block */
     max-width    : 100%;
 }
-.sp-chat-msg-content { min-width: 0; }
+.sp-chat-msg-content {
+    min-width    : 0;
+    max-width    : 100%;
+    box-sizing   : border-box;
+    overflow-wrap: anywhere;
+    word-break   : break-word;
+}
+.sp-chat-msg-content p {
+    margin: 0 0 0.7em;
+}
+.sp-chat-msg-content p:last-child {
+    margin-bottom: 0;
+}
+.sp-chat-msg-content h1,
+.sp-chat-msg-content h2,
+.sp-chat-msg-content h3,
+.sp-chat-msg-content h4,
+.sp-chat-msg-content h5,
+.sp-chat-msg-content h6 {
+    margin: 0.8em 0 0.35em;
+    color: var(--sp-on-surface);
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+.sp-chat-msg-content h1 { font-size: 1.25em; }
+.sp-chat-msg-content h2 { font-size: 1.16em; }
+.sp-chat-msg-content h3 { font-size: 1.08em; }
+.sp-chat-msg-content h4,
+.sp-chat-msg-content h5,
+.sp-chat-msg-content h6 { font-size: 1em; }
+.sp-chat-msg-content ul,
+.sp-chat-msg-content ol {
+    margin: 0.35em 0 0.7em;
+    padding-left: 1.35em;
+}
+.sp-chat-msg-content li {
+    margin: 0.18em 0;
+    overflow-wrap: anywhere;
+}
+.sp-chat-msg-content blockquote {
+    margin: 0.65em 0;
+    padding: 0.2em 0.8em;
+    border-left: 2px solid var(--sp-divider);
+    color: var(--sp-subtle);
+}
+.sp-chat-msg-content strong { color: var(--sp-on-surface); }
+.sp-chat-msg-content em { color: var(--sp-subtle); }
+.sp-chat-msg-content code {
+    padding: 0.08em 0.3em;
+    border: 1px solid var(--sp-divider);
+    border-radius: 3px;
+    background: var(--sp-sheet-bg);
+    font-size: 0.92em;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.sp-chat-msg-content pre {
+    max-width: 100%;
+    margin: 0.65em 0;
+    padding: 0.65em 0.75em;
+    box-sizing: border-box;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 1px solid var(--sp-divider);
+    border-radius: 5px;
+    background: var(--sp-sheet-bg);
+    white-space: pre;
+}
+.sp-chat-msg-content pre > code {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    white-space: pre;
+    overflow-wrap: normal;
+    word-break: normal;
+}
+.sp-chat-msg-content table {
+    display: block;
+    max-width: 100%;
+    margin: 0.65em 0;
+    overflow-x: auto;
+    border-collapse: collapse;
+}
+.sp-chat-msg-content th,
+.sp-chat-msg-content td {
+    padding: 0.3em 0.55em;
+    border: 1px solid var(--sp-divider);
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+.sp-chat-msg-content th {
+    color: var(--sp-on-surface);
+    background: var(--sp-sheet-bg);
+}
+.sp-chat-msg-content a {
+    color: var(--sp-primary);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.sp-chat-msg-content img {
+    max-width: 100%;
+    height: auto;
+}
 /* Bubble backgrounds use dedicated --sp-chat-*-bg tokens (defined per theme)
    so we can tune contrast against text color independently of the general
    surface tokens (which have to stay usable for panels/cards). */
@@ -2739,6 +2849,13 @@ select.sp-input { appearance: none; cursor: pointer; }
 
 /* ─── cfg-hint (shared) ──────────────────────────────────────────────────────── */
 .sp-cfg-hint { font-size: var(--sp-fs-75); color: var(--sp-subtle); margin: 0 0 2px; }
+/* 记忆源的展开信息与“使用……”文字起点对齐，不挤在复选框下方。 */
+.sp-mem-source-detail {
+    margin-left: calc(var(--sp-ctrl) + 5px);
+}
+.sp-mode-opt.sp-mem-source-detail {
+    margin-top: 4px;
+}
 /* 表单小标题：显式给正文色，别继承酒馆主题里对比过低的默认色 */
 .sp-cfg-label {
     display    : block;
@@ -3915,6 +4032,39 @@ select.sp-input { appearance: none; cursor: pointer; }
 }
 .sp-theater-result-inner img { max-width: 100%; height: auto; }
 .sp-theater-result-inner p { margin: 0 0 0.8em; }
+.sp-theater-result-inner .sp-theater-prose {
+    max-width: 100%;
+}
+.sp-theater-result-inner .sp-theater-prose > :first-child { margin-top: 0; }
+.sp-theater-result-inner .sp-theater-prose > :last-child { margin-bottom: 0; }
+.sp-theater-result-inner .sp-theater-scene-break {
+    margin: 1.15em 0;
+    color: var(--sp-subtle);
+    text-align: center;
+}
+.sp-theater-result-inner .sp-theater-scene-break:empty::before {
+    content: '·  ·  ·';
+    display: inline-block;
+    border-top: 1px solid var(--sp-divider);
+    padding: 0.45em 1.1em 0;
+    line-height: 1;
+}
+.sp-theater-result-inner .sp-theater-inset {
+    margin: 1em 0;
+    padding: 0.7em 0.9em;
+    border: 1px solid var(--sp-divider);
+    border-left: 2px solid var(--sp-primary);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--sp-sheet-bg) 88%, var(--sp-primary));
+}
+.sp-theater-result-inner .sp-theater-aside {
+    color: var(--sp-subtle);
+    font-size: 0.94em;
+}
+.sp-theater-result-inner .sp-theater-emphasis {
+    color: var(--sp-primary);
+    font-weight: 600;
+}
 .sp-theater-result-empty { min-height: 120px; padding: 30px 20px; }
 
 /* ── 长篇预览折叠 ── */
@@ -4081,6 +4231,34 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     gap        : 8px;
 }
 .sp-theater-opbar #sp-theater-title { flex: 1 1 160px; }
+.sp-theater-source-wrap { width: 100%; margin-top: 10px; }
+.sp-theater-source-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 220px;
+    padding: 6px 9px;
+    border: 1px solid var(--sp-divider);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--sp-primary) 8%, var(--sp-sheet-bg));
+    color: var(--sp-subtle);
+    font: inherit;
+    font-size: var(--sp-fs-75);
+    cursor: pointer;
+}
+.sp-theater-source-toggle span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-theater-source-toggle:hover { color: var(--sp-on-surface); border-color: var(--sp-primary); }
+.sp-theater-source-detail {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 6px;
+    padding: 9px 10px;
+    border: 1px solid var(--sp-divider);
+    border-radius: 9px;
+    background: color-mix(in oklab, var(--sp-primary) 4%, var(--sp-sheet-bg));
+}
+.sp-theater-source-caption { margin-bottom: 5px; font-size: var(--sp-fs-72); color: var(--sp-subtle); }
+.sp-theater-source-detail pre { max-height: 340px; margin: 0; overflow: auto; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: var(--sp-fs-75); color: var(--sp-on-surface); }
 
 /* ── Draft / saved lists ── */
 .sp-theater-lists {
@@ -6000,4 +6178,3 @@ body.sp-anchor-fs-lock { overflow: hidden; }
     background : color-mix(in oklab, var(--sp-primary) 7%, transparent);
     box-shadow : inset 0 0 0 1.5px color-mix(in oklab, var(--sp-primary) 40%, transparent);
 }
-

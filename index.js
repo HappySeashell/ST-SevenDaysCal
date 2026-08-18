@@ -124,6 +124,8 @@ const DEFAULT_SETTINGS = {
     memMaxTokens   : 60000, // 记忆块注入 tk 预算上限（源无关）：超出则点/线/面/间取近景、历取全程等距节选，压到此值内；0=不限。默认 6w
     useBaiBaiBook  : false, // if true, pull history from 柏宝书 getInjectedHistory() and skip built-in memory entirely
     useAnima       : false, // if true, read summaries from Anima's chat-bound worldbook (anima_summary entries) and skip built-in memory
+    useDatabase    : false, // if true, retrieve raw TavernDB summary entries from the chat-bound worldbook
+    animaRecallCount: 20,   // Anima 本地关键词召回上限；默认 20 段，避免全量摘要挤爆上下文
     // Tag sanitizer (used by memory.js:stripTags AND anywhere else that reads
     // AI floor content). Both are comma-separated bare tag names (no <>).
     keepTags       : 'content',  // protect list — contents inside these tags survive stripping
@@ -337,6 +339,8 @@ let isGeneratingTheater  = false;
 let theaterAbortController = null;
 let theaterCurrentPiece  = null;   // 当前渲染中的 piece（重生成/升永久用）
 let _theaterFsEsc        = null;   // 小剧场全屏时的 Esc 退出监听（一次性绑定，全局复用）
+let _lastRandomTheaterTemplateUid = null; // 连点随机时尽量不重复上一张模板
+let _theaterTemplateSource = null; // 最近一次模板填入来源；生成时连同实际输入快照存入 piece
 let anchorMode           = false;  // 锚（收藏楼层）视图是否激活
 let _anchorSavedKeys     = new Set();   // 已收藏楼层键 `${chatId}::${mesid}`（内存缓存，供按钮同步态）
 let _anchorView          = { level: 'chars', charName: null, chatId: null, itemId: null };  // 四层抽屉：角色→聊天→收藏→全文
@@ -597,7 +601,7 @@ jQuery(async () => {
         getSettings: () => {
             const s = getSettings();
             return {
-                useBaiBaiBook  : !!s.useBaiBaiBook || !!s.useAnima,   // Anima 用户同样跳过内置采集/注入（memory.js 只认这一个旗标）
+                useBaiBaiBook  : !!s.useBaiBaiBook || !!s.useAnima || !!s.useDatabase, // 外置记忆源均跳过内置采集/注入（memory.js 只认这一个旗标）
                 memoryEnabled  : s.memoryEnabled !== false,
                 memoryL0Group  : Number.isFinite(+s.memoryL0Group) ? +s.memoryL0Group : 5,
                 memoryL1Group  : Number.isFinite(+s.memoryL1Group) ? +s.memoryL1Group : 10,
@@ -4113,12 +4117,22 @@ function injectModal() {
                                         <input type="checkbox" id="sp-mem-source-bbb">
                                         <span>使用柏宝书作为记忆源</span>
                                     </label>
-                                    <div id="sp-mem-bbb-status" class="sp-cfg-hint" style="display:none"></div>
+                                    <div id="sp-mem-bbb-status" class="sp-cfg-hint sp-mem-source-detail" style="display:none"></div>
                                     <label class="sp-mode-opt sp-mem-source-toggle">
                                         <input type="checkbox" id="sp-mem-source-anima">
                                         <span>使用 Anima 作为记忆源</span>
                                     </label>
-                                    <div id="sp-mem-anima-status" class="sp-cfg-hint" style="display:none"></div>
+                                    <div id="sp-mem-anima-status" class="sp-cfg-hint sp-mem-source-detail" style="display:none"></div>
+                                    <label class="sp-mode-opt sp-mem-source-toggle">
+                                        <input type="checkbox" id="sp-mem-source-database">
+                                        <span>使用数据库作为记忆源</span>
+                                    </label>
+                                    <div id="sp-mem-database-status" class="sp-cfg-hint sp-mem-source-detail" style="display:none"></div>
+                                    <div id="sp-mem-anima-options" class="sp-mode-opt sp-mem-source-detail" style="display:none">
+                                        <span>外置记忆召回条数</span>
+                                        <input id="sp-mem-anima-recall" class="sp-input sp-interval-input" type="number" min="1" max="50" step="1" value="20">
+                                        <span>（按当前内容检索）</span>
+                                    </div>
 
                                     <hr class="sp-mem-divider">
                                     <label class="sp-cfg-group">容量</label>
@@ -4939,6 +4953,7 @@ function injectModal() {
         const tpl = _theaterTemplateCache.find(t => String(t.uid) === String(uid));
         if (tpl) {
             $in('#sp-theater-input').val(tpl.text);
+            _theaterTemplateSource = { uid: String(tpl.uid), title: String(tpl.title || '(无标题)') };
             $in('#sp-theater-tpl-picker').removeAttr('open');
             $in('#sp-theater-input').trigger('focus');
         }
@@ -4950,7 +4965,7 @@ function injectModal() {
         if (!input) { showToast('请先填写小剧场需求', null, true); return; }
         runGenerateTheater(input);
     });
-    // 随机起草：从模板库随机抽一个直接生成（模板 text 即需求）。缓存空则临时拉一次，仍空则友好提示。
+    // 随机起草：只把模板内容填入输入框，给用户反复 roll 和修改的机会；确认合适后再手动生成。
     $theater.on('click', '.sp-theater-random', async function () {
         if (isGeneratingTheater) return;
         let pool = _theaterTemplateCache;
@@ -4959,18 +4974,31 @@ function injectModal() {
             pool = _theaterTemplateCache;
         }
         if (!pool || !pool.length) { showToast('模板库为空，先去设置 · 棱新增模板', null, true); return; }
-        const pick = pool[Math.floor(Math.random() * pool.length)];
+        const usable = pool.filter(t => String(t?.text || '').trim());
+        if (!usable.length) { showToast('模板内容都是空的，去设置补一下内容', null, true); return; }
+        // 模板不止一张时，连续点击“随机”至少不会原地抽回同一张。
+        const choices = usable.filter(t => String(t?.uid) !== _lastRandomTheaterTemplateUid);
+        const pick = (choices.length ? choices : usable)[Math.floor(Math.random() * (choices.length ? choices.length : usable.length))];
         const text = String(pick?.text || '').trim();
         if (!text) { showToast('随机到的模板内容为空，去设置补一下内容', null, true); return; }
-        $in('#sp-theater-input').val(text);               // 让用户看到抽中了什么，也便于中止后二次编辑
+        _lastRandomTheaterTemplateUid = String(pick?.uid ?? '');
+        $in('#sp-theater-input').val(text);               // 让用户看到抽中了什么，也便于二次编辑
+        _theaterTemplateSource = { uid: String(pick.uid ?? ''), title: String(pick.title || '(无标题)') };
         $in('#sp-theater-tpl-picker').removeAttr('open'); // 收起模板选择器
-        runGenerateTheater(text);
+        $in('#sp-theater-input').trigger('focus');
     });
     $theater.on('click', '.sp-theater-regen', function () {
         if (isGeneratingTheater) return;
         const input = String($in('#sp-theater-input').val() || '').trim();
         if (!input) { showToast('改一下输入再重新生成', null, true); return; }
         runGenerateTheater(input);
+    });
+    $theater.on('click', '.sp-theater-source-toggle', function () {
+        const $detail = $in('#sp-theater-source-detail');
+        const open = !$detail.is(':visible');
+        $detail.toggle(open);
+        $(this).attr('aria-expanded', String(open));
+        $(this).find('.sp-theater-source-chevron').attr('class', `fa-solid fa-chevron-${open ? 'up' : 'down'} sp-theater-source-chevron`);
     });
     $theater.on('click', '#sp-abort-theater', abortTheaterGen);
     $theater.on('click', '.sp-theater-back', renderTheaterPanel);
@@ -6441,7 +6469,7 @@ function setBody(html) { $in('#sp-body').html(html); }
 // switch OR the first time they open the panel post-upgrade.
 function checkMemoryMigrationNotice() {
     const _ms = getSettings();
-    if (_ms.useBaiBaiBook || _ms.useAnima) return;      // 柏宝书 / Anima 用户不受内置记忆迁移影响
+    if (_ms.useBaiBaiBook || _ms.useAnima || _ms.useDatabase) return; // 外置记忆源不受内置记忆迁移影响
     const notice = memory.consumeMigrationNotice?.();
     if (!notice) return;
     const { l0Count, l1Count } = notice;
@@ -6461,7 +6489,7 @@ async function memoryPreCheckConfirm() {
     // worldbook has no anima_summary slices (built-in report is meaningless here).
     if (getSettings().useAnima) {
         const th = globalThis.TavernHelper;
-        if (!th || typeof th.getChatWorldbookName !== 'function' || typeof th.getWorldbook !== 'function') {
+        if (!th || typeof th.getWorldbook !== 'function') {
             return spConfirm({
                 title  : 'Anima 记忆源未就绪',
                 body   : '当前选的是 Anima 记忆源，但检测不到酒馆助手(TavernHelper)接口。\n继续生成会没有历史记忆注入。',
@@ -6479,6 +6507,28 @@ async function memoryPreCheckConfirm() {
                 note   : '继续生成会没有历史记忆注入。请先让 Anima 跑出摘要，或确认世界书绑定正确。',
                 confirmText: '继续生成',
                 cancelText : '取消',
+            });
+        }
+        return true;
+    }
+    if (getSettings().useDatabase) {
+        const th = globalThis.TavernHelper;
+        if (!th || typeof th.getWorldbook !== 'function') {
+            return spConfirm({
+                title: '数据库记忆源未就绪',
+                body: '当前选的是数据库记忆源，但检测不到酒馆助手(TavernHelper)接口。\n继续生成会没有历史记忆注入。',
+                note: '请确认酒馆助手和数据库脚本已启用，或暂时切换记忆源。',
+                confirmText: '继续生成', cancelText: '取消',
+            });
+        }
+        let hasMemory = false;
+        try { hasMemory = !!(await getDatabaseMemText()).trim(); } catch {}
+        if (!hasMemory) {
+            return spConfirm({
+                title: '数据库记忆为空',
+                body: '角色卡主世界书里没读到数据库的原始纪要条目。',
+                note: '构画只读取“纪要-数字”或“总结条目”，不会把索引、表格和本地设定误当记忆。',
+                confirmText: '继续生成', cancelText: '取消',
             });
         }
         return true;
@@ -6636,7 +6686,7 @@ function reloadAfterConflict() {
 function loadingHtml(baseText, abortId) {
     // 柏宝书 / Anima mode has no built-in background queue — never show "补全记忆" text.
     const _ms = getSettings();
-    const busy = !_ms.useBaiBaiBook && !_ms.useAnima && memory.isMemoryBusy();
+    const busy = !_ms.useBaiBaiBook && !_ms.useAnima && !_ms.useDatabase && memory.isMemoryBusy();
     const text = busy
         ? `正在补全记忆并${baseText}…`
         : `${baseText}中…`;
@@ -7093,7 +7143,7 @@ async function refreshTheaterStoryContext() {
     let wiContext = '';
     try { wiContext = await buildWorldInfoContext(ctx); } catch { wiContext = ''; }
     const { personaDesc, authorNote } = readCardExtras(ctx);
-    const memText = await getMemText();
+    const memText = await getMemText({ query: '小剧场剧情背景' });
     const sysBlocks = [
         personaDesc      ? `【${userName} 的人物设定】\n${personaDesc}` : '',
         char.description ? `【${charName} 的背景资料】\n${char.description}` : '',
@@ -7509,69 +7559,159 @@ async function buildWorldInfoContext(ctx) {
     return `【世界书】\n${kept.join('\n\n')}`;
 }
 
-// Read Anima's summary layer from the chat-bound worldbook. Anima persists each
-// summary slice as <batchId_sliceId>…</batchId_sliceId> inside worldbook entries
-// tagged extra.createdBy==="anima_summary", with extra.history[] carrying the
-// {unique_id,batch_id,slice_id,narrative_time} index (see Anima worldbook_api.js
-// saveSummaryBatchToWorldbook / getLatestRecentSummaries). Chapters/分卷 each get
-// their own entry, so we merge across all of them and stitch slices back in
-// chronological order. Goes through window.TavernHelper (Anima users always have
-// 酒馆助手 installed); returns '' if that runtime or the worldbook isn't there.
-// opts.full is intentionally NOT differentiated: Anima's summary layer IS the
-// compressed timeline (there's no RAG recall on 构画's side), so we always return
-// the full chronological set — mirroring the built-in branch, which also ignores
-// opts.full.
-async function getAnimaMemText() {
+// Anima 原始摘要的唯一稳定标记是 extra.createdBy === 'anima_summary'。它的临时
+// 知识容器 / 注入结果是另一类条目，不能因为 enabled 或蓝绿灯状态而混进来。
+function getAnimaRecallCount() {
+    const n = parseInt(getSettings().animaRecallCount, 10);
+    return Number.isFinite(n) ? Math.max(1, Math.min(50, n)) : 20;
+}
+
+function animaTextTokens(text) {
+    const source = String(text || '').toLowerCase().replace(/\s+/g, ' ');
+    const tokens = new Set();
+    // 中文没有天然空格：取连续汉字段中的双字片段，同时保留完整短词；英文/数字词直接保留。
+    for (const run of source.match(/[\u3400-\u9fff]{2,}/g) || []) {
+        if (run.length <= 8) tokens.add(run);
+        for (let i = 0; i < run.length - 1; i++) tokens.add(run.slice(i, i + 2));
+    }
+    for (const word of source.match(/[a-z0-9_]{2,}/g) || []) tokens.add(word);
+    return tokens;
+}
+
+function buildAnimaRecallQuery(explicitQuery = '') {
+    const ctx = getContext();
+    const recent = Array.isArray(ctx?.chat) ? ctx.chat.slice(-6) : [];
+    const s = getSettings();
+    const stripOpts = { keepTags: s.keepTags, extraTags: s.extraTags };
+    const tail = recent.map(m => memory.stripTags(String(m?.mes || ''), stripOpts).slice(-700)).join('\n');
+    return `${explicitQuery}\n${tail}`.slice(-6000);
+}
+
+function extractAnimaSlices(entries) {
+    const slices = [];
+    for (const entry of entries) {
+        const ex = entry?.extra;
+        if (ex?.createdBy !== 'anima_summary' || !Array.isArray(ex.history)) continue;
+        const content = String(entry.content || '');
+        for (const h of ex.history) {
+            const uid = h?.unique_id !== undefined ? h.unique_id : h?.index;
+            if (uid === undefined || uid === null) continue;
+            const tag = String(uid).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const match = content.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+            const text = match?.[1]?.trim();
+            if (!text) continue;
+            slices.push({
+                id: `${entry.uid ?? entry.comment ?? 'anima'}:${uid}`,
+                text,
+                tags: Array.isArray(h.tags) ? h.tags.join(' ') : String(h.tags || ''),
+                batch: Number(h.batch_id !== undefined ? h.batch_id : h.index) || 0,
+                slice: Number(h.slice_id) || 0,
+                time: h.narrative_time || '',
+            });
+        }
+    }
+    return slices;
+}
+
+function selectAnimaSlices(slices, query, limit) {
+    const queryTokens = animaTextTokens(query);
+    const rankTime = item => Date.parse(item.time) || 0;
+    return slices.map(item => {
+        const haystack = animaTextTokens(`${item.tags}\n${item.text}`);
+        let score = 0;
+        for (const token of queryTokens) {
+            if (haystack.has(token)) score += token.length >= 4 ? 2 : 1;
+        }
+        return { ...item, score, rankTime: rankTime(item) };
+    }).sort((a, b) => b.score - a.score || b.batch - a.batch || b.slice - a.slice || b.rankTime - a.rankTime)
+        .slice(0, limit)
+        // 召回阶段倒序利于相关性；注入阶段还原时间顺序，模型读起来不会跳戏。
+        .sort((a, b) => a.batch - b.batch || a.slice - b.slice || a.rankTime - b.rankTime);
+}
+
+// 从 Anima 的原始摘要分片中做轻量、本地的关键词检索。不复刻 Anima 的向量库：
+// 构画只需要锦上添花的剧情背景，20 条左右的相关回忆已足够，且不依赖蓝绿灯状态。
+// Anima 按“当前聊天”维护专属世界书；这和角色卡主书、附加书是完全不同的一套绑定。
+async function getAnimaMemoryWorldbook() {
     const th = globalThis.TavernHelper;
-    if (!th || typeof th.getChatWorldbookName !== 'function' || typeof th.getWorldbook !== 'function') {
+    if (!th || typeof th.getWorldbook !== 'function' || typeof th.getChatWorldbookName !== 'function') return null;
+    let name = '';
+    try { name = String(await th.getChatWorldbookName('current') || '').trim(); } catch {}
+    if (!name) return null;
+    try {
+        const entries = await th.getWorldbook(name);
+        return Array.isArray(entries) ? { name, entries } : null;
+    } catch { return null; }
+}
+
+// 数据库只能写入角色卡的主世界书。没有主书即没有数据库记忆，绝不偷读附加书或聊天书。
+function getDatabasePrimaryWorldbookName(ctx = getContext()) {
+    try {
+        const primary = globalThis.TavernHelper?.getCharLorebooks?.()?.primary;
+        if (primary) return String(primary).trim();
+    } catch {}
+    return String(ctx?.characters?.[ctx.characterId]?.data?.extensions?.world || '').trim();
+}
+
+async function getDatabaseMemoryWorldbook() {
+    const th = globalThis.TavernHelper;
+    if (!th || typeof th.getWorldbook !== 'function') return null;
+    const name = getDatabasePrimaryWorldbookName();
+    if (!name) return null;
+    try {
+        const entries = await th.getWorldbook(name);
+        return Array.isArray(entries) ? { name, entries } : null;
+    } catch { return null; }
+}
+
+async function getAnimaMemText(opts = {}) {
+    if (!globalThis.TavernHelper || typeof globalThis.TavernHelper.getWorldbook !== 'function') {
         if (!getMemText._animaWarned) {
             getMemText._animaWarned = true;
             console.info('[7dayscal] 选了 Anima 记忆源但酒馆助手(TavernHelper)接口未就绪，本次生成无历史注入');
         }
         return '';
     }
-    let wbName = null;
-    try { wbName = await th.getChatWorldbookName('current'); } catch {}
-    if (!wbName) return '';
-    let entries = null;
-    try { entries = await th.getWorldbook(wbName); } catch { return ''; }
-    if (!Array.isArray(entries)) return '';
+    const worldbook = await getAnimaMemoryWorldbook();
+    if (!worldbook) return '';
 
-    const all = [];
-    for (const entry of entries) {
-        const ex = entry?.extra;
-        if (ex?.createdBy !== 'anima_summary' || !Array.isArray(ex.history)) continue;
-        const content = String(entry.content || '');
-        for (const h of ex.history) {
-            const uid = h.unique_id !== undefined ? h.unique_id : h.index;
-            if (uid === undefined || uid === null) continue;
-            all.push({
-                unique_id     : String(uid),
-                batch_id      : Number(h.batch_id !== undefined ? h.batch_id : h.index) || 0,
-                slice_id      : Number(h.slice_id !== undefined ? h.slice_id : 0) || 0,
-                narrative_time: h.narrative_time,
-                parentContent : content,
-            });
-        }
-    }
-    if (!all.length) return '';
+    const slices = extractAnimaSlices(worldbook.entries);
+    if (!slices.length) return '';
+    const query = buildAnimaRecallQuery(opts.query);
+    return selectAnimaSlices(slices, query, getAnimaRecallCount()).map(item => item.text).join('\n\n');
+}
 
-    // 正序拼接：narrative_time → batch_id → slice_id（与 Anima 写入时的排序同口径）
-    all.sort((a, b) => {
-        if (a.narrative_time && b.narrative_time && a.narrative_time !== b.narrative_time) {
-            return new Date(a.narrative_time).getTime() - new Date(b.narrative_time).getTime();
-        }
-        if (a.batch_id !== b.batch_id) return a.batch_id - b.batch_id;
-        return a.slice_id - b.slice_id;
+// 数据库把原始记忆平铺为世界书纪要。只认自身的“纪要-数字”或常规版总结条目；
+// 纪要索引、包裹、ReadableDataTable 和 Wrapper 都是生成/注入结构，绝不能混入。
+function isDatabaseMemoryEntry(entry) {
+    const comment = String(entry?.comment || '').trim();
+    return /^TavernDB-ACU-CustomExport-纪要-\d+$/i.test(comment)
+        || /^(?:总结条目|小总结条目)(?:[\s_#-]*\d+)?(?:\s.*)?$/i.test(comment);
+}
+
+function extractDatabaseMemories(entries) {
+    return entries.flatMap((entry, index) => {
+        if (!isDatabaseMemoryEntry(entry)) return [];
+        const text = String(entry.content || '').trim();
+        if (!text) return [];
+        const keys = Array.isArray(entry.key) ? entry.key : (Array.isArray(entry.keys) ? entry.keys : [entry.key || entry.keys || '']);
+        return [{
+            id: `database:${entry.uid ?? index}`,
+            text,
+            tags: `${entry.comment || ''} ${keys.filter(Boolean).join(' ')}`,
+            batch: index,
+            slice: 0,
+            time: '',
+        }];
     });
+}
 
-    const parts = [];
-    for (const item of all) {
-        const tag = item.unique_id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const m = item.parentContent.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
-        if (m) { const t = m[1].trim(); if (t) parts.push(t); }
-    }
-    return parts.join('\n\n');
+async function getDatabaseMemText(opts = {}) {
+    const worldbook = await getDatabaseMemoryWorldbook();
+    if (!worldbook) return '';
+    const memories = extractDatabaseMemories(worldbook.entries);
+    if (!memories.length) return '';
+    return selectAnimaSlices(memories, buildAnimaRecallQuery(opts.query), getAnimaRecallCount()).map(item => item.text).join('\n\n');
 }
 
 // Memory-source dispatcher. Priority: Anima → 柏宝书 → built-in L0/L1 store. The
@@ -7580,8 +7720,12 @@ async function getAnimaMemText() {
 async function _getMemTextRaw(opts = {}) {
     const s = getSettings();
     if (s.useAnima) {
-        try { return await getAnimaMemText(); }
+        try { return await getAnimaMemText(opts); }
         catch (err) { console.warn('[7dayscal] Anima 取摘要出错:', err); return ''; }
+    }
+    if (s.useDatabase) {
+        try { return await getDatabaseMemText(opts); }
+        catch (err) { console.warn('[7dayscal] 数据库取纪要出错:', err); return ''; }
     }
     if (s.useBaiBaiBook) {
         const api = globalThis.STBaiBaiBook;
@@ -7698,7 +7842,7 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 10,
     const { personaDesc, authorNote } = readCardExtras(ctx);
 
     // Story memory (Plan C: objective memory + view tag)
-    const memoryText = await getMemText({ full: opts.fullMemory });
+    const memoryText = await getMemText({ full: opts.fullMemory, query: prompt });
     // Memory is still valid narrative context, but serialized module widgets
     // inside an old snapshot are not generation input during a reroll.
     const memText = opts.reroll ? stripRerollModuleArtifacts(memoryText) : memoryText;
@@ -8634,7 +8778,7 @@ async function buildSpaceChatMessages(userMsg) {
     const ledgerList = LEDGER_READ_KEYWORDS.some(w => msg.includes(w)) ? numberedLedgerList() : '';
     const faqText    = SPACE_HELP_KEYWORDS.some(w => msg.includes(w))  ? buildSpaceHelpText() : '';
     const wiContext = await buildWorldInfoContext(ctx);
-    const memText   = await getMemText();
+    const memText   = await getMemText({ query: userMsg });
     const recentCtx = await buildRecentChatContext(ctx);
     const { personaDesc, authorNote } = readCardExtras(ctx);
     const sys = buildSpaceChatSystemPrompt({
@@ -8752,6 +8896,17 @@ function renderTheaterPanel() {
            </div>`
         : `<div class="sp-theater-result" id="sp-theater-result">${resultHtml}</div>`;
 
+    const sourceBlock = piece?.templateSource?.input
+        ? `<div class="sp-theater-source-wrap">
+              <button type="button" class="sp-theater-source-toggle" aria-expanded="false" title="查看本次实际使用内容">
+                  <i class="fa-solid fa-file-lines"></i><span>模板 · ${escapeHtml(piece.templateSource.title || '(无标题)')}</span><i class="fa-solid fa-chevron-down sp-theater-source-chevron"></i>
+              </button>
+              <div id="sp-theater-source-detail" class="sp-theater-source-detail" style="display:none">
+                  <div class="sp-theater-source-caption">本次实际使用内容</div>
+                  <pre>${escapeHtml(piece.templateSource.input)}</pre>
+              </div>
+           </div>`
+        : '';
     const opBar = piece
         ? `<div class="sp-theater-opbar">
               <button class="sp-btn sp-theater-regen">重新生成</button>
@@ -8780,12 +8935,13 @@ function renderTheaterPanel() {
             </details>
             <textarea id="sp-theater-input" class="sp-input sp-theater-textarea" placeholder="描述这段小剧场：场景、人物状态、想看的走向、字数等…"></textarea>
             <div class="sp-theater-btn-row">
-                <button class="sp-btn sp-theater-random" title="从模板库随机抽一个模板直接生成"><i class="fa-solid fa-shuffle"></i> 随机</button>
+                <button class="sp-btn sp-theater-random" title="从模板库随机抽一个模板填入；确认后再点生成"><i class="fa-solid fa-shuffle"></i> 随机</button>
                 <button class="sp-btn sp-btn-primary sp-theater-generate">生成小剧场</button>
             </div>
         </div>
         <hr class="sp-theater-divider">
         ${resultBlock}
+        ${sourceBlock}
         ${opBar}
         <hr class="sp-theater-divider">
         <div class="sp-theater-lists">
@@ -8851,8 +9007,12 @@ async function runGenerateTheater(userInput) {
     setTheaterBody(loadingHtml('正在折射', 'sp-abort-theater'));
     try {
         await refreshTheaterStoryContext();
+        const source = _theaterTemplateSource
+            ? { ..._theaterTemplateSource, input: String(userInput) }
+            : null;
         const { piece } = await theater.generate(userInput, {
             signal: myCtrl.signal,
+            templateSource: source,
             onStage: (stage) => {
                 if (theaterAbortController === myCtrl && theaterMode) {
                     setTheaterBody(loadingHtml(`正在${stage}`, 'sp-abort-theater'));
@@ -8868,6 +9028,7 @@ async function runGenerateTheater(userInput) {
         isGeneratingTheater = false;
         theaterAbortController = null;
         theaterCurrentPiece = piece;
+        _theaterTemplateSource = null; // 成功后清来源，下一次纯手写不会误挂上一张模板
         if (theaterMode) { renderTheaterPanel(); if (getSettings().notifyMode !== 'off') showToast('棱已生成'); }
         else showToast('棱已生成，点击查看', () => {
             $in('.sp-view-btn[data-view="theater"]').trigger('click');
@@ -10240,7 +10401,13 @@ async function runGenerateDashed(options = {}) {
     if (isGeneratingDashed) return;
     const manual = options.manual === true;
     const reroll = manual || options.reroll === true;
-    const targetCount = dashedTargetCount(options.count || options.topics?.length || 2);
+    // 未指定主题的入口（楼内刷新 / 跟线自动生成）也必须真随机抽类别。
+    // 旧逻辑只给模型一个“什么都可以写”的大范围，它会反复偏向同一类设定，
+    // UI 虽写“随机”但实际并没有随机题材。
+    const topicValues = Array.isArray(options.topics) && options.topics.length
+        ? options.topics
+        : pickRandomDashedTopics();
+    const targetCount = dashedTargetCount(options.count || topicValues.length || 2);
     const chatIdSnap = getContext().chatId;
     const myCtrl = dashedAbortController = new AbortController();
     isGeneratingDashed = true;
@@ -10253,7 +10420,7 @@ async function runGenerateDashed(options = {}) {
         const charName = ctx.name2 || '角色';
         const cfg = loadCfg();
         if (!cfg.url || !cfg.key) throw new Error('未配置自定义 API');
-        const topics = (options.topics || []).map(value => dashedTopicText(value, userName, charName, options.customValue)).filter(Boolean);
+        const topics = topicValues.map(value => dashedTopicText(value, userName, charName, options.customValue)).filter(Boolean);
         const currentItems = readDashedItems();
         const lockedItems = currentItems.filter(item => item?.locked);
         const avoidRecent = reroll ? [] : parseDashedItems(DASHED_AVOID_COUNT);
@@ -13044,8 +13211,12 @@ function renderMemorySection() {
     const s = getSettings();
     const useBbb   = !!s.useBaiBaiBook;
     const useAnima = !!s.useAnima;
+    const useDatabase = !!s.useDatabase;
     $in('#sp-mem-source-bbb').prop('checked', useBbb);
     $in('#sp-mem-source-anima').prop('checked', useAnima);
+    $in('#sp-mem-source-database').prop('checked', useDatabase);
+    $in('#sp-mem-anima-options').toggle(useAnima || useDatabase);
+    $in('#sp-mem-anima-recall').val(getAnimaRecallCount());
     // 自定义提示词是全局设置、与记忆源无关，必须在下面按源分支的 early-return 之前回填，
     // 否则用户选 Anima/柏宝书时函数提前 return，重开面板这框会空白（值其实已存盘）。
     $in('#sp-custom-prompt').val(typeof s.customPrompt === 'string' ? s.customPrompt : '');
@@ -13059,6 +13230,7 @@ function renderMemorySection() {
     if (useBbb) {
         $in('#sp-mem-internal').hide();
         $in('#sp-mem-anima-status').hide();
+        $in('#sp-mem-database-status').hide();
         $in('#sp-mem-bbb-status').show();
         const api = globalThis.STBaiBaiBook;
         if (api && typeof api.getInjectedHistory === 'function') {
@@ -13077,13 +13249,22 @@ function renderMemorySection() {
     if (useAnima) {
         $in('#sp-mem-internal').hide();
         $in('#sp-mem-bbb-status').hide();
+        $in('#sp-mem-database-status').hide();
         $in('#sp-mem-anima-status').show();
         renderAnimaStatus();
+        return;
+    }
+    if (useDatabase) {
+        $in('#sp-mem-internal').hide();
+        $in('#sp-mem-bbb-status, #sp-mem-anima-status').hide();
+        $in('#sp-mem-database-status').show();
+        renderDatabaseStatus();
         return;
     }
     $in('#sp-mem-internal').show();
     $in('#sp-mem-bbb-status').hide();
     $in('#sp-mem-anima-status').hide();
+    $in('#sp-mem-database-status').hide();
     $in('#sp-mem-enabled').prop('checked', s.memoryEnabled !== false);
     $in('#sp-mem-l0').val(Number.isFinite(+s.memoryL0Group) ? +s.memoryL0Group : 5);
     $in('#sp-mem-l1').val(Number.isFinite(+s.memoryL1Group) ? +s.memoryL1Group : 10);
@@ -13098,33 +13279,64 @@ function renderMemorySection() {
 async function renderAnimaStatus() {
     const $st = $in('#sp-mem-anima-status');
     const th = globalThis.TavernHelper;
-    if (!th || typeof th.getChatWorldbookName !== 'function' || typeof th.getWorldbook !== 'function') {
+    if (!th || typeof th.getWorldbook !== 'function' || typeof th.getChatWorldbookName !== 'function') {
         $st.html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 检测不到酒馆助手(TavernHelper)：请确认已安装并启用「酒馆助手」与「Anima 记忆系统」；点 / 线 / 面 / 间 生成时不会注入历史记忆');
+        warnExternalMemoryOnce('anima', 'api', 'Anima 记忆未就绪：请检查酒馆助手与 Anima');
         return;
     }
     $st.html('<i class="fa-solid fa-spinner fa-spin"></i> 正在读取 Anima 摘要…');
-    let wbName = null;
-    try { wbName = await th.getChatWorldbookName('current'); } catch {}
     if (!getSettings().useAnima) return;   // await 期间用户切走了源
-    if (!wbName) {
-        $st.html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 当前聊天没有绑定世界书，读不到 Anima 摘要');
+    const worldbook = await getAnimaMemoryWorldbook();
+    if (!worldbook) {
+        $st.html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 当前聊天没有 Anima 专属世界书，读不到 Anima 摘要');
+        warnExternalMemoryOnce('anima', 'no-worldbook', 'Anima 记忆未识别：当前聊天没有专属世界书');
         return;
     }
     let count = 0;
-    try {
-        const entries = await th.getWorldbook(wbName);
-        if (Array.isArray(entries)) {
-            for (const e of entries) {
-                if (e?.extra?.createdBy === 'anima_summary' && Array.isArray(e.extra.history)) count += e.extra.history.length;
-            }
+    for (const e of worldbook.entries) {
+        if (e?.extra?.createdBy === 'anima_summary' && Array.isArray(e.extra.history)) {
+            count += e.extra.history.length;
         }
-    } catch {}
+    }
     if (!getSettings().useAnima) return;
     if (count > 0) {
-        $st.html(`<i class="fa-solid fa-circle-check" style="color:var(--cardhub-accent,#7c9)"></i> Anima 已就绪（世界书「${escapeHtml(wbName)}」读到 ${count} 段摘要）`);
+        $st.html(`<i class="fa-solid fa-circle-check" style="color:var(--cardhub-accent,#7c9)"></i> Anima 已就绪（聊天专属世界书「${escapeHtml(worldbook.name)}」读到 ${count} 段摘要）`);
     } else {
-        $st.html(`<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 世界书「${escapeHtml(wbName)}」里没有 Anima 摘要（anima_summary）——请先让 Anima 跑出摘要`);
+        $st.html(`<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 聊天专属世界书「${escapeHtml(worldbook.name)}」里没有 Anima 摘要（anima_summary）——请先让 Anima 跑出摘要`);
+        warnExternalMemoryOnce('anima', worldbook.name, 'Anima 记忆未识别：请检查摘要是否已生成或 Anima 版本');
     }
+}
+
+const _externalMemoryWarned = new Set();
+function warnExternalMemoryOnce(source, scope, message) {
+    const key = `${source}:${scope}`;
+    if (_externalMemoryWarned.has(key)) return;
+    _externalMemoryWarned.add(key);
+    showToast(message, null, true);
+}
+
+async function renderDatabaseStatus() {
+    const $st = $in('#sp-mem-database-status');
+    const th = globalThis.TavernHelper;
+    if (!th || typeof th.getWorldbook !== 'function') {
+        $st.html('<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> 检测不到酒馆助手(TavernHelper)，无法读取数据库世界书');
+        warnExternalMemoryOnce('database', 'api', '数据库记忆未就绪：请检查酒馆助手与数据库');
+        return;
+    }
+    if (!getSettings().useDatabase) return;
+    const worldbook = await getDatabaseMemoryWorldbook();
+    const wbName = worldbook?.name || '';
+    const count = worldbook ? extractDatabaseMemories(worldbook.entries).length : 0;
+    if (count) {
+        $st.html(`<i class="fa-solid fa-circle-check" style="color:var(--cardhub-accent,#7c9)"></i> 数据库已就绪（世界书「${escapeHtml(wbName || '')}」读到 ${count} 条纪要）`);
+        return;
+    }
+    const reason = wbName
+        ? `角色卡主世界书「${escapeHtml(wbName)}」未识别到数据库纪要：可能尚未生成记忆，或数据库版本改了条目格式。`
+        : '角色卡没有主世界书，数据库无法生成或读取记忆。';
+    $st.html(`<i class="fa-solid fa-triangle-exclamation" style="color:#e0a54e"></i> ${reason}`);
+    const warnKey = String(wbName || '__no_worldbook__');
+    warnExternalMemoryOnce('database', warnKey, '数据库记忆未识别：请检查角色卡主世界书、数据库状态或版本');
 }
 
 
@@ -13197,7 +13409,7 @@ function bindMemoryHandlers() {
     $in('#sp-mem-source-bbb').on('change', function () {
         const s = getSettings();
         s.useBaiBaiBook = this.checked;
-        if (this.checked) s.useAnima = false;   // 记忆源互斥：柏宝书 / Anima / 内置三选一
+        if (this.checked) { s.useAnima = false; s.useDatabase = false; }
         saveSettingsDebounced();
         if (this.checked) memory.abortRebuild();
         renderMemorySection();
@@ -13205,10 +13417,24 @@ function bindMemoryHandlers() {
     $in('#sp-mem-source-anima').on('change', function () {
         const s = getSettings();
         s.useAnima = this.checked;
-        if (this.checked) s.useBaiBaiBook = false;   // 记忆源互斥
+        if (this.checked) { s.useBaiBaiBook = false; s.useDatabase = false; }
         saveSettingsDebounced();
         if (this.checked) memory.abortRebuild();
         renderMemorySection();
+    });
+    $in('#sp-mem-source-database').on('change', function () {
+        const s = getSettings();
+        s.useDatabase = this.checked;
+        if (this.checked) { s.useBaiBaiBook = false; s.useAnima = false; }
+        saveSettingsDebounced();
+        if (this.checked) memory.abortRebuild();
+        renderMemorySection();
+    });
+    $in('#sp-mem-anima-recall').on('change', function () {
+        const v = Math.max(1, Math.min(50, parseInt(this.value, 10) || 20));
+        getSettings().animaRecallCount = v;
+        this.value = v;
+        saveSettingsDebounced();
     });
     $in('#sp-mem-enabled').on('change', function () {
         getSettings().memoryEnabled = this.checked;
@@ -14026,6 +14252,7 @@ function onDragStart(e) {
     $(document).on('mousemove.spdrag', onDragMove).on('mouseup.spdrag', onDragEnd);
     document.addEventListener('touchmove', onDragMove, { passive: false });
     document.addEventListener('touchend',  onDragEnd);
+    document.addEventListener('touchcancel', onDragEnd);
     document.body.style.cursor = 'grabbing';
 }
 
@@ -14059,6 +14286,7 @@ function onDragEnd() {
     $(document).off('mousemove.spdrag mouseup.spdrag');
     document.removeEventListener('touchmove', onDragMove);
     document.removeEventListener('touchend',  onDragEnd);
+    document.removeEventListener('touchcancel', onDragEnd);
     document.body.style.cursor = '';
 }
 
@@ -14094,6 +14322,7 @@ function onResizeStart(e) {
     $(document).on('mousemove.spresize', onResizeMove).on('mouseup.spresize', onResizeEnd);
     document.addEventListener('touchmove', onResizeMove, { passive: false });
     document.addEventListener('touchend',  onResizeEnd);
+    document.addEventListener('touchcancel', onResizeEnd);
 }
 
 function onResizeMove(e) {
@@ -14138,6 +14367,7 @@ function onResizeEnd() {
     $(document).off('mousemove.spresize mouseup.spresize');
     document.removeEventListener('touchmove', onResizeMove);
     document.removeEventListener('touchend',  onResizeEnd);
+    document.removeEventListener('touchcancel', onResizeEnd);
 }
 
 function restoreOutlineChatHeight() {
@@ -14673,4 +14903,3 @@ function cleanText(s) {
         .replace(/`([^`]+)`/g, '$1')
         .trim();
 }
-
