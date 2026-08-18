@@ -16,6 +16,18 @@ import * as store from './store.js';
 import * as ledger from './ledger.js';
 import * as snapshot from './snapshot.js';
 import { createDialogManager } from './modal.js';
+import { createAutomationGate } from './automation-gate.js';
+import { createDateCoordinator } from './date-coordinator.js';
+import {
+    TIME_TRAVEL_DIRECTION_OPTIONS,
+    sameMonthDay,
+    removeTimeTravelBlocks,
+    collectTravelAnniversaries,
+    buildTravelStoryPrompt,
+    buildTravelDirectionPrompt,
+    parseTravelDirections,
+    createTimeTravelController,
+} from './time-travel.js';
 
 const PLUGIN_ID  = 'schedule-planner';
 const MODAL_ID   = 'sp-modal-root';
@@ -357,6 +369,164 @@ function batchReset() { _batchScope = null; _batchSelected = new Set(); }
 
 const isMobile = () => window.innerWidth <= 640;
 
+const automationGate = createAutomationGate();
+const dateCoordinator = createDateCoordinator();
+const AUTOMATION_MODULES = Object.freeze({
+    LINES: 'lines',
+    OUTLINE: 'outline',
+    POINT: 'point',
+    LEDGER_CAPTURE: 'ledger-capture',
+    LEDGER_JUDGE: 'ledger-judge',
+});
+const automationClaimTokensBySession = new Map();
+const didStepComplete = result => result?.status === 'updated' || result?.status === 'unchanged';
+
+function isAutomationSuppressed(messageId, moduleName) {
+    return automationGate.isSuppressed({
+        scopeId: getContext().chatId,
+        messageId,
+        module: moduleName,
+    });
+}
+
+function releaseTimeTravelClaim(sessionId) {
+    const token = automationClaimTokensBySession.get(sessionId);
+    if (!token) return false;
+    automationClaimTokensBySession.delete(sessionId);
+    return automationGate.release(token);
+}
+
+function clearAutomationClaims() {
+    automationClaimTokensBySession.clear();
+    automationGate.clear();
+}
+
+const TIME_TRAVEL_STEP_DEFS = Object.freeze([
+    Object.freeze({
+        key: AUTOMATION_MODULES.LEDGER_CAPTURE,
+        automationModules: Object.freeze([AUTOMATION_MODULES.LEDGER_CAPTURE]),
+        canRun: () => getSettings().ledgerCaptureEnabled === true,
+        run: () => runTimeTravelLedgerCapture(),
+        onCompleted: () => { ledgerCaptureCounter = 0; },
+        errorLabel: '刻度标注',
+    }),
+    Object.freeze({
+        key: AUTOMATION_MODULES.LEDGER_JUDGE,
+        automationModules: Object.freeze([AUTOMATION_MODULES.LEDGER_JUDGE]),
+        canRun: () => getSettings().ledgerCaptureEnabled === true,
+        run: () => runTimeTravelLedgerJudge(),
+        onCompleted: () => { ledgerJudgeCounter = 0; },
+        errorLabel: '刻度判定',
+    }),
+    Object.freeze({
+        key: AUTOMATION_MODULES.LINES,
+        automationModules: Object.freeze([AUTOMATION_MODULES.LINES]),
+        canRun: () => getSettings().linesEnabled !== false,
+        run: ({ promptAddon, messageId }) => runTimeTravelLines(promptAddon, messageId),
+        onCompleted: ({ destinationDate }) => {
+            const mode = getLinesMode();
+            if (mode !== 'manual') linesAiMsgCounter = 0;
+            if (mode === 'days') _lastDetectedDay = `${destinationDate.month}-${destinationDate.day}`;
+        },
+        errorLabel: '线',
+    }),
+    Object.freeze({
+        key: AUTOMATION_MODULES.POINT,
+        automationModules: Object.freeze([AUTOMATION_MODULES.POINT]),
+        canRun: () => !!readStore(getCacheKey(currentView, charViewName))?.raw,
+        run: ({ promptAddon, destinationDate }) => runTimeTravelPoint(promptAddon, destinationDate),
+        errorLabel: '点',
+    }),
+    Object.freeze({
+        key: AUTOMATION_MODULES.OUTLINE,
+        automationModules: Object.freeze([AUTOMATION_MODULES.OUTLINE]),
+        canRun: () => {
+            const saved = readStore(getOutlineCacheKey());
+            return !!saved?.raw && parseOutline(saved.raw).length > 0 && getOutlineCursor() >= 1;
+        },
+        run: ({ promptAddon }) => runRelocateOutlineCursor(promptAddon),
+        onCompleted: () => { outlineJudgeMsgCounter = 0; },
+        errorLabel: '面',
+    }),
+]);
+
+const timeTravel = createTimeTravelController({
+    getChatId: () => getContext().chatId,
+    getChat: () => getContext().chat,
+    resolveDestinationDate: args => ensureTimeTravelDestinationDate(args),
+    getCalendar: () => loadCalDesc(),
+    // 延后一拍刷新：CHAT_CHANGED 会先完成新聊天迁移和视图复位，避免清时旅时抢先读取尚未迁移的数据。
+    onStateChange: () => queueMicrotask(refreshTimeTravelCalendarState),
+    onStepResult: ({ key, result, destinationDate }) => {
+        if (!didStepComplete(result)) return;
+        TIME_TRAVEL_STEP_DEFS.find(step => step.key === key)?.onCompleted?.({ destinationDate, result });
+    },
+    onSequenceEnd: ({ sessionId }) => releaseTimeTravelClaim(sessionId),
+    steps: TIME_TRAVEL_STEP_DEFS.map(step => ({
+        key: step.key,
+        run: args => step.canRun() ? step.run(args) : { status: 'skipped' },
+        onError: error => reportTimeTravelStepError(step.errorLabel, error),
+    })),
+});
+
+function reportTimeTravelStepError(name, error) {
+    console.error(`[SP 时光旅行] ${name}更新异常`, error);
+    showToast(`${name}更新未完成，请稍后手动刷新`, null, true);
+}
+
+async function runTimeTravelLines(promptAddon, messageId) {
+    if (isGeneratingLines) {
+        showToast('线正被其他任务占用，本次未更新，请稍后手动刷新', null, true);
+        return { status: 'skipped' };
+    }
+    isGeneratingLines = true;
+    const swipeId = Number(getContext().chat?.[Number(messageId)]?.swipe_id ?? 0);
+    const result = await runGenerateLines(false, { mesId: Number(messageId), swipeId }, { promptAddon, notifySuccess: false });
+    if (result?.status === 'updated' && getSettings().notifyMode === 'full') {
+        showToast('线已随剧情自动推进 · 请注意查看');
+    }
+    return result;
+}
+
+async function runTimeTravelLedgerCapture() {
+    if (isCapturingLedger) {
+        showToast('刻度标注正被其他任务占用，本次未执行，请稍后手动标注', null, true);
+        return { status: 'skipped' };
+    }
+    return runLedgerCaptureStep(true, { feedback: LEDGER_FEEDBACK.ORCHESTRATED });
+}
+
+async function runTimeTravelLedgerJudge() {
+    if (isJudgingLedger) {
+        showToast('刻度判定正被其他任务占用，本次未执行，请稍后手动刷新', null, true);
+        return { status: 'skipped' };
+    }
+    return runLedgerJudgeStep(true, { feedback: LEDGER_FEEDBACK.ORCHESTRATED });
+}
+
+async function runTimeTravelPoint(promptAddon, destinationDate) {
+    if (_almSyncingPoint || isGenerating) {
+        showToast('点正被其他任务占用，本次未更新，请稍后手动刷新', null, true);
+        return { status: 'skipped' };
+    }
+    const result = await syncPointToToday(false, {
+        promptAddon,
+        targetDate: destinationDate,
+        allowPendingFollowup: false,
+        notifySuccess: false,
+    });
+    if (result?.status === 'updated' && getSettings().notifyMode === 'full') {
+        showToast(`点已同步到 ${calMonthName(loadCalDesc(), destinationDate.month)}${destinationDate.day}日`);
+    }
+    return result;
+}
+
+function getTimeTravelAutomationModules() {
+    return TIME_TRAVEL_STEP_DEFS
+        .filter(step => step.canRun())
+        .flatMap(step => step.automationModules);
+}
+
 // 通用操作菜单只描述动作；具体页面决定何时显示、如何处理动作。
 const ACTION_MENU_CONFIGS = Object.freeze({
     almanac: Object.freeze([
@@ -472,6 +642,10 @@ jQuery(async () => {
     // Reset view state and reload cache on chat switch
     if (_stListeners.chat) eventSource.removeListener?.(event_types.CHAT_CHANGED, _stListeners.chat);
     _stListeners.chat = () => {
+        timeTravel.clear();
+        clearAutomationClaims();
+        dateCoordinator.clear();
+        customDialog.cancelActive();
         // 老用户升级：把本 chat 散在 localStorage 的点线面间**同步**搬进 chat_metadata，
         // 必须早于下面任何 load（否则读的是空 metadata）。冲突（云端/本机各一份且不同）时
         // migrate 不动任何数据，稍后异步弹窗让用户决策。
@@ -615,6 +789,21 @@ jQuery(async () => {
             if (getSettings().notifyMode === 'full') showToast('角色默认历法没有自动应用成功', null, true);
         });
     } catch (err) { console.warn('[SP store] 首屏迁移失败:', err); }
+    // 显式工作流先声明本楼接管范围，后续自动模块只查询通用闸门，不需要认识具体业务。
+    if (_stListeners.automationPreflight) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.automationPreflight);
+    _stListeners.automationPreflight = messageId => {
+        if (!pluginEnabled()) return;
+        if (!timeTravel.isInitialFloor(messageId)) return;
+        const sessionId = timeTravel.getState()?.sessionId;
+        if (!sessionId || automationClaimTokensBySession.has(sessionId)) return;
+        const token = automationGate.claim({
+            scopeId: getContext().chatId,
+            messageId,
+            modules: getTimeTravelAutomationModules(),
+        });
+        if (token) automationClaimTokensBySession.set(sessionId, token);
+    };
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.automationPreflight);
     // Auto-advance storylines, then append inline block to every AI message.
     // NOTE: shouldAdvance triggers generation BEFORE appending the current block,
     // so the current (newest, still-unstable) message is NOT included in the LLM
@@ -631,6 +820,7 @@ jQuery(async () => {
         // Master switch: linesEnabled=false disables auto-advance + inline block
         if (getSettings().linesEnabled === false) return;
         const mid = Number(messageId);
+        const autoSuppressed = isAutomationSuppressed(mid, AUTOMATION_MODULES.LINES);
         // 🔄重生成握手消费：读一次即清，防陈旧标记泄漏到后续事件。放在 isNewFloor 判定前，但下方分支
         // 顺序保证 isNewFloor 优先——真·新楼即便撞上残留标记也走推进、不会误判成重 roll。
         const wasPendingReroll = _pendingReroll; _pendingReroll = false;
@@ -646,7 +836,7 @@ jQuery(async () => {
         //   ③ contentChanged（真·兜底，最稳）：**最新楼**的主文本变了 = 就在原楼重生成 = 重roll。版本无关。
         //      只认最新楼（mid===_lastSeenMaxMesId）：历史楼改文本不该动当前线（runGenerateLines 写的是全局当前线缓存）。
         //      滑到已生成 swipe 属既有 MESSAGE_SWIPED 处理，那里已盖章签名，不会在此误判。
-        const _curSig  = _floorSig(mid);
+        const _curSig  = messageContentSignature(mid);
         const _curText = String(getContext().chat?.[mid]?.mes ?? '');
         const contentChanged = (mid === _lastSeenMaxMesId && _floorTextSig[mid] !== undefined && _curSig !== _floorTextSig[mid] && _curText.trim() !== '');
         _floorTextSig[mid] = _curSig;   // 记本次签名，供下条 CMR 比对
@@ -655,7 +845,9 @@ jQuery(async () => {
         if (isNewFloor) {
             _lastSeenMaxMesId = mid;
             const mode = getLinesMode();
-            if (mode === 'days') {
+            if (autoSuppressed) {
+                // 显式流程尚未返回结果，本楼只阻止重复请求，不提前消费已有累计进度。
+            } else if (mode === 'days') {
                 shouldAdvance = detectInGameDayChange(mid, /* excludeCurrent */ true);
             } else if (mode === 'turns') {
                 const interval = getLinesInterval();
@@ -678,9 +870,11 @@ jQuery(async () => {
             return;
         }
         // 新楼层按 shouldAdvance 推进并贴块；刷新/历史/swipe 回退重渲染 shouldAdvance=false，仅把内联块补回最新楼。
-        appendLinesInlineBlock(mid, shouldAdvance);
-        // 全量通知：线随剧情真推进了才弹（不推进不响，对应「变了才提示」）
-        if (shouldAdvance && getSettings().notifyMode === 'full') showToast('线已随剧情自动推进 · 请注意查看');
+        const lineResult = await appendLinesInlineBlock(mid, shouldAdvance);
+        // 生成、楼内刷新和快照冻结全部完成后，才把本楼视为真正推进成功。
+        if (lineResult?.status === 'updated' && getSettings().notifyMode === 'full') {
+            showToast('线已随剧情自动推进 · 请注意查看');
+        }
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.char);
     // 线·swipe：滑到新 swipe 时线跟着重算（临时存 localStorage，发下条消息即固定）。
@@ -698,7 +892,7 @@ jQuery(async () => {
         if (getSettings().linesEnabled === false) return;
         const mid = Number(mesId);
         if (info?.pendingGeneration) { _pendingSwipeGen = { mesId: mid }; return; }
-        _floorTextSig[mid] = _floorSig(mid);   // 盖章：滑到已生成 swipe 由本处处理，别让随后 CMR 的内容签名把它误判成重roll
+        _floorTextSig[mid] = messageContentSignature(mid);   // 盖章：滑到已生成 swipe 由本处处理，别让随后 CMR 的内容签名把它误判成重roll
         _applyStoredSwipeLines(mid, Number(info?.nextSwipeId ?? getContext().chat?.[mid]?.swipe_id ?? 0));
     };
     eventSource.on(event_types.MESSAGE_SWIPED, _stListeners.swiped);
@@ -707,14 +901,14 @@ jQuery(async () => {
     // 若这楼随后又触发一次 CMR（紧接着 swipe/🔄，或 MVU 类改写插件重渲染），就会拿「编辑后正文」比
     // 「编辑前签名」→ 误判 contentChanged=重roll、多算一次线。此处提前把签名对齐到编辑后即根除。
     // 照 swiped 的盖章同款：编辑要不要更新线交给用户手点刷新键，与「编辑不自动重算」一致。
-    // emit 时机：messageEditDone 先 renderEditedMessage 再 emit，故 chat[mid].mes 已是新正文，_floorSig 拿到的即新签名。
+    // emit 时机：messageEditDone 先 renderEditedMessage 再 emit，故 chat[mid].mes 已是新正文，签名取到的也是编辑后版本。
     if (_stListeners.edited) eventSource.removeListener?.(event_types.MESSAGE_EDITED, _stListeners.edited);
     _stListeners.edited = (mesId) => {
         if (!pluginEnabled()) return;           // 插件总关
         if (getSettings().linesEnabled === false) return;
         const mid = Number(mesId);
         if (!Number.isFinite(mid)) return;
-        _floorTextSig[mid] = _floorSig(mid);    // 盖章：对齐到编辑后正文，别让随后 CMR 把这次编辑误判成重roll
+        _floorTextSig[mid] = messageContentSignature(mid);    // 盖章：对齐到编辑后正文，别让随后 CMR 把这次编辑误判成重roll
     };
     eventSource.on(event_types.MESSAGE_EDITED, _stListeners.edited);
     // 线·固定：用户发出下一条消息 → 上一 AI 楼层定稿，清掉它的 swipe 临时层（store 已是当前 swipe 的线）。
@@ -783,6 +977,7 @@ jQuery(async () => {
         if (messageId !== chat.length - 1) return;
         if (messageId <= outlineLastJudgedMsgId) return;
         outlineLastJudgedMsgId = messageId;
+        if (isAutomationSuppressed(messageId, AUTOMATION_MODULES.OUTLINE)) return;
         // 攒够 interval 条真·新回复才跑判定（省 token）。计数只被真末楼 bump，历史重放到不了这
         if (++outlineJudgeMsgCounter < getOutlineJudgeInterval()) return;
         outlineJudgeMsgCounter = 0;
@@ -797,16 +992,25 @@ jQuery(async () => {
         const chat = getContext().chat;
         if (!Array.isArray(chat)) return;
         if (messageId !== chat.length - 1) return;
+        const renderKey = buildDateRenderKey(messageId);
         // 戳优先：戳开且本楼有戳 → 每次最新楼定型都直读落地（零 API、幂等），**不进单调闸**——
         // 重roll/swipe 复用同 messageId，若被闸挡掉，戳从 919 翻 920 时显示跟了、锚点没跟（论坛 bug）。
-        if (relandStoryClockAnchor()) return;
+        const storyClockResult = resolveStoryClockAnchor({ messageId });
+        if (storyClockResult.date) {
+            dateCoordinator.recordResult(renderKey, storyClockResult);
+            return;
+        }
         // 到这＝戳关，或戳开但本楼读不到戳（漏打 / 「谷雨」无月日）→ API judge 兜底才需单调闸防重放/重算。
         if (messageId <= almanacLastJudgedMsgId) return;
         almanacLastJudgedMsgId = messageId;
         if (getSettings().almanacAutoDetect === false) return;
         if (++almanacJudgeCounter < getAlmanacJudgeInterval()) return;
         almanacJudgeCounter = 0;
-        runJudgeDateStep();   // fire-and-forget，自带守卫
+        dateCoordinator.runOnce(renderKey, ({ signal }) => runJudgeDateStep({
+            messageId,
+            signal,
+            shouldNotifyError: () => !dateCoordinator.isResolutionRequired(renderKey),
+        })); // fire-and-forget；普通计数与请求时机不变
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.almanacJudge);
     // 点不再独立判定日期、也无独立跟随开关：任何一处改「今天」锚点都经 runAnchorAftermath → 顺手把点重排到今天，点纯下游连带跟随。
@@ -820,6 +1024,7 @@ jQuery(async () => {
         if (messageId !== chat.length - 1) return;
         if (messageId <= ledgerLastCapturedMsgId) return;
         ledgerLastCapturedMsgId = messageId;
+        if (isAutomationSuppressed(messageId, AUTOMATION_MODULES.LEDGER_CAPTURE)) return;
         if (++ledgerCaptureCounter < getLedgerCaptureInterval()) return;
         ledgerCaptureCounter = 0;
         runLedgerCaptureStep();   // fire-and-forget，自带守卫
@@ -836,6 +1041,7 @@ jQuery(async () => {
         if (messageId !== chat.length - 1) return;
         if (messageId <= ledgerLastJudgedMsgId) return;
         ledgerLastJudgedMsgId = messageId;
+        if (isAutomationSuppressed(messageId, AUTOMATION_MODULES.LEDGER_JUDGE)) return;
         if (++ledgerJudgeCounter < getLedgerJudgeInterval()) return;
         ledgerJudgeCounter = 0;
         runLedgerJudgeStep();   // fire-and-forget，自带守卫
@@ -855,6 +1061,23 @@ jQuery(async () => {
         try { refreshInlineWindow(true); } catch {}
     };
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.ledgerInjectRescore);
+    // 注册在日期与自动模块监听器之后：时旅等待同一版正文的日期任务结束，再依次运行两步刻度、线、点和面。
+    if (_stListeners.timeTravel) eventSource.removeListener?.(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.timeTravel);
+    _stListeners.timeTravel = async (messageId) => {
+        if (!pluginEnabled()) return;
+        try {
+            await timeTravel.handleRendered(messageId);
+        }
+        catch (error) {
+            console.error('[SP 时光旅行] 模块同步异常', error);
+            showToast('时光旅行同步未完成，请手动检查各模块', null, true);
+        }
+    };
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, _stListeners.timeTravel);
+    // 删除会让数组楼号整体前移；时旅不猜删除位置，直接结束当前会话，避免后续步骤写到错楼。
+    if (_stListeners.timeTravelDeleted) eventSource.removeListener?.(event_types.MESSAGE_DELETED, _stListeners.timeTravelDeleted);
+    _stListeners.timeTravelDeleted = handleTimeTravelMessageDeleted;
+    eventSource.on(event_types.MESSAGE_DELETED, _stListeners.timeTravelDeleted);
     // 聊天改名（酒馆改 chat 文件名 = chatId 变）→ 把坐标收藏里旧 chatId 的记录迁到新名，
     // 否则收藏夹里那个聊天桶名不跟新、且跳转来源失效。newFileName/oldFileName 均不带后缀，
     // 与 ctx.chatId 同格式。仅坐标受影响（点线面间随 chat_metadata 走，改名由酒馆自己搬）。
@@ -1014,6 +1237,10 @@ function injectEnabled() { return pluginEnabled() && getSettings().injectEnabled
 // 一键中断所有在飞的后台判定与生成（点/线/虚线/面/间/棱/历 + 三路日期判定 + 同步到点），并清 re-entry 闸，
 // 让重新开启后能干净重跑。照 CHAT_CHANGED 的中断序列集中一处。
 function _abortAllBackground() {
+    timeTravel.clear();
+    clearAutomationClaims();
+    dateCoordinator.clear();
+    customDialog.cancelActive();
     for (const c of [
         linesAbortController, dashedAbortController, spaceChatAbortController,
         scheduleAbortController, outlineAbortController, theaterAbortController,
@@ -1366,17 +1593,19 @@ async function appendLinesInlineBlock(messageId, shouldAdvance) {
     refreshInlineWindow(true);
 
     // If we need to advance, run generation and then refresh again（推进不受显隐门影响）
+    let result = { status: 'skipped' };
     const cfg = loadCfg();
     if (shouldAdvance && !isGeneratingLines && cfg.url && cfg.key) {
         // 新楼层首次推进：带上 swipeCtx（当前 swipeId，通常 0），把本次 pre-commit 基线 B0
         // 连同结果记进 swipe 临时层，后续在本楼 swipe 时能从 B0 重推、来回 swipe 复用。
         const swipeId = Number(getContext().chat?.[messageId]?.swipe_id ?? 0);
-        await runGenerateLines(true /* silent */, { mesId: Number(messageId), swipeId });
+        result = await runGenerateLines(true /* silent */, { mesId: Number(messageId), swipeId });
         refreshInlineWindow(true);   // 推进产生的新线态 → 重刷窗（最新楼会重冻快照+重挂）
     }
 
     // 冻快照进本楼：新楼首挂 / 推进后线态已定，把此刻的点/线/历/锚点封存到这条 message（幂等）。
     freezeSnapshotToFloor(messageId);
+    return result;
 }
 
 // Back-fill：切聊天/初始化/主开关切换时的入口。渲染交给窗口控制器；保留潜伏注入 refresh 真副作用。
@@ -2318,10 +2547,23 @@ function latestStoryClock() {
     return null;
 }
 
-// 从最近一楼的戳解析出结构化 {month,day}。end 优先(当前时间)、退 start。无戳/解析不出 → null（交回兜底）。
-function storyClockDate() {
+// 把时间戳解析成结构化日期。默认沿用作者的历史回溯；指定 message 时只读该楼当前 swipe。
+function storyClockDate({ scope = 'latest', messageId } = {}) {
     let clk = null;
-    try { clk = latestStoryClock(); } catch { return null; }
+    try {
+        if (scope === 'latest') {
+            clk = latestStoryClock();
+        } else if (scope === 'message') {
+            const mid = Number(messageId);
+            if (!Number.isInteger(mid)) return null;
+            const msg = getContext().chat?.[mid];
+            if (!msg || msg.is_user || !msg.mes) return null;
+            const { start, end } = parseStoryClock(msg.mes);
+            clk = start || end ? { start, end, floor: mid } : null;
+        } else {
+            return null;
+        }
+    } catch { return null; }
     if (!clk) return null;
     return parseJudgedDate(clk.end) || parseJudgedDate(clk.start);
 }
@@ -2381,6 +2623,54 @@ async function runJudgeOutlineStep() {
     }
 }
 
+// 按正文重新定位现有大纲游标：不改写节点内容，也不限制只能向后移动。
+async function runRelocateOutlineCursor(promptAddon = '') {
+    const cacheKey = getOutlineCacheKey();
+    const saved = readStore(cacheKey);
+    if (!saved?.raw) return { status: 'skipped' };
+    const beats = parseOutline(saved.raw);
+    const current = getOutlineCursor();
+    if (!beats.length || current < 1) return { status: 'skipped' };
+    const ctx = getContext();
+    const chatIdSnap = ctx.chatId;
+    const cfg = loadCfg();
+    if (!cfg.url || !cfg.key) {
+        showToast('未配置主 API，无法定位面', null, true);
+        return { status: 'failed', error: new Error('未配置主 API') };
+    }
+    outlineJudgeAbort?.abort();
+    const myCtrl = outlineJudgeAbort = new AbortController();
+    isJudgingOutline = true;
+    try {
+        const nodes = beats.map((beat, index) => `${index + 1}. ${beat.time ? beat.time + '·' : ''}《${beat.title}》${beat.scene ? `：${cleanText(beat.scene)}` : ''}`).join('\n');
+        const prompt = `请暂停角色扮演，作为剧情分析助手，根据最近正文判断故事在以下既有大纲节点中最符合哪一个。\n\n【既有节点】\n${nodes}\n\n当前游标：${current}\n\n只能回答一个已有节点编号。允许选择当前节点、之前节点或之后节点；不得新增、改写、合并或删除节点。证据不足时回答当前游标编号。\n\n${promptAddon}`;
+        const raw = await callCustomApi(ctx, prompt, cfg, ctx.name1 || '用户', ctx.name2 || '角色', myCtrl.signal);
+        if (outlineJudgeAbort !== myCtrl || getContext().chatId !== chatIdSnap) return { status: 'cancelled' };
+        const latest = readStore(cacheKey);
+        if (!latest?.raw || latest.raw !== saved.raw) {
+            showToast('面在定位期间发生变化，请手动确认当前节点', null, true);
+            return { status: 'cancelled' };
+        }
+        const match = String(raw || '').trim().match(/^\s*(\d+)\s*[。.！!]?\s*$/);
+        const next = match ? Number(match[1]) : NaN;
+        if (!Number.isInteger(next) || next < 1 || next > beats.length) throw new Error('AI 没有返回有效的大纲节点编号');
+        if (next === current) return { status: 'unchanged' };
+        setOutlineCursor(next);
+        refreshOutlineInjection();
+        cachedOutline = renderOutline(saved.raw, next);
+        if (outlineMode) setOutlineBody(cachedOutline);
+        if (getSettings().notifyMode === 'full') showToast(`面已定位到节点 #${next}`);
+        return { status: 'updated' };
+    } catch (err) {
+        if (outlineJudgeAbort !== myCtrl || err?.name === 'AbortError' || getContext().chatId !== chatIdSnap) return { status: 'cancelled' };
+        showToast('面定位失败，请稍后手动调整当前节点', null, true);
+        return { status: 'failed', error: err };
+    } finally {
+        if (outlineJudgeAbort === myCtrl) outlineJudgeAbort = null;
+        isJudgingOutline = false;
+    }
+}
+
 const DATE_JUDGE_PROMPT =
 `请暂停角色扮演，作为剧情分析助手，只做一件事：判断以上最近的对话里，故事此刻发生在哪一天。
 只回答「当前剧情日期」，格式为 M月D日（例如 3月15日）；年份不重要、无需回答。
@@ -2436,63 +2726,154 @@ function parseJudgedDate(ans) {
     return monthDayFromDayKey(extractDayFromTime(s));
 }
 
+// 日期任务按聊天、楼层、swipe 与正文签名区分；同一楼重绘复用，同楼重 Roll 会重新判断。
+function buildDateRenderKey(messageId) {
+    const ctx = getContext();
+    const mid = Number(messageId);
+    return {
+        chatId: String(ctx.chatId ?? ''),
+        messageId: mid,
+        swipeId: Number(ctx.chat?.[mid]?.swipe_id ?? 0),
+        contentSignature: messageContentSignature(mid) || 'empty',
+    };
+}
+
+async function ensureTimeTravelDestinationDate({ messageId, selectedTargetDate, signal } = {}) {
+    const renderKey = buildDateRenderKey(messageId);
+    const targetDate = almValidMonthDay(selectedTargetDate, loadCalDesc());
+    if (!targetDate) throw new Error('无法读取时光旅行选择的目标日期');
+
+    // 时旅只认本楼当前 swipe 的时间戳；普通日期监听仍保留作者原有的历史回溯。
+    const storyClockResult = resolveStoryClockAnchor({ messageId, clockScope: 'message' });
+    if (storyClockResult.date) {
+        dateCoordinator.recordResult(renderKey, storyClockResult);
+        return storyClockResult.date;
+    }
+
+    // 用户关闭自动确认后，所选日期就是明确答案，不再暗中消耗一次日期 API。
+    if (getSettings().almanacAutoDetect === false) {
+        almanacJudgeAbort?.abort();
+        const applied = applyDetectedDate(charStableKey(getContext()), targetDate, {
+            messageId,
+            notifyChange: false,
+        });
+        const result = { ...applied, date: targetDate };
+        dateCoordinator.recordResult(renderKey, result);
+        return targetDate;
+    }
+
+    // 当前楼漏戳而旧楼有戳时，普通监听可能已缓存旧日期；这类结果不能代表时旅正文。
+    const hasHistoricalFallback = storyClockEnabled() && !!storyClockDate({ scope: 'latest' });
+    const result = await dateCoordinator.ensureResolved(renderKey, {
+        signal,
+        acceptPrevious: previous => !hasHistoricalFallback && !!almValidMonthDay(previous?.date, loadCalDesc()),
+        resolve: ({ previousResult, signal: taskSignal }) =>
+            resolveTimeTravelFloorDate({
+                messageId,
+                previousResult: hasHistoricalFallback ? null : previousResult,
+                selectedTargetDate: targetDate,
+                signal: taskSignal,
+            }),
+    });
+    if (result?.status === 'cancelled') throw Object.assign(new Error('日期确认已取消'), { name: 'AbortError' });
+    const date = almValidMonthDay(result?.date, loadCalDesc());
+    if (!date) throw new Error('无法确定时光旅行后的剧情日期');
+    return date;
+}
+
+async function resolveTimeTravelFloorDate({ messageId, previousResult, selectedTargetDate, signal } = {}) {
+    if (signal?.aborted) return { status: 'cancelled' };
+
+    let judged = previousResult;
+    if (!judged) judged = await runJudgeDateStep({ messageId, signal, shouldNotifyError: () => false });
+    if (judged?.date) return judged;
+    if (signal?.aborted || judged?.status === 'cancelled') return { status: 'cancelled' };
+    if (judged?.error) console.error('[SP 时光旅行] 正文日期确认失败，改用所选日期', judged.error);
+
+    const fallback = almValidMonthDay(selectedTargetDate, loadCalDesc());
+    if (!fallback) return judged || { status: 'unresolved' };
+    const applied = applyDetectedDate(charStableKey(getContext()), fallback, {
+        messageId,
+        notifyChange: false,
+    });
+    showToast('未能从正文确认日期，已按所选日期继续同步', null, true);
+    return { ...applied, date: fallback };
+}
+
 // 落地检测到的剧情日期：变了才写/才弹 → 共享善后（runAnchorAftermath 内含点连带跟随）。
 // 戳优先路（almanacJudge 每楼直读戳）与 API 兜底路（runJudgeDateStep）共用。
-function applyDetectedDate(charKey, md) {
-    if (!charKey || !md) return;
+function applyDetectedDate(charKey, md, { messageId, notifyChange = true } = {}) {
+    if (!charKey || !md) return { status: 'unresolved' };
     const prev = getDateAnchor(charKey);
-    if (prev && prev.month === md.month && prev.day === md.day) return; // 日期没变 → 免重渲染
+    if (prev && prev.month === md.month && prev.day === md.day) {
+        return { status: 'unchanged', date: { month: md.month, day: md.day } };
+    }
     setDateAnchor(charKey, md.month, md.day);
     // 全量通知：真把「今天」改了才弹（上面 prev 相等已 return，到这里必是真变）
-    if (getSettings().notifyMode === 'full') showToast(`剧情日期已自动更新为 ${calMonthName(loadCalDesc(), md.month)}${md.day}日 · 请注意查看`);
-    runAnchorAftermath();   // 共享善后：刷历条/点条/历面板 + 点连带跟随今天
+    if (getSettings().notifyMode === 'full' && notifyChange) showToast(`剧情日期已自动更新为 ${calMonthName(loadCalDesc(), md.month)}${md.day}日 · 请注意查看`);
+    runAnchorAftermath({ messageId });   // 共享善后：刷历条/点条/历面板 + 点连带跟随今天
+    return { status: 'updated', date: { month: md.month, day: md.day } };
 }
 
 // 戳优先·落地：戳开且最新楼扫到可解析戳 → 直读落地到 dateAnchor（零 API、幂等，未变即 no-op）。
 // 必须在**每次**最新楼定型时跑（新楼 / 重roll / swipe），否则显示读活戳跳了、轴读陈旧锚点没跟——
 // 锚点是 almTodayAnchor ①′ 最高优先，压过活戳，刷新也不会自愈（论坛：戳 920、轴停 919、刷新无效）。
 // 返回 true=已走戳优先路（无论是否真改锚点），false=戳关/无戳（交回 API 兜底判断）。
-function relandStoryClockAnchor() {
-    if (!storyClockEnabled()) return false;
-    const md = storyClockDate();
-    if (!md) return false;
-    applyDetectedDate(charStableKey(getContext()), md);
-    return true;
+function relandStoryClockAnchor(options = {}) {
+    return !!resolveStoryClockAnchor(options).date;
+}
+
+function resolveStoryClockAnchor({ messageId, notifyChange = true, clockScope = 'latest' } = {}) {
+    if (!storyClockEnabled()) return { status: 'unresolved' };
+    const md = storyClockDate({ scope: clockScope, messageId });
+    if (!md) return { status: 'unresolved' };
+    return applyDetectedDate(charStableKey(getContext()), md, { messageId, notifyChange });
 }
 
 // 历·API 兜底判定当前剧情日期（仅在读不到戳、almanacAutoDetect 开时调用）：抄 runJudgeOutlineStep 的 abort/chatId/重入守卫。
-// fire-and-forget，失败静默。识别不到日期 → 不动锚点（保留上次值），符合「无信号不动」的兜底。
-async function runJudgeDateStep() {
-    if (isJudgingDate) return;                       // 历、点共一把锁：都写同一个锚点，不必并发
+// 普通监听以 fire-and-forget 方式调用，失败按原规则提示；识别不到日期则保留上次锚点。
+async function runJudgeDateStep({ messageId, signal: externalSignal, shouldNotifyError = () => true } = {}) {
+    if (isJudgingDate) return { status: 'cancelled' }; // 日期确认共用一把请求锁，避免并发任务竞争同一锚点
     const ctx = getContext();
     const charKey = charStableKey(ctx);
-    if (!charKey) return;                            // 无卡（群聊/无角色）→ 锚点无处落键，跳过
+    if (!charKey) return { status: 'unresolved' }; // 无卡（群聊/无角色）→ 锚点无处落键
     const chatIdSnap = ctx.chatId;
     const cfg = loadUtilityCfg();                    // 机械任务：可分流到轻量预设，未设则=主 API
-    if (!cfg.url || !cfg.key) return;
+    if (!cfg.url || !cfg.key) return { status: 'failed', error: new Error('日期确认 API 未配置') };
     const setAbort = c => { almanacJudgeAbort = c; };
     const getAbort = ()  =>   almanacJudgeAbort;
     const myCtrl = new AbortController(); setAbort(myCtrl);
+    const abortFromOutside = () => myCtrl.abort();
+    if (externalSignal?.aborted) myCtrl.abort();
+    else externalSignal?.addEventListener('abort', abortFromOutside, { once: true });
     isJudgingDate = true;
-    const done = () => { isJudgingDate = false; setAbort(null); };
+    const done = () => {
+        externalSignal?.removeEventListener('abort', abortFromOutside);
+        if (getAbort() === myCtrl) {
+            setAbort(null);
+            isJudgingDate = false;
+        }
+    };
     try {
         const userName = ctx.name1 || '用户', charName = ctx.name2 || '角色';
         // historyLimit=4：只需最近几楼就能读出剧情内日期，省 token（与历生成同量级）。
         const raw = await callCustomApi(ctx, buildDateJudgePrompt(), cfg, userName, charName, myCtrl.signal, 4);
-        if (getAbort() !== myCtrl) return;                                  // 被更新的判定取代
-        if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃结果
+        if (externalSignal?.aborted) { done(); return { status: 'cancelled' }; }
+        if (getAbort() !== myCtrl) { done(); return { status: 'cancelled' }; } // 被更新的判定取代
+        if (getContext().chatId !== chatIdSnap) { done(); return { status: 'cancelled' }; } // 已切 chat，丢弃结果
         done();
         const md = parseJudgedDate(raw);
-        if (!md) return;                                                    // 识别不到 → 保持上次不动
-        applyDetectedDate(charKey, md);                                     // 变了才写/才弹 + 点连带跟随（共享咽喉）
+        if (!md) return { status: 'unresolved' }; // 识别不到 → 保持上次不动
+        return applyDetectedDate(charKey, md, { messageId }); // 变了才写/才弹 + 点连带跟随
     } catch (err) {
-        if (getAbort() !== myCtrl) return;                 // 被更新的判定取代 → 新判定接管状态，别动
+        if (getAbort() !== myCtrl) { done(); return { status: 'cancelled' }; } // 被更新的判定取代 → 新判定接管状态，别动
         done();
-        if (err?.name === 'AbortError') return;            // 中止 / 切档 → 不算失败
-        if (getContext().chatId !== chatIdSnap) return;    // 已切 chat → 结果作废，别弹
+        if (err?.name === 'AbortError') return { status: 'cancelled' }; // 中止 / 切档 → 不算失败
+        if (getContext().chatId !== chatIdSnap) return { status: 'cancelled' }; // 已切 chat → 结果作废，别弹
         // 判定失败也弹（不动锚点，纯提示）：判定按每 N 楼跑，用户未必每楼盯着，失败要让他知道去查 API。
         // isError toast 不受通知三档静音；下一轮 AI 回复攒够计数会自动再判，无需手动重试。
-        showToast('剧情日期自动确认失败，请检查 API 或网络', null, true);
+        if (shouldNotifyError()) showToast('剧情日期自动确认失败，请检查 API 或网络', null, true);
+        return { status: 'failed', error: err };
     }
 }
 
@@ -2501,6 +2882,11 @@ async function runJudgeDateStep() {
 // 起始锚 = 此刻楼层 + 历「今天」(almTodayAnchor)，钉死不改；判定/注入是后续切片。
 // 触发：每 N 楼自动车(runLedgerCaptureStep 无参) + 历面板「暗账」页手动「立即标注」(manual=true)。
 const LEDGER_CAPTURE_FLOORS = 6;   // 标注窗口：读最近几楼 AI 正文找新事件（比日期判定的 4 稍宽，捞得全）
+const LEDGER_FEEDBACK = Object.freeze({
+    INTERACTIVE: 'interactive',
+    AUTOMATIC: 'automatic',
+    ORCHESTRATED: 'orchestrated',
+});
 
 // 全角/半角顿号逗号分隔 → 去空数组（牵扯/标签用）。
 function splitCnList(v) {
@@ -2618,16 +3004,20 @@ function parseLedgerCapture(raw) {
     return out;
 }
 
-// 标注一次：抄 runJudgeDateStep 的 abort/chatId/重入守卫。manual=true 时（历面板手动点）无论通知档位都反馈结果。
+// 标注一次：manual=true 默认反馈全部结果；编排调用只在完整通知档反馈真实改动，并静默无变化。
 // fire-and-forget，失败静默（自动车）/弹错（手动）。
-async function runLedgerCaptureStep(manual = false) {
-    if (isCapturingLedger) return;
+async function runLedgerCaptureStep(manual = false, options = {}) {
+    const feedback = options.feedback || (manual ? LEDGER_FEEDBACK.INTERACTIVE : LEDGER_FEEDBACK.AUTOMATIC);
+    const notifyPreflight = feedback !== LEDGER_FEEDBACK.AUTOMATIC;
+    const notifyUnchanged = feedback === LEDGER_FEEDBACK.INTERACTIVE;
+    const shouldNotifyUpdated = () => feedback === LEDGER_FEEDBACK.INTERACTIVE || getSettings().notifyMode === 'full';
+    if (isCapturingLedger) return { status: 'skipped' };
     const ctx = getContext();
     const charKey = charStableKey(ctx);
-    if (!charKey) { if (manual) showToast('当前没有角色卡，无法标注', null, true); return; }
+    if (!charKey) { if (notifyPreflight) showToast('当前没有角色卡，无法标注', null, true); return { status: 'skipped' }; }
     const chatIdSnap = ctx.chatId;
     const cfg = loadCfg();                            // 标注＝从正文捞事件（内容活）→ 走内容生成 API，不分流机械
-    if (!cfg.url || !cfg.key) { if (manual) showToast('请先在设置中填写 API', null, true); return; }
+    if (!cfg.url || !cfg.key) { if (notifyPreflight) showToast('请先在设置中填写 API', null, true); return { status: 'failed', error: new Error('未配置主 API') }; }
     const myCtrl = new AbortController(); ledgerCaptureAbort = myCtrl;
     isCapturingLedger = true;
     const done = () => { isCapturingLedger = false; if (ledgerCaptureAbort === myCtrl) ledgerCaptureAbort = null; };
@@ -2638,11 +3028,11 @@ async function runLedgerCaptureStep(manual = false) {
         const isFirst = ledger.listEntries({ includeClosed: true }).length === 0;
         const prompt = isFirst ? buildLedgerFirstScanPrompt() : buildLedgerCapturePrompt();
         const raw = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, LEDGER_CAPTURE_FLOORS, { noAlmanac: true });
-        if (ledgerCaptureAbort !== myCtrl) return;                          // 被更新的标注取代
-        if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃
+        if (ledgerCaptureAbort !== myCtrl) return { status: 'cancelled' };   // 被更新的标注取代
+        if (getContext().chatId !== chatIdSnap) { done(); return { status: 'cancelled' }; } // 已切 chat，丢弃
         done();
         const picked = parseLedgerCapture(raw);
-        if (!picked.length) { if (manual) showToast('未发现可登记的新事件'); return; }
+        if (!picked.length) { if (notifyUnchanged) showToast('未发现可登记的新事件'); return { status: 'unchanged' }; }
         const floor = latestAiFloorId();
         const today = almTodayAnchor();                                     // 历「今天」= 起始锚日期
         const seen = new Set(ledger.listEntries({ includeClosed: true }).map(e => normGist(e.事由)));
@@ -2656,21 +3046,20 @@ async function runLedgerCaptureStep(manual = false) {
             const e = ledger.addEntry(p);
             if (e) added.push(e);
         }
-        if (!added.length) { if (manual) showToast('没有新事件（都已在刻度上）'); return; }
-        // 通知：手动必反馈；自动仅 full 档弹（照三档静音约定）。
-        if (manual || getSettings().notifyMode === 'full') {
-            showToast(`刻度标注 ${added.length} 条：${added.map(e => e.事由).join('、')} · 请注意查看`);
-        }
+        if (!added.length) { if (notifyUnchanged) showToast('没有新事件（都已在刻度上）'); return { status: 'unchanged' }; }
         refreshLedgerInjection();   // 新条目入账 → 重算注入集（关/空时内部自清）
         refreshInlineWindow(true);  // 标注池变了 → 刷楼内框（最新 AI 楼读活账重挂标注池）
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+        if (shouldNotifyUpdated()) showToast(`刻度标注 ${added.length} 条：${added.map(e => e.事由).join('、')} · 请注意查看`);
+        return { status: 'updated' };
     } catch (err) {
-        if (ledgerCaptureAbort !== myCtrl) return;         // 被更新的标注取代 → 新的接管，别动
+        if (ledgerCaptureAbort !== myCtrl) return { status: 'cancelled' }; // 被更新的标注取代 → 新的接管，别动
         done();
-        if (err?.name === 'AbortError') return;            // 中止 / 切档
-        if (err?.spDisabled) return;                       // 插件关闭：静默
-        if (getContext().chatId !== chatIdSnap) return;    // 已切 chat
+        if (err?.name === 'AbortError') return { status: 'cancelled' }; // 中止 / 切档
+        if (err?.spDisabled) return { status: 'cancelled' };            // 插件关闭：静默
+        if (getContext().chatId !== chatIdSnap) return { status: 'cancelled' }; // 已切 chat
         showToast('刻度标注失败，请检查 API 或网络', null, true);
+        return { status: 'failed', error: err };
     }
 }
 
@@ -2900,28 +3289,32 @@ function parseLedgerJudge(raw) {
     return out;
 }
 
-// 判定一次：抄 runLedgerCaptureStep 的 abort/chatId/重入守卫。manual=true（手动点）无论通知档位都反馈结果。
+// 判定一次：manual=true 默认反馈全部结果；编排调用只在完整通知档反馈真实改动，并静默无变化。
 // fire-and-forget，失败静默（自动车）/弹错（手动）。无活跃条目直接跳过、不空烧 API。
-async function runLedgerJudgeStep(manual = false) {
-    if (isJudgingLedger) return;
+async function runLedgerJudgeStep(manual = false, options = {}) {
+    const feedback = options.feedback || (manual ? LEDGER_FEEDBACK.INTERACTIVE : LEDGER_FEEDBACK.AUTOMATIC);
+    const notifyPreflight = feedback !== LEDGER_FEEDBACK.AUTOMATIC;
+    const notifyUnchanged = feedback === LEDGER_FEEDBACK.INTERACTIVE;
+    const shouldNotifyUpdated = () => feedback === LEDGER_FEEDBACK.INTERACTIVE || getSettings().notifyMode === 'full';
+    if (isJudgingLedger) return { status: 'skipped' };
     const ctx = getContext();
     const charKey = charStableKey(ctx);
-    if (!charKey) { if (manual) showToast('当前没有角色卡，无法判定', null, true); return; }
-    if (!listJudgeableLedger().length) { if (manual) showToast('暂无可判定的活跃事件'); return; }
+    if (!charKey) { if (notifyPreflight) showToast('当前没有角色卡，无法判定', null, true); return { status: 'skipped' }; }
+    if (!listJudgeableLedger().length) { if (notifyUnchanged) showToast('暂无可判定的活跃事件'); return { status: 'skipped' }; }
     const chatIdSnap = ctx.chatId;
     const cfg = loadCfg();                            // 判定 API 干的是「据天数写新现状」(内容活)；时间重算是上面零-API 的 JS → 走内容生成 API
-    if (!cfg.url || !cfg.key) { if (manual) showToast('请先在设置中填写 API', null, true); return; }
+    if (!cfg.url || !cfg.key) { if (notifyPreflight) showToast('请先在设置中填写 API', null, true); return { status: 'failed', error: new Error('未配置主 API') }; }
     const myCtrl = new AbortController(); ledgerJudgeAbort = myCtrl;
     isJudgingLedger = true;
     const done = () => { isJudgingLedger = false; if (ledgerJudgeAbort === myCtrl) ledgerJudgeAbort = null; };
     try {
         const userName = ctx.name1 || '用户', charName = ctx.name2 || '角色';
         const raw = await callCustomApi(ctx, buildLedgerJudgePrompt(), cfg, userName, charName, myCtrl.signal, LEDGER_JUDGE_FLOORS);
-        if (ledgerJudgeAbort !== myCtrl) return;                            // 被更新的判定取代
-        if (getContext().chatId !== chatIdSnap) { done(); return; }         // 已切 chat，丢弃
+        if (ledgerJudgeAbort !== myCtrl) return { status: 'cancelled' };     // 被更新的判定取代
+        if (getContext().chatId !== chatIdSnap) { done(); return { status: 'cancelled' }; } // 已切 chat，丢弃
         done();
         const changes = parseLedgerJudge(raw);
-        if (!changes.length) { if (manual) showToast('本轮没有事件需要更新'); return; }
+        if (!changes.length) { if (notifyUnchanged) showToast('本轮没有事件需要更新'); return { status: 'unchanged' }; }
         const cal = loadCalDesc();
         const floor = latestAiFloorId();
         const today = almTodayAnchor();
@@ -2946,21 +3339,20 @@ async function runLedgerJudgeStep(manual = false) {
             if (c.动作 === '了结') ledger.closeEntry(e.id);                  // 静音条已在上方跳过，此处到不了
             applied.push(e.事由);
         }
-        if (!applied.length) { if (manual) showToast('没有需要更新的事件'); return; }
-        // 通知：手动必反馈；自动仅 full 档弹（照三档静音约定）。
-        if (manual || getSettings().notifyMode === 'full') {
-            showToast(`刻度刷新 ${applied.length} 条：${applied.join('、')} · 请注意查看`);
-        }
+        if (!applied.length) { if (notifyUnchanged) showToast('没有需要更新的事件'); return { status: 'unchanged' }; }
         refreshLedgerInjection();   // 现状/了结变了 → 重算注入集（关/空时内部自清）
         refreshInlineWindow(true);  // 标注池现状变了 → 刷楼内框（最新 AI 楼读活账重挂标注池）
         if (almanacMode && _almanacSheet === 'ledger') renderAlmanacPanel();
+        if (shouldNotifyUpdated()) showToast(`刻度刷新 ${applied.length} 条：${applied.join('、')} · 请注意查看`);
+        return { status: 'updated' };
     } catch (err) {
-        if (ledgerJudgeAbort !== myCtrl) return;           // 被更新的判定取代 → 新的接管，别动
+        if (ledgerJudgeAbort !== myCtrl) return { status: 'cancelled' }; // 被更新的判定取代
         done();
-        if (err?.name === 'AbortError') return;            // 中止 / 切档
-        if (err?.spDisabled) return;                       // 插件关闭：静默
-        if (getContext().chatId !== chatIdSnap) return;    // 已切 chat
+        if (err?.name === 'AbortError') return { status: 'cancelled' }; // 中止 / 切档
+        if (err?.spDisabled) return { status: 'cancelled' };            // 插件关闭：静默
+        if (getContext().chatId !== chatIdSnap) return { status: 'cancelled' }; // 已切 chat
         showToast('刻度判定失败，请检查 API 或网络', null, true);
+        return { status: 'failed', error: err };
     }
 }
 
@@ -2969,13 +3361,15 @@ async function runLedgerJudgeStep(manual = false) {
 //   1) 刷楼内历条 / 点条、历面板；2) 点恒跟随今天——把点重排到今天（点纯下游连带，无独立开关）。
 // 点连带走 syncPointToToday(true)：其自带「点没生成过就 no-op」「_almSyncingPoint 重入合并」「isGenerating/
 // chatId/abort」守卫，fire-and-forget 安全；不占前台 isGenerating 锁。故这里无脑调、由它自己判断要不要真重生成。
-function runAnchorAftermath() {
+function runAnchorAftermath({ messageId } = {}) {
     syncLatestAlmanacBlock();
     syncLatestScheduleBlock();
     if (almanacMode) renderAlmanacPanel();
     // 点·后台自动跟随「今天」：仅在开关开时才自动重排点（每次一 API）；关（默认）时点原地不动，
     // 用户想对齐今天时去点面板手动刷新即可。syncPointToToday 内部还有「点从未生成过就 no-op」守卫，双保险。
-    if (getSettings().scheduleAutoDetect === true) syncPointToToday(true);
+    const floorId = Number(messageId);
+    const pointSuppressed = Number.isInteger(floorId) && isAutomationSuppressed(floorId, AUTOMATION_MODULES.POINT);
+    if (getSettings().scheduleAutoDetect === true && !pointSuppressed) syncPointToToday(true);
 }
 
 // 方案 B·点随「今天」按钮同步（历面板「同步到点」键触发，非自动）：
@@ -2999,14 +3393,14 @@ function schedulePointNeedsSync() {
 // 让「点」从今天起排 7 天、与「历」同一天。反馈全在历（按钮态「同步中…」+ toast），结果落在点。
 // 绝不占用 isGenerating（前台 UI 锁，sidebar 切换靠它挡）——后台占了会把整个面板卡死；防 race 靠自带 abort + 落地前重查。
 let _autoRegenSchedAbort = null;
-async function syncPointToToday(auto = false) {
-    if (_almSyncingPoint) { _almSyncPending = true; return; }   // 同步在飞：标记待办，等它收尾自对账补一轮（都开态·快聊防丢，别硬丢）
-    if (isGenerating) { if (!auto) showToast('点正在生成，稍候再同步', null, true); return; }
+async function syncPointToToday(auto = false, options = {}) {
+    if (_almSyncingPoint) { _almSyncPending = true; return { status: 'skipped' }; } // 同步在飞：留待现有自对账处理
+    if (isGenerating) { if (!auto) showToast('点正在生成，稍候再同步', null, true); return { status: 'skipped' }; }
     const view = currentView, charName = charViewName;
     const cacheKey = getCacheKey(view, charName);
-    if (!cacheKey) return;
+    if (!cacheKey) return { status: 'skipped' };
     const raw = readStore(cacheKey)?.raw || '';
-    if (!raw) return;                                        // refresh-only：没生成过 → 不凭空建
+    if (!raw) return { status: 'skipped' };                  // refresh-only：没生成过 → 不凭空建
     _autoRegenSchedAbort?.abort();
     const myCtrl = _autoRegenSchedAbort = new AbortController();
     const chatIdSnap = getContext().chatId;
@@ -3016,7 +3410,7 @@ async function syncPointToToday(auto = false) {
     try {
         const ctx = getContext();
         const cfg = loadCfg();
-        if (!cfg.url || !cfg.key) { showToast('未配置主 API，无法同步点', null, true); return; }
+        if (!cfg.url || !cfg.key) { showToast('未配置主 API，无法同步点', null, true); return { status: 'failed', error: new Error('未配置主 API') }; }
         const userName = ctx.name1 || '用户';
         const cName = view === 'char' ? (charName || ctx.name2 || '角色') : (ctx.name2 || '角色');
         const subject = view === 'char' ? cName : userName;
@@ -3024,11 +3418,13 @@ async function syncPointToToday(auto = false) {
         const pc = parseCalendar(raw);
         for (const d of pc.days) for (const ev of d.events) if (ev.pin) pinnedEvents.push(ev);
         if (pc.future) for (const ev of pc.future.events) if (ev.pin) pinnedEvents.push(ev);
-        const fresh = await generate(ctx, userName, cName, view, myCtrl.signal, pinnedEvents);
-        if (_autoRegenSchedAbort !== myCtrl) return;         // 被更新的同步取代（或被手动生成掐断）
-        if (isGenerating) return;                            // 期间前台手动生成插了队 → 让前台赢
-        if (getContext().chatId !== chatIdSnap) return;      // 已切 chat → 丢弃
-        const today = almTodayAnchor();                      // 落地前重读今天：regen 期间今天可能又前进，钉最新值而非开跑时的旧值（都开态防落后一格）
+        const fresh = await generate(ctx, userName, cName, view, myCtrl.signal, pinnedEvents, {
+            promptAddon: options.promptAddon || '',
+        });
+        if (_autoRegenSchedAbort !== myCtrl) return { status: 'cancelled' }; // 被更新的同步取代
+        if (isGenerating) return { status: 'cancelled' };    // 期间前台手动生成插了队 → 让前台赢
+        if (getContext().chatId !== chatIdSnap) return { status: 'cancelled' }; // 已切 chat → 丢弃
+        const today = options.targetDate || almTodayAnchor(); // 调用方可固定目标锚点；常规同步仍在落地前重读今天
         const merged = forceStartDate(mergePinnedPoints(raw, fresh), today.month, today.day);   // C：钉到今天
         writeStore(cacheKey, { raw: merged, userName: subject, ts: Date.now() });
         syncLatestScheduleBlock();                           // 楼内点条即时刷到新日期
@@ -3039,13 +3435,17 @@ async function syncPointToToday(auto = false) {
             const onPointPanel = !almanacMode && !outlineMode && !linesMode && !spaceMode && !theaterMode && !anchorMode;
             if (onPointPanel && $(`#${MODAL_ID}`).is(':visible')) setBody(cachedSchedule);
         }
-        if (auto ? getSettings().notifyMode === 'full' : getSettings().notifyMode !== 'off') showToast(`点已同步到 ${calMonthName(loadCalDesc(), today.month)}${today.day}日`);
+        if (options.notifySuccess !== false && (auto ? getSettings().notifyMode === 'full' : getSettings().notifyMode !== 'off')) {
+            showToast(`点已同步到 ${calMonthName(loadCalDesc(), today.month)}${today.day}日`);
+        }
+        return { status: 'updated' };
     } catch (err) {
         // 报错弹窗：同步失败要让用户看见——#41 自愈也靠它，静默会把真问题藏掉。
         // 排除中止 / 被更新的同步取代 / 切档——那些不是失败。isError toast 不受 notifyMode 静默。
         if (err?.name !== 'AbortError' && _autoRegenSchedAbort === myCtrl && getContext().chatId === chatIdSnap) {
             showToast('点同步到今天失败，请重试', null, true);
         }
+        return err?.name === 'AbortError' ? { status: 'cancelled' } : { status: 'failed', error: err };
     }
     finally {
         if (_autoRegenSchedAbort === myCtrl) _autoRegenSchedAbort = null;
@@ -3055,7 +3455,7 @@ async function syncPointToToday(auto = false) {
         // 自对账：同步在飞期间被丢过新的「今天」推进 → 若点仍落后今天且环境未变，收尾补一轮，保证都开态最终收敛（不会永久停在旧日期）。
         if (_almSyncPending) {
             _almSyncPending = false;
-            if (getContext().chatId === chatIdSnap && !isGenerating && schedulePointNeedsSync()) syncPointToToday(auto);
+            if (options.allowPendingFollowup !== false && getContext().chatId === chatIdSnap && !isGenerating && schedulePointNeedsSync()) syncPointToToday(auto);
         }
     }
 }
@@ -5007,6 +5407,13 @@ function injectModal() {
     $almanac.on('click', '.sp-alm-cal-next', function () { almNavMonth(1); });
     $almanac.on('click', '.sp-alm-cell[data-day]', function () { almSelectDay(parseInt($(this).attr('data-day'), 10)); });
     $almanac.on('click', '.sp-alm-cal-clearsel', function () { _almanacCalDay = null; renderAlmanacPanel(); });
+    $almanac.on('click', '.sp-alm-time-travel', function () {
+        const day = parseInt($(this).attr('data-day'), 10);
+        if (Number.isFinite(day)) startTimeTravel({ month: almCalMonth() + 1, day });
+    });
+    $almanac.on('click', '.sp-alm-time-travel-stop', function () {
+        interruptTimeTravel();
+    });
     $almanac.on('click', '.sp-alm-add-day', function () {
         openAlmanacEditor(null, { month: almCalMonth() + 1, day: parseInt($(this).attr('data-day'), 10) || 1 });
     });
@@ -6392,8 +6799,9 @@ async function generate(ctx, userName, charName, perspective = 'user', signal = 
         if (!settingsOpen) toggleSettings();
         throw new Error('请先在设置中填写自定义 API 的 URL 和 Key');
     }
-    const prompt = buildPrompt(userName, charName, perspective, pinned);
-    return callCustomApi(ctx, prompt, cfg, userName, charName, signal, 10, opts);
+    const { promptAddon = '', ...apiOpts } = opts || {};
+    const prompt = buildPrompt(userName, charName, perspective, pinned, promptAddon);
+    return callCustomApi(ctx, prompt, cfg, userName, charName, signal, 10, apiOpts);
 }
 
 // Normalize user-input OpenAI-compatible base URL:
@@ -7419,7 +7827,7 @@ function makeCopyBtn(text) {
 
 function injectToST(text) {
     const $ta = $('#send_textarea');
-    if (!$ta.length) { showToast('找不到输入框', null, true); return; }
+    if (!$ta.length) { showToast('找不到输入框', null, true); return false; }
     // Append instead of overwrite — don't nuke whatever the user was typing.
     // Empty box → just set; non-empty → prepend a blank line separator so the
     // injection stays visually distinct from prior text.
@@ -7434,6 +7842,7 @@ function injectToST(text) {
     }
     el?.scrollTo?.({ top: el.scrollHeight });
     showToast(prev.trim() ? '已追加到输入框' : '已注入到输入框');
+    return true;
 }
 
 // ─── Outline chat ─────────────────────────────────────────────────────────────
@@ -8853,13 +9262,13 @@ function _applyStoredSwipeLines(mesId, swipeId) {
     syncLatestInlineBlock(chatId);
     return true;
 }
-// 楼主文本签名（长度 + 首尾 32 字，避免全量哈希）：给「同 mesId 主文本变了 → 原楼重生成 = 重roll」检出用。
+// 正文轻量版本签名（长度 + 首尾 32 字）：线用它识别重 Roll，日期任务用它区分同楼不同正文版本。
 // 不依赖 ST 的 CMR type / GENERATION_STARTED genType——实测流式重roll下 type=undefined、latch 也不触发，三路检测全漏。
 // 有时间戳则只签 <!-- SDC-start --> 与 <!-- SDC-end --> 之间的正文：正文出完后第三方插件在楼尾追加的变量块落在戳外、
 // 不再扰动签名 → 不再把「追加变量块」误判成重 roll、省一次 API。无戳（时钟关/AI 漏戳）回退整条 mes，零回归。
-function _floorSig(mid) {
+function messageContentSignature(messageId) {
     try {
-        const t = String(getContext().chat?.[Number(mid)]?.mes ?? '');
+        const t = String(getContext().chat?.[Number(messageId)]?.mes ?? '');
         const sm = SDC_START_RE.exec(t);
         const em = SDC_END_RE.exec(t);
         let body = t;
@@ -9964,7 +10373,7 @@ function _buildDashedSubsectionHtml() {
         + inner + '</div>';
 }
 
-async function runGenerateLines(silent = false, swipeCtx = null) {
+async function runGenerateLines(silent = false, swipeCtx = null, options = {}) {
     const viewSnap = currentView;
     const charSnap = charViewName;
     const chatIdSnap = getContext().chatId;
@@ -9989,16 +10398,16 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
             const savedLines = readStore(cacheKey);
             if (savedLines?.raw) previousRaw = savedLines.raw;
         }
-        const prompt = buildLinesPrompt(userName, charName, viewSnap, previousRaw, getScale(charStableKey(ctx)));
+        const prompt = buildLinesPrompt(userName, charName, viewSnap, previousRaw, getScale(charStableKey(ctx)), options.promptAddon || '');
         const raw    = await callCustomApi(ctx, prompt, cfg, userName, charName, myCtrl.signal, 10,
             (swipeCtx?.forceReroll || swipeCtx?.reroll) ? { reroll: true, module: 'lines' } : {});
 
-        if (linesAbortController !== myCtrl) return;
+        if (linesAbortController !== myCtrl) return { status: 'cancelled' };
         // Chat may have switched while we were awaiting; do not touch cache or UI in that case
         if (getContext().chatId !== chatIdSnap) {
             isGeneratingLines = false;
             linesAbortController = null;
-            return;
+            return { status: 'cancelled' };
         }
 
         const merged = mergePinnedLines(previousRaw, raw);
@@ -10016,7 +10425,7 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
         linesAbortController = null;
         cachedLines = html;
         // Panel body
-        if (linesMode) { setLinesBody(html); if (!silent && getSettings().notifyMode !== 'off') showToast('线已生成'); }
+        if (linesMode) setLinesBody(html);
         // Sync the inline block on the latest AI message — panel & inline share
         // the same cache; without this the message-level block shows stale data
         // until page reload.
@@ -10024,17 +10433,21 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
         // 虚线·冷知识：跟线同触发（覆盖自动轮次/手动重生成/推进——都汇流到这）。
         // fire-and-forget：不 await、不阻塞线 UI；虚线自带 try/catch 与独立 abort。
         if (getSettings().dashedEnabled === true) runGenerateDashed();
-        if (!linesMode && !silent) showToast('线已生成，点击查看', () => {
-            if (!linesMode) $in('.sp-view-btn[data-view="lines"]').trigger('click');
-            showPanel();
-        });
+        if (!silent && options.notifySuccess !== false) {
+            if (linesMode && getSettings().notifyMode !== 'off') showToast('线已生成');
+            else if (!linesMode) showToast('线已生成，点击查看', () => {
+                if (!linesMode) $in('.sp-view-btn[data-view="lines"]').trigger('click');
+                showPanel();
+            });
+        }
+        return { status: 'updated' };
     } catch (err) {
-        if (linesAbortController !== myCtrl) return;
+        if (linesAbortController !== myCtrl) return { status: 'cancelled' };
         isGeneratingLines = false;
         linesAbortController = null;
         if (err.name === 'AbortError') {
             if (linesMode && getContext().chatId === chatIdSnap) setLinesBody(`<div class="sp-empty"><i class="fa-solid fa-diagram-project"></i><p>已中止</p></div>`);
-            return;
+            return { status: 'cancelled' };
         }
         // 报错弹窗：线生成失败要让用户看见——即便后台自动推进（silent）也弹（isError 不受 notifyMode 静默）。
         // 面板可见时错落面板；后台/自动、或面板已关 → 走 toast，不清掉可能正开着的面板。成功路径仍按 silent 静默。
@@ -10044,10 +10457,11 @@ async function runGenerateLines(silent = false, swipeCtx = null) {
             if (linesMode && _linesSheet === 'events' && !silent && $(`#${MODAL_ID}`).is(':visible')) setLinesBody(`<div class="sp-error"><i class="fa-solid fa-circle-exclamation"></i><p>生成失败：${escapeHtml(err.message || '未知错误')}</p></div>`);
             else showToast('线生成失败，请重试', null, true);
         }
+        return { status: 'failed', error: err };
     }
 }
 
-function buildLinesPrompt(userName, charName, perspective = 'user', previousRaw = '', scale = 'auto') {
+function buildLinesPrompt(userName, charName, perspective = 'user', previousRaw = '', scale = 'auto', promptAddon = '') {
     const subject = perspective === 'char' ? charName : userName;
 
     // ─── Scale-specific guidance ──────────────────────────────────────────
@@ -10168,7 +10582,7 @@ Next: **必须输出，不得省略**。一句话给出前瞻信号（20-40字�
 （每条事件线重复上面三行）
 </storylines_widget>
 
-【输出前自查】逐条确认每条事件线都齐 Line / Desc / Next 三行——尤其 Next 绝不能省，缺了补上再输出。`;
+【输出前自查】逐条确认每条事件线都齐 Line / Desc / Next 三行——尤其 Next 绝不能省，缺了补上再输出。${promptAddon ? `\n\n${promptAddon}` : ''}`;
 }
 
 // ─── Storylines parse / render ────────────────────────────────────────────────
@@ -10336,7 +10750,7 @@ function renderLines(raw) {
 }
 
 
-function buildPrompt(userName, charName, perspective = 'user', pinned = null) {
+function buildPrompt(userName, charName, perspective = 'user', pinned = null, promptAddon = '') {
     const subject   = perspective === 'char' ? charName : userName;
     const companion = perspective === 'char' ? userName : charName;
     const pins = Array.isArray(pinned) ? pinned.filter(e => e?.title?.trim()) : [];
@@ -10395,7 +10809,7 @@ Event: type|title|description|time|location|线头动态
 
 【Future 说明】
 Future 块收录剧情中出现的未来事项，时间不限。
-允许基于剧情走向合理推测，但不能凭空捏造剧情中从未提及的约定或承诺。`;
+允许基于剧情走向合理推测，但不能凭空捏造剧情中从未提及的约定或承诺。${promptAddon ? `\n\n${promptAddon}` : ''}`;
 }
 
 // ─── 历（日历 / 历法）─────────────────────────────────────────────────────────
@@ -11812,6 +12226,244 @@ function almCalMonth() {
     return _almanacCalMonth;
 }
 
+function collectTimeTravelAnniversaries(targetDate, cal = loadCalDesc()) {
+    return collectTravelAnniversaries(loadAlmanac(), targetDate, cal, (item, md, calendar) => {
+        const total = calYearLen(calendar);
+        const days = almClampInt(item.days, 1, total, 1);
+        const startDoy = almDayOfYear(item.month, item.day, calendar);
+        const targetDoy = almDayOfYear(md.month, md.day, calendar);
+        const offset = ((targetDoy - startDoy) % total + total) % total;
+        if (offset >= days) return null;
+        return {
+            startDate: { month: item.month, day: item.day },
+            endDate: almEndMonthDay(item, calendar),
+            days,
+            dayIndex: offset + 1,
+        };
+    }, type => almTypeMeta(type).label);
+}
+
+function getTravelPlanningSnapshot() {
+    const outlineSaved = readStore(getOutlineCacheKey());
+    const linesSaved = readStore(getLinesCacheKey());
+    return {
+        outline: outlineSaved?.raw ? parseOutline(outlineSaved.raw) : [],
+        outlineCursor: Number.isFinite(Number(outlineSaved?.cursor)) ? Math.floor(Number(outlineSaved.cursor)) : 1,
+        lines: linesSaved?.raw
+            ? parseLines(linesSaved.raw).filter(line => line.name && !TERMINAL_STAGES.has(line.stage))
+            : [],
+    };
+}
+
+function getTimeTravelInjectionState() {
+    if (!injectEnabled()) return { linesInjected: false, outlineInjected: false, ledgerInjected: false };
+    const settings = getSettings();
+    let linesInjected = false;
+    let outlineInjected = false;
+    if (settings.linesEnabled !== false && settings.linesInject === true) {
+        const saved = readStore(getLinesCacheKey());
+        linesInjected = !!saved?.raw && parseLines(saved.raw).some(line => line.name && !TERMINAL_STAGES.has(line.stage));
+    }
+    if (settings.outlineInject === true) {
+        const saved = readStore(getOutlineCacheKey());
+        outlineInjected = !!saved?.raw && parseOutline(saved.raw).length > 0 && getOutlineCursor() >= 1;
+    }
+    const ledgerInjected = settings.ledgerInject === true && _ledgerInjectEcho.length > 0;
+    return { linesInjected, outlineInjected, ledgerInjected };
+}
+
+async function requestTravelDirections({ sourceDate, targetDate, anniversaries, targetWeekday = '', cal, chatId, preference = '', excluded = [], signal = null }) {
+    const ctx = getContext();
+    const cfg = loadCfg();
+    if (!cfg.url || !cfg.key) throw new Error('请先在设置中填写主 API');
+    const prompt = buildTravelDirectionPrompt({
+        sourceDate,
+        targetDate,
+        anniversaries,
+        calendar: cal,
+        targetWeekday,
+        preference,
+        excluded,
+        ...getTravelPlanningSnapshot(),
+    });
+    const raw = await callCustomApi(ctx, prompt, cfg, ctx.name1 || '用户', ctx.name2 || '角色', signal);
+    if (getContext().chatId !== chatId) return [];
+    return parseTravelDirections(raw, excluded);
+}
+
+async function chooseTravelDirection(context) {
+    const customDirection = TIME_TRAVEL_DIRECTION_OPTIONS.find(option => option.custom);
+    const returnToDirection = Object.freeze({ action: 'return-to-direction' });
+    let selectedValue = TIME_TRAVEL_DIRECTION_OPTIONS[0]?.value || '';
+    let customValue = '';
+    let previewPreference = null;
+    const excluded = [];
+    while (getContext().chatId === context.chatId) {
+        const first = await customDialog.selectOne({
+            title: '跳到这天',
+            body: '选择这次剧情的大致方向。',
+            choices: TIME_TRAVEL_DIRECTION_OPTIONS.map(({ value, label }) => ({ value, label })),
+            initialValue: selectedValue,
+            custom: customDirection
+                ? { value: customDirection.value, initialValue: customValue, maxLength: 200, rows: 3, placeholder: '填写希望发展的剧情方向' }
+                : null,
+            actions: [
+                { value: 'ai', label: 'AI 推演' },
+                { value: 'direct', label: '直接采用', primary: true },
+            ],
+            validate: result => result.value === customDirection?.value && !result.customValue
+                ? '请填写自定义剧情方向'
+                : '',
+        });
+        if (!first || getContext().chatId !== context.chatId) return null;
+        selectedValue = first.value;
+        customValue = String(first.customValue || '').trim();
+        const selected = TIME_TRAVEL_DIRECTION_OPTIONS.find(option => option.value === selectedValue);
+        const preference = selected?.custom ? customValue : String(selected?.prompt || '');
+        if (first.action === 'direct') return preference;
+        if (first.action !== 'ai') return null;
+        if (previewPreference !== preference) {
+            excluded.length = 0;
+            previewPreference = preference;
+        }
+
+        const preview = await customDialog.selectOneAsync({
+            title: 'AI 推演方向',
+            body: preference ? `根据“${preference}”和当前剧情推演。` : '根据当前剧情自由推演。',
+            refreshable: true,
+            refreshText: '重新生成',
+            confirmText: '采用所选',
+            cancelText: '返回',
+            cancelValue: returnToDirection,
+            loadingText: '正在生成三个方向…',
+            emptyText: '没有获得有效方向，可以重新生成。',
+            loadChoices: async ({ signal }) => {
+                try {
+                    const directions = await requestTravelDirections({
+                        ...context,
+                        preference,
+                        excluded: [...excluded],
+                        signal,
+                    });
+                    if (getContext().chatId !== context.chatId) return [];
+                    for (const direction of directions) {
+                        if (!excluded.includes(direction)) excluded.push(direction);
+                    }
+                    return directions.map(direction => ({ value: direction, label: direction }));
+                } catch (error) {
+                    if (error?.name !== 'AbortError') console.error('[SP 时光旅行] AI 推演失败', error);
+                    throw error;
+                }
+            },
+        });
+        if (preview === returnToDirection) continue;
+        return preview;
+    }
+    return null;
+}
+
+async function startTimeTravel(selectedTargetDate) {
+    const active = timeTravel.getState();
+    if (active?.phase === 'syncing') { showToast('时光旅行正在同步，请稍候'); return; }
+    if (active?.phase === 'waiting') {
+        showToast('已有时光旅行正在等待正文，请先中断后再重新发起', null, true);
+        return;
+    }
+    const ctx = getContext();
+    const chatId = ctx.chatId;
+    const sourceDate = almTodayAnchor();
+    if (!chatId || sameMonthDay(sourceDate, selectedTargetDate)) return;
+    const cal = loadCalDesc();
+    const anniversaries = collectTimeTravelAnniversaries(selectedTargetDate, cal);
+    const targetWeekday = ALM_WEEKDAYS[almWeekdayFor(selectedTargetDate.month, selectedTargetDate.day, almWeekdayRef(cal), cal)];
+    const context = { chatId, sourceDate, targetDate: selectedTargetDate, anniversaries, targetWeekday, cal };
+    const direction = await chooseTravelDirection(context);
+    if (direction === null || getContext().chatId !== chatId) return;
+    const text = buildTravelStoryPrompt({
+        sourceDate,
+        targetDate: selectedTargetDate,
+        direction,
+        anniversaries,
+        calendar: cal,
+        targetWeekday,
+        injectionState: getTimeTravelInjectionState(),
+    });
+    if (!injectToST(text)) return;
+    timeTravel.begin({ chatId, sourceDate, selectedTargetDate, direction });
+}
+
+// 时旅状态只影响月历；局部替换保留历面板滚动位置和当前翻月、选日。
+function refreshTimeTravelCalendarState() {
+    if (!almanacMode || _almanacSheet !== 'calendar' || _almanacManager || _almanacEditor || _ledgerEditor || isGeneratingAlmanac) return;
+    const $calendar = $in('#sp-almanac-wrap .sp-alm-cal');
+    if ($calendar.length) $calendar.replaceWith(renderAlmanacCalendar());
+}
+
+function removeTimeTravelBlocksFromInput() {
+    const $input = $('#send_textarea');
+    if (!$input.length) return false;
+    const before = String($input.val() || '');
+    const after = removeTimeTravelBlocks(before);
+    if (after === before) return false;
+    $input.val(after).trigger('input');
+    const el = $input[0];
+    const caret = Math.min(after.length, Number(el?.selectionStart) || after.length);
+    el?.setSelectionRange?.(caret, caret);
+    return true;
+}
+
+function handleTimeTravelMessageDeleted() {
+    const active = timeTravel.getState();
+    if (!active) return;
+    const waiting = active.phase === 'waiting';
+    timeTravel.clear();
+    if (waiting) {
+        removeTimeTravelBlocksFromInput();
+        showToast('检测到聊天楼层被删除，本次时旅已取消');
+        return;
+    }
+    showToast('检测到聊天楼层被删除，时旅同步已中断；已经发出的请求仍可能应用结果');
+}
+
+async function interruptTimeTravel() {
+    const active = timeTravel.getState();
+    if (!active) {
+        refreshTimeTravelCalendarState();
+        return;
+    }
+    const waiting = active.phase === 'waiting';
+    const confirmed = await customDialog.confirm(waiting ? {
+        title: '取消时旅',
+        body: '确认取消本次时旅吗？输入框中尚未发送的时间变更内容将被移除；已经发送的消息和正在生成的正文不会受到影响。',
+        confirmText: '确认取消',
+        cancelText: '继续等待',
+    } : {
+        title: '中断时旅同步',
+        body: '确认中断本次时旅同步吗？尚未开始的模块将不再更新，已经完成或已经发出的请求仍可能应用结果。',
+        confirmText: '确认中断',
+        cancelText: '继续同步',
+    });
+    if (!confirmed) return;
+
+    const current = timeTravel.getState();
+    if (!current || current.sessionId !== active.sessionId) {
+        showToast('本次时旅已经结束');
+        return;
+    }
+    if (current.phase !== active.phase) {
+        showToast('时旅状态已变化，请重新确认中断', null, true);
+        return;
+    }
+
+    timeTravel.clear();
+    if (waiting) {
+        removeTimeTravelBlocksFromInput();
+        showToast('已取消本次时旅');
+    } else {
+        showToast('已中断时旅同步，已发出的请求仍可能完成');
+    }
+}
+
 function renderAlmanacCalendar() {
     const cal = loadCalDesc();
     const m0 = almCalMonth();
@@ -11844,6 +12496,8 @@ function renderAlmanacCalendar() {
     const lead = (wd1 + 6) % 7;
     const leadCells = Array.from({ length: lead }, () => '<div class="sp-alm-cell-empty"></div>').join('');
 
+    const travelState = timeTravel.getState();
+    const travelTarget = travelState?.selectedTargetDate;
     const cells = [];
     for (let dnum = 1; dnum <= dim; dnum++) {
         const dayItems = byDay[dnum] || [];
@@ -11851,7 +12505,8 @@ function renderAlmanacCalendar() {
         const dots = has
             ? `<span class="sp-alm-cell-dots">${dayItems.slice(0, 3).map(it => `<i class="sp-alm-dot sp-alm-type-${almTypeMeta(it.type).cls}"></i>`).join('')}</span>`
             : '';
-        cells.push(`<div class="sp-alm-cell${has ? ' sp-alm-cell-has' : ''}${isThisMonth && dnum === todayD ? ' sp-alm-cell-today' : ''}${selDay === dnum ? ' sp-alm-cell-sel' : ''}" data-day="${dnum}">
+        const isTravelTarget = travelTarget?.month === month1 && travelTarget?.day === dnum;
+        cells.push(`<div class="sp-alm-cell${has ? ' sp-alm-cell-has' : ''}${isThisMonth && dnum === todayD ? ' sp-alm-cell-today' : ''}${selDay === dnum ? ' sp-alm-cell-sel' : ''}${isTravelTarget ? ' sp-alm-cell-time-travel' : ''}" data-day="${dnum}"${isTravelTarget ? ' title="时旅目标日"' : ''}>
             <span class="sp-alm-cell-num">${dnum}</span>${dots}
         </div>`);
     }
@@ -11867,16 +12522,22 @@ function renderAlmanacCalendar() {
         // 详情列出「覆盖选中日」的条目（含跨月延续来的多日节假日），按起始日排序。
         const selDoy = almDayOfYear(month1, selDay, cal);
         detailItems = items.filter(it => almItemCoversDoy(it, selDoy, cal)).sort((a, b) => a.month - b.month || a.day - b.day);
+        const travelButton = travelState
+            ? `<button class="sp-alm-time-travel-stop sp-mini-btn" title="中断当前时旅" aria-label="中断当前时旅">中断时旅</button>`
+            : sameMonthDay(anchor, { month: month1, day: selDay })
+                ? ''
+                : `<button class="sp-alm-time-travel sp-mini-btn" data-day="${selDay}" title="跳到这天" aria-label="跳到这天">跳到这天</button>`;
         detailHead = `<div class="sp-alm-cal-detail-head">
             <span>${calMonthName(cal, month1)}${selDay}日 · ${ALM_WEEKDAYS[almWeekdayFor(month1, selDay, wkRef, cal)]}</span>
             <span class="sp-alm-cal-detail-tools">
                 <button class="sp-alm-add-day sp-mini-btn" data-day="${selDay}">＋加到这天</button>
+                ${travelButton}
                 <button class="sp-alm-cal-clearsel sp-mini-btn">看全月</button>
             </span>
         </div>`;
     } else {
         detailItems = items.filter(it => it.month === month1).sort((a, b) => a.day - b.day);
-        detailHead = `<div class="sp-alm-cal-detail-head"><span>本月日期</span></div>`;
+        detailHead = `<div class="sp-alm-cal-detail-head"><span>本月日期</span>${travelState ? `<span class="sp-alm-cal-detail-tools"><button class="sp-alm-time-travel-stop sp-mini-btn" title="中断当前时旅" aria-label="中断当前时旅">中断时旅</button></span>` : ''}</div>`;
     }
     const detailRows = detailItems.length
         ? `<div class="sp-alm-list">${detailItems.map(it => almRowHtml(it, ctx)).join('')}</div>`
